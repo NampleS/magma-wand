@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.8.0';
+  const VERSION = '0.9.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -2258,6 +2258,8 @@
     '<path fill="currentColor" d="M160 240h192v32H160z"/>';
   const HIST_SVG = '<path fill="currentColor" d="M256 48a208 208 0 1 1-147 61l-37-37v112h112l-43-43a144 144 0 1 1-34 93H43A213 213 0 1 0 256 48z"/>' +
     '<path fill="currentColor" d="M240 144h40v104l72 44-20 34-92-56z"/>';
+  const FX_SVG = '<path fill="none" stroke="currentColor" stroke-width="40" d="M150 120h212a40 40 0 0 1 40 40v192a40 40 0 0 1-40 40H150a40 40 0 0 1-40-40V160a40 40 0 0 1 40-40z"/>' +
+    '<path fill="currentColor" d="M196 206h120v100H196z"/>';
   function ensureMenuItems() {
     for (const menu of document.querySelectorAll('.dropdown-menu')) {
       const items = [...menu.querySelectorAll('command-menu-item')];
@@ -2296,7 +2298,8 @@
       const a = make('선택 범위 확장…', GROW_SVG, true);
       const b = make('선택 범위 축소…', SHRINK_SVG, false);
       const h = make('작업 기록 (내 컴퓨터)…', HIST_SVG, false, () => openHistoryDialog());
-      inv.after(a, b, h);
+      const f = make('레이어 스트로크 (내 화면)…', FX_SVG, false, () => openStrokeDialog());
+      inv.after(a, b, h, f);
     }
   }
 
@@ -2603,6 +2606,434 @@
     render();
   }
 
+  // ---------- 레이어 스트로크 (클립 스튜디오 '레이어 속성 → 경계 효과', 내 화면에만) ----------
+  // 보드에는 평범한 래스터 레이어 그대로 두고, 내 화면에서만 그 레이어 둘레에 테두리를 그려 보여 준다.
+  //  - Magma 화면 위에 내 WebGL 캔버스를 한 장 겹치고, 테두리 = 거리장(점프 플러딩)으로 계산한 '그림까지의 거리' 띠.
+  //  - 테두리는 그 레이어 그림 밑, 위 레이어들 밑에 있어야 하므로 (1 − 그 레이어 알파) × (1 − 위 레이어들 알파)로 가린다.
+  //  - 긋는 도중에도 매 프레임: Magma가 긋는 중인 획(user.surface)의 바뀐 부분만 읽어 그 둘레만 다시 계산한다.
+  //  - 읽기는 Magma 내부 읽기 함수만 쓰고 보드로 아무것도 보내지 않는다(트래픽 0). 설정은 보드·레이어별로 저장해
+  //    다시 들어와도 이어진다. 화면이 안 바뀌면 다시 그리지 않는다.
+  const FX_KEY = 'magmaWand.layerFx';
+  const FX_MAXR = 120;          // 두께 + 흐리기 상한(픽셀) — 거리 정보를 1바이트 오프셋에 담기 위함
+  const FX = { gl: null, cv: null, prog: {}, raf: 0, board: null, layers: new Map(), upper: null, lastXf: '', lastCheck: 0,
+    stroke: null, lost: false, W: 0, H: 0 };
+  function fxAll() { try { return JSON.parse(localStorage.getItem(FX_KEY) || '{}') || {}; } catch { return {}; } }
+  function fxGet(board, uid) { const a = fxAll(); return (a[board] && a[board][uid]) || null; }
+  function fxSet(board, uid, cfg) {
+    const a = fxAll();
+    a[board] = a[board] || {};
+    if (cfg) a[board][uid] = cfg; else delete a[board][uid];
+    try { localStorage.setItem(FX_KEY, JSON.stringify(a)); } catch { }
+    fxKick();
+  }
+  const FX_VS = `#version 300 es
+void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2)); gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }`;
+  const FX_SEED = `#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D uA; uniform float uThr;
+out ivec4 o;
+void main(){ ivec2 p = ivec2(gl_FragCoord.xy); float a = texelFetch(uA, p, 0).r; o = a >= uThr ? ivec4(0) : ivec4(-128); }`;
+  const FX_JFA = `#version 300 es
+precision highp float; precision highp int;
+uniform highp isampler2D uS; uniform int uK; uniform ivec2 uSize;
+out ivec4 o;
+void main(){
+  ivec2 p = ivec2(gl_FragCoord.xy); ivec2 best = ivec2(-128); float bd = 1e20;
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+    ivec2 q = p + ivec2(i, j) * uK;
+    if (q.x < 0 || q.y < 0 || q.x >= uSize.x || q.y >= uSize.y) continue;
+    ivec2 s = texelFetch(uS, q, 0).xy;
+    if (s.x == -128) continue;
+    ivec2 c = q + s; vec2 dv = vec2(c - p); float d = dot(dv, dv);
+    if (d < bd) { bd = d; best = c - p; }
+  }
+  if (best.x != -128 && (abs(best.x) > 127 || abs(best.y) > 127)) best = ivec2(-128);
+  o = ivec4(best, 0, 0);
+}`;
+  const FX_DRAW = `#version 300 es
+precision highp float; precision highp int;
+uniform highp isampler2D uS; uniform sampler2D uA; uniform sampler2D uU;
+uniform vec3 uInv0; uniform vec3 uInv1; uniform float uH; uniform vec2 uDoc;
+uniform vec4 uColor; uniform float uW; uniform float uB; uniform float uAA; uniform float uOp; uniform float uUseU;
+out vec4 o;
+void main(){
+  vec2 sp = vec2(gl_FragCoord.x, uH - gl_FragCoord.y);
+  vec2 p = vec2(dot(uInv0, vec3(sp, 1.0)), dot(uInv1, vec3(sp, 1.0)));
+  if (p.x < 0.0 || p.y < 0.0 || p.x >= uDoc.x || p.y >= uDoc.y) discard;
+  ivec2 ip = ivec2(floor(p));
+  ivec2 s = texelFetch(uS, ip, 0).xy;
+  if (s.x == -128) discard;
+  vec2 c = vec2(ip + s) + 0.5;
+  float d = length((uAA > 0.5 ? p : vec2(ip) + 0.5) - c);
+  float cov;
+  if (uB > 0.0) cov = 1.0 - smoothstep(uW + 0.5 - uB, uW + 0.5 + uB, d);
+  else if (uAA > 0.5) cov = clamp(uW + 1.0 - d, 0.0, 1.0);
+  else cov = d <= uW + 0.5 ? 1.0 : 0.0;
+  vec2 uv = p / uDoc;
+  cov *= 1.0 - texture(uA, uv).r;
+  cov *= 1.0 - texture(uU, uv).r * uUseU;
+  cov *= uOp * uColor.a;
+  if (cov <= 0.002) discard;
+  o = vec4(uColor.rgb * cov, cov);
+}`;
+  function fxCompile(gl, fs) {
+    const mk = (type, src) => {
+      const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error('셰이더: ' + gl.getShaderInfoLog(s));
+      return s;
+    };
+    const p = gl.createProgram();
+    gl.attachShader(p, mk(gl.VERTEX_SHADER, FX_VS)); gl.attachShader(p, mk(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('셰이더 연결: ' + gl.getProgramInfoLog(p));
+    const u = {};
+    const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+    for (let i = 0; i < n; i++) { const name = gl.getActiveUniform(p, i).name; u[name] = gl.getUniformLocation(p, name); }
+    return { p, u };
+  }
+  function fxEnsureGL(canvas) {
+    const host = canvas.parentElement;
+    if (!FX.cv || !FX.cv.isConnected || FX.cv.parentElement !== host) {
+      FX.cv?.remove();
+      FX.cv = document.createElement('canvas');
+      FX.cv.className = 'mw-fx mw-el';
+      FX.gl = FX.cv.getContext('webgl2', { premultipliedAlpha: true, alpha: true, antialias: false });
+      if (!FX.gl) throw new Error('WebGL2를 쓸 수 없어요');
+      FX.cv.addEventListener('webglcontextlost', (e) => { e.preventDefault(); FX.lost = true; });
+      FX.cv.addEventListener('webglcontextrestored', () => { FX.lost = false; FX.prog = {}; FX.layers.clear(); FX.upper = null; fxKick(); });
+      FX.prog = {}; FX.layers.clear(); FX.upper = null;
+      canvas.after(FX.cv);
+    }
+    // Magma 캔버스와 같은 자리·크기
+    const cs = canvas.style;
+    Object.assign(FX.cv.style, { position: 'absolute', left: canvas.offsetLeft + 'px', top: canvas.offsetTop + 'px',
+      width: canvas.offsetWidth + 'px', height: canvas.offsetHeight + 'px', pointerEvents: 'none', zIndex: cs.zIndex || '' });
+    if (FX.cv.width !== canvas.width || FX.cv.height !== canvas.height) { FX.cv.width = canvas.width; FX.cv.height = canvas.height; FX.lastXf = ''; }
+    const gl = FX.gl;
+    if (!FX.prog.seed) {
+      FX.prog.seed = fxCompile(gl, FX_SEED); FX.prog.jfa = fxCompile(gl, FX_JFA); FX.prog.draw = fxCompile(gl, FX_DRAW);
+      FX.vao = gl.createVertexArray();
+      FX.fb = gl.createFramebuffer();
+    }
+    return gl;
+  }
+  function fxTex(gl, internal, w, h, format, type, filter) {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, internal, w, h);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return t;
+  }
+  // 레이어 하나의 GPU 상태: 알파(A), 거리 시드 두 장(핑퐁)
+  function fxLayerState(gl, uid, W, H) {
+    let st = FX.layers.get(uid);
+    if (st && st.W === W && st.H === H) return st;
+    if (st) { gl.deleteTexture(st.A); gl.deleteTexture(st.S0); gl.deleteTexture(st.S1); }
+    st = { uid, W, H, base: new Uint8Array(W * H), A: fxTex(gl, gl.R8, W, H, gl.RED, gl.UNSIGNED_BYTE, gl.LINEAR),
+      S0: fxTex(gl, gl.RG8I, W, H, gl.RG_INTEGER, gl.BYTE, gl.NEAREST), S1: fxTex(gl, gl.RG8I, W, H, gl.RG_INTEGER, gl.BYTE, gl.NEAREST),
+      sig: null, ready: false, R: 0, cur: 0 };
+    FX.layers.set(uid, st);
+    return st;
+  }
+  // 레이어 RGBA → 알파만, 보드 좌표의 rect 자리에
+  function fxPutAlpha(dst, W, rect, rgba, rw) {
+    for (let y = 0; y < rect.h; y++) {
+      let s = (y * rw) * 4 + 3, d = (rect.y + y) * W + rect.x;
+      for (let x = 0; x < rect.w; x++, s += 4, d++) dst[d] = rgba[s];
+    }
+  }
+  // src: 가로 W짜리 배열에서 rect 부분을, 텍스처의 (dx, dy) 자리(기본은 rect 자리)에 올린다
+  function fxUpload(gl, tex, W, rect, src, dx = rect.x, dy = rect.y) {
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, W);
+    gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, rect.x);
+    gl.pixelStorei(gl.UNPACK_SKIP_ROWS, rect.y);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, dx, dy, rect.w, rect.h, gl.RED, gl.UNSIGNED_BYTE, src);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+  }
+  const rclip = (r, W, H) => {
+    const x0 = Math.max(0, Math.floor(r.x)), y0 = Math.max(0, Math.floor(r.y));
+    const x1 = Math.min(W, Math.ceil(r.x + r.w)), y1 = Math.min(H, Math.ceil(r.y + r.h));
+    return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
+  };
+  const rgrow = (r, m) => ({ x: r.x - m, y: r.y - m, w: r.w + 2 * m, h: r.h + 2 * m });
+  const runion = (a, b) => !a ? b : !b ? a : (() => { const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+    return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y }; })();
+
+  // 레이어 전체(또는 rect 부분)의 알파를 Magma에서 읽어 base에 넣는다
+  function fxReadLayer(E, L, st, rect) {
+    const lr = L.rect;
+    const W = st.W, H = st.H;
+    if (!rect) { st.base.fill(0); rect = { x: 0, y: 0, w: W, h: H }; }
+    else for (let y = rect.y; y < rect.y + rect.h; y++) st.base.fill(0, y * W + rect.x, y * W + rect.x + rect.w);
+    if (!lr || !(lr.w > 0 && lr.h > 0) || !L.texture) return rect;
+    const ir = rclip({ x: Math.max(rect.x, lr.x), y: Math.max(rect.y, lr.y),
+      w: Math.min(rect.x + rect.w, lr.x + lr.w) - Math.max(rect.x, lr.x), h: Math.min(rect.y + rect.h, lr.y + lr.h) - Math.max(rect.y, lr.y) }, W, H);
+    if (!ir) return rect;
+    if (ir.x === lr.x && ir.y === lr.y && ir.w === lr.w && ir.h === lr.h) {
+      const raw = E.renderer.getLayerRawData(L); // 읽기 전용
+      fxPutAlpha(st.base, W, ir, raw.data, raw.width);
+    } else {
+      const img = E.renderer.getLayerImageData(L, ir); // 읽기 전용 (레이어 안쪽 rect)
+      fxPutAlpha(st.base, W, ir, img.data, img.width);
+    }
+    return rect;
+  }
+  // 거리장 다시 계산 (rect 둘레만)
+  function fxJfa(gl, st, rect, R) {
+    const W = st.W, H = st.H;
+    const area = rclip(rgrow(rect, 2 * R + 2), W, H);
+    if (!area) return;
+    gl.bindVertexArray(FX.vao);
+    gl.disable(gl.BLEND);
+    gl.viewport(0, 0, W, H);
+    gl.enable(gl.SCISSOR_TEST);
+    gl.scissor(area.x, area.y, area.w, area.h);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, FX.fb);
+    // 시드
+    let src = st.S0, dst = st.S1;
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, src, 0);
+    gl.useProgram(FX.prog.seed.p);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, st.A);
+    gl.uniform1i(FX.prog.seed.u.uA, 0); gl.uniform1f(FX.prog.seed.u.uThr, 0.5);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    // 점프 플러딩
+    gl.useProgram(FX.prog.jfa.p);
+    gl.uniform2i(FX.prog.jfa.u.uSize, W, H);
+    gl.uniform1i(FX.prog.jfa.u.uS, 0);
+    let k = 1; while (k * 2 <= R + 2) k *= 2;
+    const steps = [];
+    for (; k >= 1; k = k >> 1) steps.push(k);
+    steps.push(1); // 마지막 한 번 더 (정확도)
+    for (const kk of steps) {
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, dst, 0);
+      gl.bindTexture(gl.TEXTURE_2D, src);
+      gl.uniform1i(FX.prog.jfa.u.uK, kk);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      const t = src; src = dst; dst = t;
+    }
+    // 결과가 S0에 오도록 맞춘다
+    if (src !== st.S0) { st.S1 = st.S0; st.S0 = src; }
+    gl.disable(gl.SCISSOR_TEST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+  function fxUpperState(gl, W, H) {
+    if (FX.upper && FX.upper.W === W && FX.upper.H === H) return FX.upper;
+    if (FX.upper) gl.deleteTexture(FX.upper.U);
+    FX.upper = { W, H, U: fxTex(gl, gl.R8, W, H, gl.RED, gl.UNSIGNED_BYTE, gl.LINEAR), sig: null, buf: new Uint8Array(W * H) };
+    return FX.upper;
+  }
+  // 위 레이어들(보이는 것)의 알파를 합친 것 — 테두리를 그 밑에 숨기기 위함
+  function fxUpdateUpper(E, gl, W, H, belowIndex, force) {
+    const up = fxUpperState(gl, W, H);
+    const layers = E.drawing.layers.slice(0, belowIndex).filter((l) => l.visible !== false && l.rect && l.rect.w > 0 && l.texture);
+    const sig = layers.map((l) => (l.uid || l.id) + ':' + l.opacity + ':' + (l.rect ? `${l.rect.x},${l.rect.y},${l.rect.w},${l.rect.h}` : '') + ':' +
+      (l.thumbData && l.thumbData.data ? hash32(l.thumbData.data) : '')).join('|') + '#' + belowIndex;
+    if (!force && sig === up.sig) return up;
+    up.sig = sig;
+    const u = up.buf; u.fill(0);
+    for (const l of layers) {
+      const lr = rclip(l.rect, W, H); if (!lr) continue;
+      let raw; try { raw = E.renderer.getLayerRawData(l); } catch { continue; }
+      const op = Math.max(0, Math.min(1, l.opacity == null ? 1 : l.opacity));
+      for (let y = 0; y < lr.h; y++) {
+        let s = ((lr.y - l.rect.y + y) * raw.width + (lr.x - l.rect.x)) * 4 + 3, d = (lr.y + y) * W + lr.x;
+        for (let x = 0; x < lr.w; x++, s += 4, d++) {
+          const a = raw.data[s] * op;
+          if (a) u[d] = 255 - (((255 - u[d]) * (255 - a)) / 255) | 0;
+        }
+      }
+    }
+    fxUpload(gl, up.U, W, { x: 0, y: 0, w: W, h: H }, u);
+    return up;
+  }
+  // 긋는 중인 획: Magma의 user.surface에서 바뀐 부분을 읽어 base와 합친다
+  function fxApplySurface(E, gl, st, L, region) {
+    const s = E.model.user.surface;
+    const rect = rclip(region, st.W, st.H);
+    if (!rect) return null;
+    const rgba = new Uint8Array(rect.w * rect.h * 4);
+    try {
+      const raw = E.renderer.getLayerRawData({ texture: s.texture, rect, textureX: s.textureX || 0, textureY: s.textureY || 0 }); // 읽기 전용
+      rgba.set(raw.data.subarray(0, rgba.length));
+    } catch { return null; }
+    const tool = E.model.user.activeTool;
+    const erase = (tool && tool.id === 3) || s.mode === 2;
+    const replace = !!(tool && tool.moveLayerToSurface);
+    const op = s.opacity == null ? 1 : s.opacity;
+    const out = new Uint8Array(rect.w * rect.h);
+    const W = st.W;
+    for (let y = 0; y < rect.h; y++) {
+      for (let x = 0; x < rect.w; x++) {
+        const i = y * rect.w + x, a = rgba[i * 4 + 3] * op, b = st.base[(rect.y + y) * W + rect.x + x];
+        out[i] = replace ? a : erase ? (b * (255 - a)) / 255 : Math.max(b, a);
+      }
+    }
+    fxUpload(gl, st.A, rect.w, { x: 0, y: 0, w: rect.w, h: rect.h }, out, rect.x, rect.y);
+    return rect;
+  }
+  function fxKick() { if (!FX.raf) FX.raf = requestAnimationFrame(fxFrame); FX.lastXf = ''; }
+  function fxStop() {
+    cancelAnimationFrame(FX.raf); FX.raf = 0;
+    if (FX.cv) { const gl = FX.gl; if (gl && !FX.lost) { gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); } FX.cv.style.display = 'none'; }
+  }
+  function fxFrame() {
+    FX.raf = 0;
+    try { fxStep(); } catch (e) { console.warn('[MagmaWand] 레이어 스트로크', e); FX.lastErr = String(e); }
+  }
+  function fxStep() {
+    const board = boardId();
+    const cfgs = board ? (fxAll()[board] || {}) : {};
+    const on = Object.entries(cfgs).filter(([, c]) => c && c.on);
+    if (!on.length) { fxStop(); return; }
+    const E = getEditor(), canvas = getCanvas();
+    if (!E || !canvas || FX.lost) { FX.raf = requestAnimationFrame(fxFrame); return; }
+    const d = E.drawing, cv = E.computedView;
+    if (!d || !cv || !cv.inverseTransform || !(d.w > 0)) { FX.raf = requestAnimationFrame(fxFrame); return; }
+    const W = d.w, H = d.h;
+    if (W * H > 36e6) { fxStop(); toast('보드가 너무 커서 레이어 스트로크를 쓸 수 없어요'); return; }
+    if (FX.board !== board) { FX.board = board; for (const st of FX.layers.values()) st.ready = false; if (FX.upper) FX.upper.sig = null; }
+    const gl = fxEnsureGL(canvas);
+    FX.cv.style.display = '';
+    const now = performance.now();
+    const doCheck = now - FX.lastCheck > 500;
+    if (doCheck) FX.lastCheck = now;
+    let changed = false;
+    const surf = E.model.user.surface;
+    const drawing = !!(E.drawingInProgress && surf && surf.texture && surf.layer);
+    const targets = [];
+    for (const [uid, cfg] of on) {
+      const idx = d.layers.findIndex((l) => (l.uid || 'id' + l.id) === uid);
+      if (idx < 0) continue;
+      const L = d.layers[idx];
+      const st = fxLayerState(gl, uid, W, H);
+      const R = Math.min(FX_MAXR, Math.ceil(cfg.width + (cfg.blur || 0) + 2));
+      const sig = (L.rect ? `${L.rect.x},${L.rect.y},${L.rect.w},${L.rect.h}` : '0') + ':' + (L.thumbData && L.thumbData.data ? hash32(L.thumbData.data) : '');
+      const live = drawing && surf.layer === L;
+      if (!st.ready || st.R < R) {
+        fxReadLayer(E, L, st, null);
+        fxUpload(gl, st.A, W, { x: 0, y: 0, w: W, h: H }, st.base);
+        fxJfa(gl, st, { x: 0, y: 0, w: W, h: H }, R);
+        st.ready = true; st.R = R; st.sig = sig; changed = true;
+      } else if (live) {
+        // 긋는 중: 지금까지 그은 범위(surface.rect)를 읽는다. 아주 크면(200만 픽셀 넘음) 두 프레임에 한 번
+        const region = surf.rect;
+        st.liveTick = (st.liveTick || 0) + 1;
+        if (region && region.w * region.h > 2e6 && st.liveTick % 2) { targets.push({ L, idx, st, cfg }); continue; }
+        st.liveStarted = true;
+        st.liveRect = runion(st.liveRect, rclip(surf.rect, W, H));
+        const r = fxApplySurface(E, gl, st, L, region);
+        if (r) { fxJfa(gl, st, r, R); changed = true; }
+      } else if (st.liveRect) {
+        // 획이 끝남: 레이어에 들어간 결과로 그 부분만 다시 읽는다
+        const r = rclip(rgrow(st.liveRect, 2), W, H);
+        st.liveRect = null; st.liveStarted = false; st.lastPt = null;
+        if (r) { fxReadLayer(E, L, st, r); fxUpload(gl, st.A, W, r, st.base); fxJfa(gl, st, r, R); changed = true; }
+        st.sig = null; // 다음 확인 때 썸네일 기준을 새로 잡음
+      } else if (doCheck && sig !== st.sig) {
+        if (st.sig !== null) { // 다른 사람이 그렸거나 되돌리기 등 → 전체 다시
+          fxReadLayer(E, L, st, null);
+          fxUpload(gl, st.A, W, { x: 0, y: 0, w: W, h: H }, st.base);
+          fxJfa(gl, st, { x: 0, y: 0, w: W, h: H }, R);
+          changed = true;
+        }
+        st.sig = sig;
+      }
+      targets.push({ L, idx, st, cfg });
+    }
+    if (!targets.length) { fxStop(); return; }
+    targets.sort((a, b) => b.idx - a.idx); // 아래 레이어부터
+    // 위 레이어 가림 (가장 아래 대상 기준 한 장 — 여러 레이어면 각자 다시 계산)
+    const xf = cv.inverseTransform.join(',') + '|' + FX.cv.width + 'x' + FX.cv.height;
+    if (doCheck || changed || xf !== FX.lastXf || targets.length > 1) {
+      FX.lastXf = xf;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, FX.cv.width, FX.cv.height);
+      gl.disable(gl.SCISSOR_TEST);
+      gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      const rect = canvas.getBoundingClientRect();
+      const k = canvas.width / (rect.width || canvas.width);
+      const m = cv.inverseTransform; // 화면(CSS px) → 보드
+      // 버퍼 px → CSS px(÷k) → 보드
+      const i0 = [m[0] / k, m[2] / k, m[4]], i1 = [m[1] / k, m[3] / k, m[5]];
+      const P = FX.prog.draw;
+      gl.useProgram(P.p); gl.bindVertexArray(FX.vao);
+      for (const t of targets) {
+        const L = t.L, cfg = t.cfg;
+        if (L.visible === false) continue;
+        const up = fxUpdateUpper(E, gl, W, H, t.idx, false);
+        const cm = /^#?([0-9a-f]{6})$/i.exec(cfg.color || ''), col = cm ? parseInt(cm[1], 16) : 0xffffff;
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, t.st.S0);
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, t.st.A);
+        gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, up.U);
+        gl.uniform1i(P.u.uS, 0); gl.uniform1i(P.u.uA, 1); gl.uniform1i(P.u.uU, 2);
+        gl.uniform3f(P.u.uInv0, i0[0], i0[1], i0[2]); gl.uniform3f(P.u.uInv1, i1[0], i1[1], i1[2]);
+        gl.uniform1f(P.u.uH, FX.cv.height); gl.uniform2f(P.u.uDoc, W, H);
+        gl.uniform4f(P.u.uColor, ((col >> 16) & 255) / 255, ((col >> 8) & 255) / 255, (col & 255) / 255, 1);
+        gl.uniform1f(P.u.uW, Math.max(0, cfg.width)); gl.uniform1f(P.u.uB, Math.max(0, cfg.blur || 0));
+        gl.uniform1f(P.u.uAA, cfg.aa === false ? 0 : 1);
+        gl.uniform1f(P.u.uOp, L.opacity == null ? 1 : L.opacity); gl.uniform1f(P.u.uUseU, t.idx > 0 ? 1 : 0);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+      gl.activeTexture(gl.TEXTURE0);
+    }
+    FX.raf = requestAnimationFrame(fxFrame);
+  }
+  cleanups.push(() => { cancelAnimationFrame(FX.raf); FX.raf = 0; FX.cv?.remove(); FX.cv = null; });
+
+  // 설정 창 (Edit → 레이어 스트로크)
+  function openStrokeDialog() {
+    document.querySelector('.mw-dialog-wrap')?.remove();
+    const E = getEditor(), board = boardId();
+    const L = E && E.model.user.activeLayers && E.model.user.activeLayers[0];
+    if (!E || !board || !L) { toast('레이어를 고른 뒤 다시 열어 주세요'); return; }
+    const uid = L.uid || 'id' + L.id;
+    const cfg = Object.assign({ on: true, color: '#ffffff', width: 4, aa: true, blur: 0 }, fxGet(board, uid) || {});
+    const wrap = document.createElement('div');
+    wrap.className = 'mw-dialog-wrap mw-el';
+    wrap.innerHTML = `
+      <div class="mw-dialog mw-fxdlg" role="dialog">
+        <div class="mw-dialog-title">레이어 스트로크 <span class="mw-hist-sub">내 화면에만 보여요</span></div>
+        <div class="mw-hist-help"><b class="mw-fx-name"></b> 레이어 둘레에 테두리를 그려요(클립 스튜디오의 경계 효과).
+          보드에는 평범한 레이어 그대로라 다른 사람에게는 안 보이고, 그리는 동안에도 바로 따라와요.</div>
+        <label class="mw-dialog-row"><span>켜기</span><input type="checkbox" class="mw-fx-on"></label>
+        <label class="mw-dialog-row"><span>색</span><input type="color" class="mw-fx-color"></label>
+        <label class="mw-dialog-row"><span>두께 (px)</span><span><input type="range" min="1" max="100" class="mw-fx-w"> <input type="number" min="1" max="100" class="mw-dialog-input mw-fx-wn"></span></label>
+        <label class="mw-dialog-row"><span>안티에일리어싱</span><input type="checkbox" class="mw-fx-aa"></label>
+        <label class="mw-dialog-row"><span>흐리기 (px)</span><span><input type="range" min="0" max="20" step="0.5" class="mw-fx-b"> <input type="number" min="0" max="20" step="0.5" class="mw-dialog-input mw-fx-bn"></span></label>
+        <div class="mw-dialog-btns"><button type="button" class="md btn secondary mw-fx-del">지우기</button><button type="button" class="ml-2 md btn primary mw-ok">닫기</button></div>
+      </div>`;
+    document.body.appendChild(wrap);
+    const q = (s) => wrap.querySelector(s);
+    q('.mw-fx-name').textContent = L.name || '';
+    q('.mw-fx-on').checked = cfg.on; q('.mw-fx-color').value = cfg.color; q('.mw-fx-aa').checked = cfg.aa !== false;
+    q('.mw-fx-w').value = q('.mw-fx-wn').value = cfg.width; q('.mw-fx-b').value = q('.mw-fx-bn').value = cfg.blur;
+    const save = () => {
+      const w = Math.min(100, Math.max(1, +q('.mw-fx-wn').value || 1)), b = Math.min(20, Math.max(0, +q('.mw-fx-bn').value || 0));
+      Object.assign(cfg, { on: q('.mw-fx-on').checked, color: q('.mw-fx-color').value, width: w, aa: q('.mw-fx-aa').checked, blur: b });
+      fxSet(board, uid, cfg);
+    };
+    const pair = (a, b) => {
+      q(a).addEventListener('input', () => { q(b).value = q(a).value; save(); });
+      q(b).addEventListener('input', () => { q(a).value = q(b).value; save(); });
+    };
+    pair('.mw-fx-w', '.mw-fx-wn'); pair('.mw-fx-b', '.mw-fx-bn');
+    for (const s of ['.mw-fx-on', '.mw-fx-color', '.mw-fx-aa']) q(s).addEventListener('input', save);
+    const close = () => wrap.remove();
+    wrap.addEventListener('pointerdown', (e) => { e.stopPropagation(); if (e.target === wrap) close(); });
+    wrap.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Escape' || e.key === 'Enter') close(); });
+    q('.mw-ok').addEventListener('click', close);
+    q('.mw-fx-del').addEventListener('click', () => { fxSet(board, uid, null); close(); toast(`"${L.name}" 레이어 스트로크를 지웠어요`); });
+    save();
+  }
+  // 보드를 열면(다시 들어와도) 저장된 스트로크를 이어서 보여 준다
+  setTimeout(fxKick, 1500);
+
   // ---------- 화면: 도구 막대 버튼 + 오른쪽 설정 칸 ----------
   const WAND_SVG = '<path fill="currentColor" d="M40 420 300 160l52 52L92 472z"/>' +
     '<path fill="currentColor" d="M400 20l28 64 64 28-64 28-28 64-28-64-64-28 64-28z"/>' +
@@ -2640,6 +3071,10 @@
     .mw-size-label { position: fixed; z-index: 2147482001; pointer-events: none; display: none; background: rgba(20,20,22,.85);
       color: #fff; font: 12px/1.3 system-ui, 'Malgun Gothic', sans-serif; padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
     .mw-hist { width: min(640px, 94vw); }
+    .mw-fxdlg { width: min(400px, 94vw); }
+    .mw-fxdlg input[type=range] { width: 130px; vertical-align: middle; }
+    .mw-fxdlg .mw-dialog-row { margin-bottom: 10px; }
+    .mw-fxdlg .mw-dialog-input { width: 64px; }
     .mw-hist-sub { font-size: 12px; font-weight: 400; color: #9a9a9a; margin-left: 6px; }
     .mw-hist-help { font-size: 12.5px; color: #c8c8c8; margin: -4px 0 12px; }
     .mw-hist-list { max-height: 52vh; overflow-y: auto; border: 1px solid #3a3a3a; border-radius: 4px; background: #1b1b1b; }
@@ -2982,6 +3417,7 @@
     getBrushMode, setBrushMode, getAutoErase, setAutoErase, layerRows, personalState, soloCurrentLayer, restoreLayers,
     edtSq, growShrinkMask, maskToSinglePolygon, viewTransform, copyMergedSelection, growShrinkSelection, openGrowDialog,
     getEditor, ensureEditor, docContext, docImage, exactPath, withSpikes, magmaKeep, rasterPath, straightLoop,
-    histCheck, histPoints, histCopyLayer, openHistoryDialog, histUsage, getBrushSize, sizeRow, getAA, setAA, docToBuffer, selectionExists };
+    histCheck, histPoints, histCopyLayer, openHistoryDialog, histUsage, getBrushSize, sizeRow,
+    openStrokeDialog, fxSet, fxGet, fxKick, fxState: () => FX, getAA, setAA, docToBuffer, selectionExists };
   window.__magmaWand.ready = true; // 끝까지 시작됨 (실행기는 이 표시가 없으면 다시 넣는다)
 })();
