@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.10.0';
+  const VERSION = '0.11.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -23,6 +23,7 @@
 
   // 나중에 깨끗하게 걷어낼 수 있도록 등록한 것들을 모아 둔다
   const cleanups = [];
+  let destroyed = false; // 새 버전으로 바뀐 뒤에는 화면 요소를 다시 만들지 않음
   function on(target, type, fn, opts) {
     target.addEventListener(type, fn, opts);
     cleanups.push(() => target.removeEventListener(type, fn, opts));
@@ -36,13 +37,15 @@
   // contig: true = 이어진 영역만, false = 보드 전체에서 같은 색 모두 (CSP·포토샵의 '인접'/'연속' 옵션)
   const DEFAULTS = { tol: 10, expand: 1, action: 'select', ref: 'all', keys: ['KeyW'], contig: true, histOn: true,
     tool: 'wand', brush: 20, qtol: 12, qexpand: 1, qref: 'all', qkeys: ['Shift+KeyW'],
-    bkeys: ['Shift+KeyB'], advBrushId: null, advOpacity: 100, advSize: 10 };
+    bkeys: ['Shift+KeyB'], akeys: ['KeyC'], advBrushId: null, advOpacity: 100, advSize: 10 };
   const S = Object.assign({}, DEFAULTS, loadSettings(), { active: false, busy: false, switching: false });
   if (!['select', 'fill'].includes(S.action)) S.action = 'select';
   if (!['all', 'layer'].includes(S.ref)) S.ref = 'all';
   if (!['all', 'layer'].includes(S.qref)) S.qref = 'all';
   if (!['wand', 'quick', 'brush'].includes(S.tool)) S.tool = 'wand';
   if (!Array.isArray(S.bkeys)) S.bkeys = DEFAULTS.bkeys.slice();
+  if (!Array.isArray(S.akeys)) S.akeys = DEFAULTS.akeys.slice();
+  S.alpha = false; // 투명색은 켤 때마다 새로 (저장하지 않음)
   if (!Array.isArray(S.qkeys)) S.qkeys = DEFAULTS.qkeys.slice();
   if (typeof S.contig !== 'boolean') S.contig = true;
 
@@ -55,9 +58,9 @@
   }
   function saveSettings() {
     try {
-      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, advBrushId, advOpacity } = S;
+      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity } = S;
       localStorage.setItem('magmaWand.settings',
-        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, advBrushId, advOpacity }));
+        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity }));
     } catch { /* 저장 못 해도 동작에는 지장 없음 */ }
   }
 
@@ -451,6 +454,12 @@
     return getEditor();
   }
 
+  // 편집기를 잡느라 도구가 바뀌었으면 원래 도구로 되돌린다 (마법봉 도구 밖에서 쓸 때)
+  async function editorKeepTool() {
+    const t = currentTool(), sw = S.switching;
+    S.switching = true;
+    try { const E = await ensureEditor(); if (t && currentTool() !== t) await selectTool(t); return E; } finally { S.switching = sw; }
+  }
   // 보드 좌표 ↔ 화면 좌표. 회전·뒤집기 상태거나 주소(#v)의 값과 어긋나면 null (그때는 예전 화면 기준 방식)
   const MAX_DOC_PX = 50e6;
   function docContext(canvas) {
@@ -1647,6 +1656,8 @@
   }
   // 마법봉 입력 처리보다 먼저 받도록 맨 앞에 등록 (window 캡처 단계, 등록 순서대로 실행)
   for (const t of SIZE_EVENTS) on(window, t, onSizeGesture, true);
+  // Ctrl+Shift 클릭 레이어 찾기도 마법봉 입력보다 먼저 (본문은 아래 '레이어 찾기')
+  for (const t of ['pointerdown', 'pointerup', 'pointercancel', 'mousedown', 'mouseup', 'click']) on(window, t, (e) => onPick(e), true);
   on(window, 'blur', () => { if (BSZ.on) sizeEnd({ clientX: BSZ.ox, clientY: BSZ.oy }, true); });
 
   // ---------- 고급 브러시 ① 클립 스튜디오 브러시(.sut) 읽기 ----------
@@ -2075,6 +2086,7 @@ void main(){
     if (d) h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; return [(h * 60 + 360) % 360, mx ? d / mx : 0, mx]; };
   const rgb = (h, s, v) => { const c = v * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = v - c; const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x]; return [r + m, g + m, b + m]; };
   function advColor() {
+    if (S.alpha) return [0.62, 0.62, 0.66]; // 투명색: 지울 자리를 회색으로 미리 보여 줌
     const E = getEditor();
     const n = E && Number.isFinite(E.primaryColor) ? E.primaryColor >>> 8 : 0;
     return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
@@ -2085,7 +2097,7 @@ void main(){
     if (!b) return false;
     // 설정 칸의 크기를 이 브러시 크기로 (바뀌었으면 저장)
     if (S.advSize > 0 && S.advSize !== b.size) { b.size = S.advSize; advSaveSoon(); }
-    const s = { pts: [], acc: 0, dist: 0, last: null, speed: 0, idx: 0, dir: 1, box: null, color: advColor(), v: 0, n: 0 };
+    const s = { pts: [], acc: 0, dist: 0, last: null, speed: 0, idx: 0, dir: 1, box: null, color: advColor(), erase: !!S.alpha, v: 0, n: 0 };
     s.hsv = hsv(...s.color);
     ADV.stroke = s;
     advAddPoint(e);
@@ -2286,6 +2298,10 @@ void main(){
     }
     const done = () => { clearTimeout(ADV.cTimer); ADV.cTimer = setTimeout(() => { if (ADV.cBox === box) { advClear(ADV.C, box); ADV.cBox = null; advKick(); } }, 260); };
     if (!any) { done(); return; }
+    if (s.erase) { // 투명색: 그 질감 그대로 지우기
+      ADV.commitQ = ADV.commitQ.then(() => advEraseCommit(px, box)).catch((e) => { console.warn('[MagmaWand] 지우기 실패', e); toast('지우지 못했어요: ' + (e && e.message || e)); }).finally(done);
+      return;
+    }
     ADV.commitQ = ADV.commitQ.then(async () => {
       try {
         const W = ADV.W, H = ADV.H;
@@ -2626,18 +2642,18 @@ void main(){
 
   // 설정 창의 단축키 표(Tools)에 '마법봉'·'빠른 선택' 줄을 Magma 줄과 같은 모양으로 넣는다.
   // 바꾼 내용은 설정 창의 Save를 눌러야 저장되고, Cancel·닫기면 버려진다 (Magma와 같은 방식)
-  const SC_ROWS = [{ key: 'keys', label: '마법봉 (Magic Wand)' }, { key: 'qkeys', label: '빠른 선택 (Quick Selection)' }, { key: 'bkeys', label: '고급 브러시 (CSP Brush)' }];
+  const SC_ROWS = [{ key: 'keys', label: '마법봉 (Magic Wand)' }, { key: 'qkeys', label: '빠른 선택 (Quick Selection)' }, { key: 'bkeys', label: '고급 브러시 (CSP Brush)' }, { key: 'akeys', label: '투명색 전환 (Transparent Color)' }];
   let scRows = {}, stagedAll = null, capturingKey = false, hookedModal = null;
   function ensureShortcutRow() {
     const modal = [...document.querySelectorAll('.modal-dialog')].find((m) => /Application settings/.test(m.textContent));
     if (!modal) { scRows = {}; stagedAll = null; capturingKey = false; hookedModal = null; return; }
-    if (stagedAll === null) stagedAll = { keys: S.keys.slice(), qkeys: S.qkeys.slice(), bkeys: S.bkeys.slice() };
+    if (stagedAll === null) stagedAll = { keys: S.keys.slice(), qkeys: S.qkeys.slice(), bkeys: S.bkeys.slice(), akeys: S.akeys.slice() };
     if (hookedModal !== modal) {
       hookedModal = modal;
       modal.addEventListener('click', (e) => {
         const b = e.target.closest && e.target.closest('button');
         if (b && b.textContent.trim() === 'Save' && stagedAll) {
-          S.keys = stagedAll.keys.slice(); S.qkeys = stagedAll.qkeys.slice(); S.bkeys = stagedAll.bkeys.slice(); saveSettings(); syncTooltip();
+          S.keys = stagedAll.keys.slice(); S.qkeys = stagedAll.qkeys.slice(); S.bkeys = stagedAll.bkeys.slice(); S.akeys = stagedAll.akeys.slice(); saveSettings(); syncTooltip();
         }
       }, true);
     }
@@ -2719,7 +2735,7 @@ void main(){
   const modalObserver = new MutationObserver(() => {
     if (modalObserver.pending) return;
     modalObserver.pending = true;
-    requestAnimationFrame(() => { modalObserver.pending = false; ensureShortcutRow(); ensureMenuItems(); });
+    requestAnimationFrame(() => { modalObserver.pending = false; ensureShortcutRow(); ensureMenuItems(); if (LP.on) ensureLayerProps(); });
   });
   // 페이지 본문이 생기기 전에 들어와도 멈추지 않도록 문서 전체를 지켜본다 (0.4.0 버그)
   modalObserver.observe(document.documentElement, { childList: true, subtree: true });
@@ -3141,7 +3157,7 @@ void main(){
       const a = make('선택 범위 확장…', GROW_SVG, true);
       const b = make('선택 범위 축소…', SHRINK_SVG, false);
       const h = make('작업 기록 (내 컴퓨터)…', HIST_SVG, false, () => openHistoryDialog());
-      const f = make('레이어 스트로크 (내 화면)…', FX_SVG, false, () => openStrokeDialog());
+      const f = make('레이어 속성 (내 화면)…', FX_SVG, false, () => lpShow(true));
       inv.after(a, b, h, f);
     }
   }
@@ -3877,6 +3893,515 @@ void main(){
   // 보드를 열면(다시 들어와도) 저장된 스트로크를 이어서 보여 준다
   setTimeout(fxKick, 1500);
 
+  // ---------- 투명색 (클립 스튜디오의 '투명색') ----------
+  // 색 견본 옆에 투명색 견본을 하나 두고, C 키(설정에서 바꿀 수 있음)로 '지금 색 ↔ 투명색'을 바꾼다.
+  //  - 투명색일 때 Magma 브러시·연필 → Magma 지우개로 자동 전환(끄면 원래 도구로). 내 쪽만 지우기 모드로 바꾸면
+  //    다른 사람 화면에서는 그리기로 보여 보드가 어긋나므로, Magma 자체 지우개 도구를 쓴다.
+  //  - 고급 브러시 → 그 질감 그대로 지운다: 손을 떼면 (1) 지운 부분이 든 사각형을 올가미 채우기 '지우기'로 비우고
+  //    (2) 미리 계산한 결과(원래 그림 × (1 − 획))를 붙여넣는다. Magma 동작 2번(되돌리기 2칸).
+  const ALPHA = { el: null, prevTool: null, switching: false };
+  function ensureAlphaSwatch() {
+    if (destroyed) return;
+    const sw = document.querySelector('svg.icon-switchColorsIcon');
+    const area = sw && sw.closest('div');
+    let prim = null;
+    if (area) for (let p = area; p && !prim; p = p.parentElement) {
+      prim = [...p.querySelectorAll('div')].filter((d) => { const r = d.getBoundingClientRect(); return r.width >= 14 && r.width <= 30 && Math.abs(r.width - r.height) < 2 && !d.querySelector('*') && !d.classList.contains('mw-alpha'); })
+        .sort((x, y) => x.getBoundingClientRect().left - y.getBoundingClientRect().left || x.getBoundingClientRect().top - y.getBoundingClientRect().top)[0] || null; // 맨 왼쪽 위 = 주 색
+      if (p.tagName === 'EDITOR-SLIDERS' || p === document.body) break;
+    }
+    if (!prim) { ALPHA.el?.remove(); ALPHA.el = null; return; }
+    if (!ALPHA.el || !ALPHA.el.isConnected) {
+      ALPHA.el = document.createElement('div');
+      ALPHA.el.className = 'mw-alpha mw-el';
+      ALPHA.el.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); setAlpha(!S.alpha); });
+      document.body.appendChild(ALPHA.el);
+    }
+    const r = prim.getBoundingClientRect();
+    Object.assign(ALPHA.el.style, { left: r.left + 'px', top: (r.top + 44) + 'px' });
+    ALPHA.el.classList.toggle('on', !!S.alpha);
+    ALPHA.el.title = (S.alpha ? '투명색 사용 중' : '투명색') + ` (${(S.akeys || []).map(comboText).join(', ') || '단축키 없음'}) — 누르면 지금 색과 바꿔요`;
+    document.documentElement.classList.toggle('mw-alpha-on', !!S.alpha);
+  }
+  const ERASE_FROM = new Set(['faPaintBrush', 'faPencil']);
+  async function setAlpha(on) {
+    S.alpha = !!on;
+    { const E = getEditor(); ALPHA.color = S.alpha && E ? E.primaryColor : undefined; }
+    ensureAlphaSwatch();
+    if (S.alpha) { status('투명색: 그리면 지워져요'); await alphaSyncTool(); }
+    else if (ALPHA.prevTool && currentTool() === 'faEraser' && !S.active) {
+      const t = ALPHA.prevTool; ALPHA.prevTool = null;
+      ALPHA.switching = true; try { await selectTool(t); } finally { ALPHA.switching = false; }
+    } else ALPHA.prevTool = null;
+    toast(S.alpha ? '투명색 — 브러시가 지우개가 돼요' : '원래 색으로 돌아왔어요');
+  }
+  // 투명색일 때 Magma 브러시·연필을 고르면 지우개로 바꿔 둔다
+  async function alphaSyncTool() {
+    if (!S.alpha || S.active || ALPHA.switching || S.busy) return;
+    const t = currentTool();
+    if (ERASE_FROM.has(t)) {
+      ALPHA.prevTool = t;
+      ALPHA.switching = true; try { await selectTool('faEraser'); } finally { ALPHA.switching = false; }
+    }
+  }
+  // 고급 브러시 투명색 지우기 확정: maskPx = 획 알파(box 크기 RGBA), 결과 = 원래 그림 × (1 − 획 알파)
+  async function advEraseCommit(maskPx, box) {
+    const E = getEditor(), canvas = getCanvas();
+    const L = E && E.model.user.activeLayers && E.model.user.activeLayers[0];
+    if (!E || !canvas || !L) return;
+    if (L.opacityLocked) { toast('투명 부분 잠금이 켜진 레이어라 지울 수 없어요'); return; }
+    if (selectionExists()) { toast('선택 영역이 있으면 고급 브러시로 지울 수 없어요 — 선택을 풀고 다시 해 주세요'); return; }
+    // 바로 앞 획(붙여넣기)은 Magma 안에서 아직 '떠 있는' 상태라 레이어에 안 들어가 있다 → 둘을 겹쳐 읽는다.
+    // (Magma는 다음 동작을 할 때 떠 있는 그림을 레이어에 넣는다 — 실측)
+    const s = E.model.user.surface;
+    const floating = s && s.toolId === 4 && s.layer === L && s.texture && s.rect && s.rect.w > 0 && !s.transforming &&
+      !s.translateX && !s.translateY && !s.rotate && s.scaleX === 1 && s.scaleY === 1 ? s : null;
+    const srcs = [];
+    if (L.texture && L.rect && L.rect.w > 0) srcs.push({ obj: L, r: L.rect });
+    if (floating) srcs.push({ obj: { texture: floating.texture, rect: floating.rect, textureX: floating.textureX, textureY: floating.textureY }, r: floating.rect });
+    if (!srcs.length) return; // 지울 그림이 없음
+    const isect = (p, q) => rclip({ x: Math.max(p.x, q.x), y: Math.max(p.y, q.y), w: Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x), h: Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y) }, E.drawing.w, E.drawing.h);
+    const ir = isect(rgrow(box, 2), srcs.map((x) => x.r).reduce((p, q) => runion(p, q)));
+    if (!ir) return;
+    // 읽기 전용: 레이어 위에 떠 있는 그림을 일반 합성(source-over)으로 겹친다
+    const out = new Uint8ClampedArray(ir.w * ir.h * 4);
+    for (const src of srcs) {
+      const sr = isect(ir, src.r);
+      if (!sr) continue;
+      const d = E.renderer.getLayerImageData(src.obj, sr).data;
+      for (let y = 0; y < sr.h; y++) for (let x = 0; x < sr.w; x++) {
+        const j = (y * sr.w + x) * 4, sa = d[j + 3];
+        if (!sa) continue;
+        const i = ((sr.y - ir.y + y) * ir.w + (sr.x - ir.x + x)) * 4, da = out[i + 3];
+        if (sa === 255 || !da) { out[i] = d[j]; out[i + 1] = d[j + 1]; out[i + 2] = d[j + 2]; out[i + 3] = sa; continue; }
+        const A = sa + da * (255 - sa) / 255;
+        for (let c = 0; c < 3; c++) out[i + c] = Math.round((d[j + c] * sa + out[i + c] * da * (255 - sa) / 255) / A);
+        out[i + 3] = Math.round(A);
+      }
+    }
+    let x0 = Infinity, y0 = Infinity, x1 = -1, y1 = -1;
+    for (let y = 0; y < ir.h; y++) for (let x = 0; x < ir.w; x++) {
+      const i = (y * ir.w + x) * 4, a = out[i + 3];
+      if (!a) continue;
+      const bx = ir.x - box.x + x, by = ir.y - box.y + y;
+      const m = bx >= 0 && by >= 0 && bx < box.w && by < box.h ? maskPx[(by * box.w + bx) * 4 + 3] / 255 : 0;
+      if (m <= 0.002) continue;
+      out[i + 3] = Math.round(a * (1 - m));
+      if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y;
+    }
+    if (x1 < 0) return; // 겹치는 그림 없음
+    // 지울 사각형: 바뀐 곳 + 1픽셀 여유 (너무 작으면 Magma 올가미가 점을 버리므로)
+    const er = rclip({ x: ir.x + x0 - 1, y: ir.y + y0 - 1, w: x1 - x0 + 3, h: y1 - y0 + 3 }, E.drawing.w, E.drawing.h);
+    const ex = Math.max(er.x, ir.x), ey = Math.max(er.y, ir.y), ew = Math.min(er.x + er.w, ir.x + ir.w) - ex, eh = Math.min(er.y + er.h, ir.y + ir.h) - ey;
+    // 붙일 그림(보드 크기 PNG)을 먼저 다 만든다 — 지운 뒤에 실패하는 일이 없게
+    const sub = new Uint8ClampedArray(ew * eh * 4);
+    for (let y = 0; y < eh; y++) { const o = ((ey - ir.y + y) * ir.w + (ex - ir.x)) * 4; sub.set(out.subarray(o, o + ew * 4), y * ew * 4); }
+    let keep = false; for (let i = 3; i < sub.length; i += 4) if (sub[i]) { keep = true; break; }
+    let blob = null;
+    if (keep) {
+      const oc = new OffscreenCanvas(E.drawing.w, E.drawing.h);
+      oc.getContext('2d').putImageData(new ImageData(sub, ew, eh), ex, ey);
+      blob = await oc.convertToBlob({ type: 'image/png' });
+    }
+    // (1) 사각형 비우기 — 올가미 채우기를 '지우기'로 잠깐 바꿨다가 되돌림
+    S.busy = true;
+    document.documentElement.classList.add('mw-busy');
+    const back = currentTool();
+    let prevMode = null, prevAuto = null, prevStab = null, prevOp = null, opRow = null, ok = false;
+    try {
+      const oldRow = stabilizerRow();
+      if (!(await selectTool('lassoBrushIcon'))) throw new Error('올가미 채우기 도구로 바꾸지 못했어요');
+      await waitPanelChange(oldRow);
+      opRow = magmaRows().find((r) => r.querySelector('.slider-label')?.textContent.trim() === 'Opacity');
+      prevOp = opRow ? parseFloat(opRow.querySelector('editable-number')?.textContent) : null;
+      if (prevOp !== null && prevOp !== 100) await setRowNumber(opRow, 100);
+      prevMode = getBrushMode(); prevAuto = getAutoErase();
+      await setBrushMode('erase');
+      if (prevAuto) await setAutoErase(false);
+      if (getBrushMode() !== 'erase') throw new Error('올가미 채우기를 지우기 모드로 바꾸지 못했어요');
+      prevStab = getStabilizer(); if (prevStab) await setStabilizer(0);
+      const rect = canvas.getBoundingClientRect(), k = canvas.width / rect.width, m = E.computedView.transform;
+      const toBuf = ([x, y]) => [(m[0] * x + m[2] * y + m[4]) * k, (m[1] * x + m[3] * y + m[5]) * k];
+      await drawLasso(canvas, [[ex, ey], [ex + ew, ey], [ex + ew, ey + eh], [ex, ey + eh]].map(toBuf), {});
+      ok = true;
+    } catch (err) {
+      console.warn('[MagmaWand] 투명색 지우기', err);
+      toast('지우지 못했어요: ' + (err && err.message || err));
+    } finally {
+      try {
+        if (prevStab) await setStabilizer(prevStab);
+        if (prevAuto) await setAutoErase(true);
+        if (prevMode && prevMode !== getBrushMode()) await setBrushMode(prevMode);
+        if (opRow && opRow.isConnected && prevOp !== null && prevOp !== 100) await setRowNumber(opRow, prevOp);
+        if (back && currentTool() !== back) await selectTool(back);
+      } catch (e) { console.warn('[MagmaWand] 복구 실패', e); }
+      S.busy = false;
+      document.documentElement.classList.remove('mw-busy');
+    }
+    if (!ok || !blob) return;
+    // (2) 지운 결과 붙이기
+    const dt = new DataTransfer();
+    dt.items.add(new File([blob], 'erase.png', { type: 'image/png' }));
+    document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  }
+
+  // ---------- 스포이트 미리보기 고리 (클립 스튜디오 방식) ----------
+  // 스포이트로 누르고 있는 동안 커서 둘레에 고리를 띄운다: 아래 반쪽 = 원래 색, 위 반쪽 = 지금 고르는 색(실시간).
+  // 색은 누른 순간 보드 전체 그림을 한 번 읽어 두고(읽기 전용) 그 안에서 찾는다. 색을 실제로 고르는 건 Magma가 한다.
+  const EYE = { el: null, snap: null, W: 0, H: 0, old: '#000', pid: null };
+  function eyeColorAt(cx, cy) {
+    const E = getEditor(), canvas = getCanvas();
+    if (!E || !EYE.snap) return null;
+    const m = E.computedView.inverseTransform, r = canvas.getBoundingClientRect();
+    const x = Math.floor(m[0] * (cx - r.left) + m[2] * (cy - r.top) + m[4]), y = Math.floor(m[1] * (cx - r.left) + m[3] * (cy - r.top) + m[5]);
+    if (x < 0 || y < 0 || x >= EYE.W || y >= EYE.H) return null;
+    const i = (y * EYE.W + x) * 4, d = EYE.snap;
+    return `rgba(${d[i]},${d[i + 1]},${d[i + 2]},${(d[i + 3] / 255).toFixed(3)})`;
+  }
+  function eyeRender(cx, cy) {
+    const now = eyeColorAt(cx, cy) || 'rgba(0,0,0,0)';
+    EYE.el.style.left = cx + 'px'; EYE.el.style.top = cy + 'px';
+    EYE.el.style.setProperty('--mw-now', now);
+  }
+  function eyeStart(e) {
+    const E = getEditor();
+    if (!E) return;
+    try { EYE.snap = E.renderer.getDrawingSnapshotAsBinary(E.drawing); EYE.W = E.drawing.w; EYE.H = E.drawing.h; } catch { EYE.snap = null; }
+    if (!EYE.snap) return;
+    const n = Number.isFinite(E.primaryColor) ? E.primaryColor >>> 8 : 0;
+    EYE.old = '#' + n.toString(16).padStart(6, '0');
+    if (!EYE.el) { EYE.el = document.createElement('div'); EYE.el.className = 'mw-eye mw-el'; }
+    document.body.appendChild(EYE.el);
+    EYE.el.style.setProperty('--mw-old', EYE.old);
+    EYE.pid = e.pointerId;
+    eyeRender(e.clientX, e.clientY);
+  }
+  function eyeEnd() { EYE.el?.remove(); EYE.snap = null; EYE.pid = null; }
+  on(window, 'pointerdown', (e) => {
+    if (!e.isTrusted || e.button !== 0 || S.active || e.target !== getCanvas()) return;
+    const E = getEditor();
+    const tool = currentTool();
+    const holdAlt = e.altKey && !e.ctrlKey && E && E.isAltPressed;
+    if (tool === 'fa6Eyedropper' || holdAlt) eyeStart(e);
+  }, { capture: true, passive: true });
+  on(window, 'pointermove', (e) => { if (EYE.pid !== null && e.pointerId === EYE.pid && EYE.el) eyeRender(e.clientX, e.clientY); }, { capture: true, passive: true });
+  for (const t of ['pointerup', 'pointercancel']) on(window, t, (e) => { if (EYE.pid !== null && e.pointerId === EYE.pid) eyeEnd(); }, { capture: true, passive: true });
+  on(window, 'blur', eyeEnd);
+
+  // ---------- Ctrl+Shift 클릭: 누른 곳의 그림이 있는 레이어 찾기 (클립 스튜디오 방식) ----------
+  // 맨 위 레이어부터 그 점에 그림(투명하지 않은 픽셀)이 있는 첫 레이어를 찾는다. 내 레이어면 바로 고르고,
+  // 다른 사람 레이어면 레이어 목록을 그 줄까지 굴려 반짝 표시만 한다.
+  const PICK = { block: false };
+  function pickLayerAt(cx, cy) {
+    const E = getEditor(), canvas = getCanvas();
+    if (!E || !canvas) return null;
+    const m = E.computedView.inverseTransform, r = canvas.getBoundingClientRect();
+    const x = Math.floor(m[0] * (cx - r.left) + m[2] * (cy - r.top) + m[4]), y = Math.floor(m[1] * (cx - r.left) + m[3] * (cy - r.top) + m[5]);
+    const layers = E.drawing.layers;
+    for (let i = 0; i < layers.length; i++) {
+      const L = layers[i], lr = L.rect;
+      if (L.visible === false || L.visibleLocally === false || !L.texture || !lr || !(lr.w > 0)) continue;
+      if (L.opacity === 0) continue;
+      if (x < lr.x || y < lr.y || x >= lr.x + lr.w || y >= lr.y + lr.h) continue;
+      try { const d = E.renderer.getLayerImageData(L, { x, y, w: 1, h: 1 }).data; if (d[3] > 0) return { L, index: i }; } catch { }
+    }
+    return null;
+  }
+  async function revealLayer(hit) {
+    const E = getEditor();
+    const rows = () => [...document.querySelectorAll('.layer')];
+    const any = rows()[0];
+    if (!any) return null;
+    let sc = any; while (sc && !(sc.scrollHeight > sc.clientHeight + 2 && /(auto|scroll)/.test(getComputedStyle(sc).overflowY))) sc = sc.parentElement;
+    const rowH = any.getBoundingClientRect().height || 45;
+    if (sc) { sc.scrollTop = Math.max(0, hit.index * rowH - (sc.clientHeight - rowH) / 2); await nextFrame(); await nextFrame(); }
+    const name = (hit.L.name || '').trim();
+    const cand = rows().filter((r) => (r.textContent || '').includes(name));
+    if (!cand.length) return null;
+    // 같은 이름이 여럿이면 기대 위치에 가장 가까운 줄
+    const scTop = sc ? sc.getBoundingClientRect().top - sc.scrollTop : 0;
+    cand.sort((a, b) => Math.abs(a.getBoundingClientRect().top - scTop - hit.index * rowH) - Math.abs(b.getBoundingClientRect().top - scTop - hit.index * rowH));
+    return cand[0];
+  }
+  // 레이어 줄 위에 반짝이는 테두리를 따로 띄운다 (Magma가 줄을 다시 그려도 지워지지 않게, 이름으로 줄을 다시 찾음)
+  function flashRow(row, L) {
+    document.querySelector('.mw-flashbox')?.remove();
+    const box = document.createElement('div');
+    box.className = 'mw-flashbox mw-el';
+    document.body.appendChild(box);
+    const t0 = performance.now();
+    const step = () => {
+      if (!box.isConnected) return;
+      if (!row.isConnected) row = [...document.querySelectorAll('.layer')].find((r) => (r.textContent || '').includes((L.name || '').trim())) || row;
+      const r = row.getBoundingClientRect();
+      Object.assign(box.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px', display: r.height ? 'block' : 'none' });
+      if (performance.now() - t0 < 1600) requestAnimationFrame(step); else box.remove();
+    };
+    step();
+  }
+  async function pickLayer(cx, cy) {
+    if (!getEditor()) await editorKeepTool();
+    const hit = pickLayerAt(cx, cy);
+    if (!hit) { toast('여기에는 그림이 있는 레이어가 없어요'); return; }
+    const E = getEditor(), u = E.model.user, L = hit.L;
+    const mine = L.owner === u || (Array.isArray(u.ownedLayers) && u.ownedLayers.includes(L.id));
+    const row = await revealLayer(hit);
+    if (row) {
+      if (mine && !row.classList.contains('on')) press(row.querySelector('.layer-content') || row);
+      await nextFrame();
+      flashRow(row, hit.L);
+    }
+    toast(`"${L.name}" 레이어` + (mine ? '를 골랐어요' : ' — 다른 사람 레이어예요'));
+  }
+  // 마법봉 입력 처리·Magma보다 먼저 (window 캡처, 앞쪽에 등록)
+  const PICK_EVENTS = ['pointerdown', 'pointerup', 'pointercancel', 'mousedown', 'mouseup', 'click'];
+  function onPick(e) {
+    if (!e.isTrusted) return;
+    if (PICK.block) {
+      e.stopImmediatePropagation(); if (e.cancelable) e.preventDefault();
+      if (e.type === 'click' || e.type === 'pointerup' || e.type === 'pointercancel') { if (e.type !== 'pointerup') PICK.block = false; else setTimeout(() => { PICK.block = false; }, 300); }
+      return;
+    }
+    if (e.type !== 'pointerdown' || !e.ctrlKey || !e.shiftKey || e.altKey || e.button !== 0 || e.target !== getCanvas() || S.busy) return;
+    e.stopImmediatePropagation(); e.preventDefault();
+    PICK.block = true;
+    pickLayer(e.clientX, e.clientY).catch((err) => console.warn('[MagmaWand] 레이어 찾기', err));
+  }
+
+  // 투명색 단축키 (기본 C — Magma의 '댓글' 키를 대신함) · 색이 바뀌면 투명색 끄기 · 도구 맞추기
+  on(window, 'keydown', (e) => {
+    if (capturingKey || e.repeat || !e.isTrusted) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (!getCanvas() || document.querySelector('.modal-dialog')) return;
+    const c = comboOf(e);
+    if (!c || !(S.akeys || []).includes(c)) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    setAlpha(!S.alpha);
+  }, true);
+  function alphaTick() {
+    ensureAlphaSwatch();
+    if (!S.alpha) return;
+    const E = getEditor();
+    if (E && ALPHA.color !== undefined && E.primaryColor !== ALPHA.color) { setAlpha(false); return; } // 다른 색을 골랐음
+    alphaSyncTool();
+  }
+
+  // ---------- Alt+Delete: 선택 영역(없으면 보드 전체)을 지금 색으로 채우기 ----------
+  // Magma에는 같은 명령이 없어 새로 만든다. Magma 올가미 채우기는 선택 영역 밖으로 칠하지 않으므로(실측),
+  // 선택을 감싸는 사각형 하나를 긋는다 = Magma 동작 1번(되돌리기 1칸). 투명색이면 지운다.
+  // Alt를 누르고 있는 동안 Magma는 도구를 스포이트로 바꿔 두므로, Alt를 뗀 뒤에 실행한다.
+  let fillPending = false;
+  async function fillSelection() {
+    if (S.busy || fillPending) return;
+    const E = getEditor() || await editorKeepTool(), canvas = getCanvas();
+    const L = E && E.model.user.activeLayers && E.model.user.activeLayers[0];
+    if (!E || !canvas) return;
+    if (!L) { toast('채울 레이어를 먼저 골라 주세요'); return; }
+    fillPending = true;
+    try { await waitFor(() => !E.isAltPressed, 4000); } finally { fillPending = false; }
+    if (E.isAltPressed) { toast('Alt를 떼면 채워요 — 다시 눌러 주세요'); return; }
+    const erase = !!S.alpha;
+    const W = E.drawing.w, H = E.drawing.h;
+    const b = selectionExists() && E.model.user.selection && E.model.user.selection.bounds;
+    const r = b && b.w > 0 ? rclip(rgrow(b, 2), W, H) : { x: 0, y: 0, w: W, h: H };
+    const R = { x: r.x - 1, y: r.y - 1, w: r.w + 2, h: r.h + 2 }; // 테두리 픽셀까지 확실히 덮게 1픽셀 바깥
+    S.busy = true;
+    document.documentElement.classList.add('mw-busy');
+    const back = S.active ? 'lassoSelectionIcon' : (currentTool() === 'fa6Eyedropper' && plainTool ? plainTool : currentTool());
+    let prevMode = null, prevAuto = null, prevStab = null, prevOp = null, opRow = null;
+    try {
+      const oldRow = stabilizerRow();
+      if (!(await selectTool('lassoBrushIcon'))) throw new Error('올가미 채우기 도구로 바꾸지 못했어요');
+      await waitPanelChange(oldRow);
+      opRow = magmaRows().find((x) => x.querySelector('.slider-label')?.textContent.trim() === 'Opacity');
+      prevOp = opRow ? parseFloat(opRow.querySelector('editable-number')?.textContent) : null;
+      if (prevOp !== null && prevOp !== 100) await setRowNumber(opRow, 100);
+      prevMode = getBrushMode(); prevAuto = getAutoErase();
+      const want = erase ? 'erase' : 'draw';
+      await setBrushMode(want);
+      if (prevAuto) await setAutoErase(false);
+      if (getBrushMode() !== want || getAutoErase() === true) throw new Error('올가미 채우기 설정을 바꾸지 못했어요');
+      prevStab = getStabilizer(); if (prevStab) await setStabilizer(0);
+      const rect = canvas.getBoundingClientRect(), k = canvas.width / rect.width, m = E.computedView.transform;
+      const toBuf = ([x, y]) => [(m[0] * x + m[2] * y + m[4]) * k, (m[1] * x + m[3] * y + m[5]) * k];
+      await drawLasso(canvas, [[R.x, R.y], [R.x + R.w, R.y], [R.x + R.w, R.y + R.h], [R.x, R.y + R.h]].map(toBuf), {});
+      layerDirty = true;
+      toast(erase ? (b ? '선택 영역을 지웠어요' : '레이어 전체를 지웠어요') : (b ? '선택 영역을 채웠어요' : '보드 전체를 채웠어요'));
+    } catch (err) {
+      console.warn('[MagmaWand] 채우기', err);
+      toast('채우지 못했어요: ' + (err && err.message || err));
+    } finally {
+      try {
+        if (prevStab) await setStabilizer(prevStab);
+        if (prevAuto) await setAutoErase(true);
+        if (prevMode && prevMode !== getBrushMode()) await setBrushMode(prevMode);
+        if (opRow && opRow.isConnected && prevOp !== null && prevOp !== 100) await setRowNumber(opRow, prevOp);
+        if (back && currentTool() !== back) await selectTool(back);
+      } catch (e) { console.warn('[MagmaWand] 복구 실패', e); }
+      S.busy = false;
+      document.documentElement.classList.remove('mw-busy');
+    }
+  }
+  on(window, 'keydown', (e) => {
+    if (!e.isTrusted || e.repeat || capturingKey) return;
+    if (!(e.code === 'Delete' || e.code === 'Backspace') || !e.altKey || e.ctrlKey || e.shiftKey || e.metaKey) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (!getCanvas() || document.querySelector('.modal-dialog')) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    fillSelection();
+  }, true);
+
+  // ---------- 레이어 속성 칸 (클립 스튜디오의 레이어 속성 팔레트) ----------
+  // 브러시 목록(1~6번 칸) 끝의 작은 버튼으로, 그 아래 설정 칸 자리에 브러시 설정 대신 레이어 속성을 띄운다.
+  // 지금 들어 있는 속성: 경계 효과(테두리) — 내 화면에만 보이는 레이어 스트로크.
+  const LP = { on: false, btn: null, bar: null, panel: null, uid: null, tpl: null };
+  const LP_SVG = '<path fill="currentColor" d="M256 40 24 160l232 120 232-120zM68 248l-44 24 232 120 232-120-44-24-188 98zm0 112-44 24 232 120 232-120-44-24-188 98z"/>';
+  function lpShow(onNow) {
+    LP.on = !!onNow;
+    document.documentElement.classList.toggle('mw-lp', LP.on);
+    if (!LP.on) { LP.panel?.remove(); LP.panel = null; LP.uid = null; }
+    ensureLayerProps();
+  }
+  function ensureLayerProps() {
+    if (destroyed) return;
+    const sliders = document.querySelector('editor-sliders');
+    if (!sliders) { LP.btn?.remove(); LP.bar?.remove(); return; }
+    const tplSlider = sliders.querySelector('.tool-slider:not(.mw-el) .slider') && sliders.querySelector('.tool-slider:not(.mw-el) .slider').closest('.tool-slider');
+    if (tplSlider && !tplSlider.querySelector('.shape-wrapper') && tplSlider.querySelector('editable-number')) LP.tpl = tplSlider.cloneNode(true);
+    // 버튼: 브러시 목록이 있으면 그 끝에, 없으면 설정 칸 위 작은 줄에
+    const slots = sliders.previousElementSibling && sliders.previousElementSibling.tagName === 'EDITOR-SLOTS' ? sliders.previousElementSibling : null;
+    if (!LP.btn) {
+      LP.btn = document.createElement('button');
+      LP.btn.type = 'button';
+      LP.btn.className = 'btn-slot custom btn component-loud tgl mw-lp-btn';
+      LP.btn.innerHTML = `<svg class="svg-icon" viewBox="0 0 512 512" width="14" height="14">${LP_SVG}</svg>`;
+      LP.btn.title = '레이어 속성 — 브러시 설정 자리에 레이어 속성을 띄워요';
+      LP.btn.addEventListener('pointerdown', (e) => e.stopPropagation());
+      LP.btn.addEventListener('click', async (e) => { e.preventDefault(); e.stopPropagation(); if (!LP.on && !getEditor()) await editorKeepTool(); lpShow(!LP.on); });
+    }
+    if (slots) {
+      const sib = slots.querySelector('button.btn-slot:not(.mw-lp-btn)');
+      if (sib) for (const a of sib.getAttributeNames()) if (a.startsWith('_ngcontent') && !LP.btn.hasAttribute(a)) LP.btn.setAttribute(a, '');
+      if (LP.btn.parentElement !== slots || slots.lastElementChild !== LP.btn) slots.appendChild(LP.btn);
+      LP.bar?.remove(); LP.bar = null;
+      if (!slots.__mwLp) { // 브러시 칸을 누르면 브러시 설정으로 돌아간다
+        slots.__mwLp = true;
+        slots.addEventListener('pointerdown', (e) => { if (LP.on && e.target.closest('button.btn-slot:not(.mw-lp-btn)')) lpShow(false); }, true);
+      }
+    } else {
+      if (!LP.bar) { LP.bar = document.createElement('div'); LP.bar.className = 'mw-lp-bar mw-el'; }
+      if (LP.bar.nextElementSibling !== sliders) sliders.before(LP.bar);
+      if (LP.btn.parentElement !== LP.bar) LP.bar.appendChild(LP.btn);
+    }
+    LP.btn.classList.toggle('on', LP.on); LP.btn.classList.toggle('off', !LP.on);
+    if (!LP.on) return;
+    const E = getEditor(), L = E && E.model.user.activeLayers && E.model.user.activeLayers[0];
+    const uid = L ? (L.uid || 'id' + L.id) : null;
+    if (!LP.panel || !LP.panel.isConnected || LP.uid !== uid || LP.panel.parentElement !== sliders) {
+      LP.panel?.remove();
+      LP.panel = lpBuild(L, uid);
+      LP.uid = uid;
+      sliders.appendChild(LP.panel);
+    } else if (LP.panel.__name && L) LP.panel.__name.textContent = L.name || '';
+  }
+  function lpSlider(label, min, max, step, get, set) {
+    let row;
+    if (LP.tpl) {
+      row = LP.tpl.cloneNode(true);
+      row.classList.add('mw-el', 'mw-slider');
+      row.classList.remove('mw-hide');
+      const lab = row.querySelector('.slider-label'); lab.innerHTML = ''; lab.textContent = label;
+    } else {
+      row = document.createElement('div'); row.className = 'tool-slider mw-el mw-lp-row';
+      row.innerHTML = '<div class="slider-label"></div><input type="range" class="mw-lp-range"><span class="mw-lp-num"></span>';
+      row.querySelector('.slider-label').textContent = label;
+    }
+    const slider = row.querySelector('.slider'), thumb = row.querySelector('.slider-thumb');
+    const numBtn = row.querySelector('editable-number button') || row.querySelector('.mw-lp-num');
+    const inp = row.querySelector('editable-number input');
+    const range = row.querySelector('.mw-lp-range');
+    if (inp) inp.style.display = 'none';
+    const q = (v) => Math.min(max, Math.max(min, Math.round(v / step) * step));
+    const render = () => {
+      const v = get();
+      if (thumb) { thumb.style.width = ((v - min) / (max - min) * 100) + '%'; thumb.style.left = '0%'; }
+      if (numBtn) numBtn.textContent = String(+v.toFixed(2));
+      if (range) { range.min = min; range.max = max; range.step = step; range.value = v; }
+    };
+    const setV = (v) => { set(q(v)); render(); };
+    if (slider) {
+      const fromX = (x) => { const r = slider.getBoundingClientRect(); setV(min + (x - r.left) / r.width * (max - min)); };
+      slider.addEventListener('pointerdown', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        try { slider.setPointerCapture(e.pointerId); } catch { }
+        fromX(e.clientX);
+        const mv = (ev) => fromX(ev.clientX);
+        const up = () => { slider.removeEventListener('pointermove', mv); slider.removeEventListener('pointerup', up); };
+        slider.addEventListener('pointermove', mv); slider.addEventListener('pointerup', up);
+      });
+    }
+    if (range) range.addEventListener('input', () => setV(+range.value));
+    row.addEventListener('wheel', (e) => { e.preventDefault(); setV(get() + (e.deltaY < 0 ? step : -step)); }, { passive: false });
+    if (numBtn && inp) {
+      numBtn.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        numBtn.style.display = 'none'; inp.style.display = 'block'; inp.value = String(get()); inp.focus(); inp.select();
+      });
+      inp.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter' || e.key === 'Escape') inp.blur(); });
+      inp.addEventListener('blur', () => { const v = parseFloat(inp.value); if (Number.isFinite(v)) setV(v); inp.style.display = 'none'; numBtn.style.display = ''; });
+    }
+    render();
+    return row;
+  }
+  function lpBuild(L, uid) {
+    const p = document.createElement('div');
+    p.className = 'mw-lp-panel mw-el';
+    for (const t of ['keydown', 'keyup']) p.addEventListener(t, (e) => e.stopPropagation());
+    const head = document.createElement('div'); head.className = 'mw-lp-head';
+    head.innerHTML = '<span class="mw-lp-title">레이어 속성</span><span class="mw-lp-name"></span>';
+    p.appendChild(head);
+    p.__name = head.querySelector('.mw-lp-name');
+    const board = boardId();
+    if (!L || !board) { const n = document.createElement('div'); n.className = 'mw-status'; n.textContent = '레이어를 고르면 속성이 보여요'; p.appendChild(n); return p; }
+    p.__name.textContent = L.name || '';
+    const saved = fxGet(board, uid);
+    const cfg = Object.assign({ on: false, color: '#ffffff', width: 4, aa: true, blur: 0 }, saved || {});
+    let stored = !!saved;
+    const save = () => { if (cfg.on) stored = true; fxSet(board, uid, stored ? Object.assign({}, cfg) : null); sync(); };
+    const sec = (t) => { const d = document.createElement('div'); d.className = 'mw-lp-sec'; d.textContent = t; return d; };
+    // 효과: 경계 효과 켜기/끄기
+    const fxRow = document.createElement('div'); fxRow.className = 'mw-lp-line';
+    fxRow.innerHTML = '<span>경계 효과 (테두리)</span>';
+    const tog = document.createElement('button'); tog.type = 'button'; tog.className = 'sm btn mw-lp-tog';
+    tog.addEventListener('click', (e) => { e.preventDefault(); cfg.on = !cfg.on; save(); });
+    fxRow.appendChild(tog);
+    const body = document.createElement('div'); body.className = 'mw-lp-body';
+    const wRow = lpSlider('테두리 두께', 1, 100, 1, () => cfg.width, (v) => { cfg.width = v; save(); });
+    const bRow = lpSlider('흐리기', 0, 20, 0.5, () => cfg.blur || 0, (v) => { cfg.blur = v; save(); });
+    const cRow = document.createElement('label'); cRow.className = 'mw-lp-line';
+    cRow.innerHTML = '<span>테두리 색</span><input type="color" class="mw-lp-color">';
+    const col = cRow.querySelector('input'); col.value = cfg.color;
+    col.addEventListener('input', () => { cfg.color = col.value; save(); });
+    const aRow = document.createElement('label'); aRow.className = 'mw-lp-line';
+    aRow.innerHTML = '<span>테두리 안티에일리어싱</span><input type="checkbox" class="mw-lp-check">';
+    const aa = aRow.querySelector('input'); aa.checked = cfg.aa !== false;
+    aa.addEventListener('input', () => { cfg.aa = aa.checked; save(); });
+    body.append(wRow, cRow, aRow, bRow);
+    const note = document.createElement('div'); note.className = 'mw-status';
+    note.textContent = '내 화면에만 보여요 (보드에는 평범한 레이어)';
+    p.append(sec('효과'), fxRow, body, note);
+    function sync() {
+      tog.textContent = cfg.on ? '켜짐' : '꺼짐';
+      tog.classList.toggle('primary', cfg.on); tog.classList.toggle('secondary', !cfg.on);
+      body.classList.toggle('mw-lp-off', !cfg.on);
+    }
+    sync();
+    return p;
+  }
+  cleanups.push(() => { LP.btn?.remove(); LP.bar?.remove(); LP.panel?.remove(); document.documentElement.classList.remove('mw-lp'); });
+
   // ---------- 화면: 도구 막대 버튼 + 오른쪽 설정 칸 ----------
   const WAND_SVG = '<path fill="currentColor" d="M40 420 300 160l52 52L92 472z"/>' +
     '<path fill="currentColor" d="M400 20l28 64 64 28-64 28-28 64-28-64-64-28 64-28z"/>' +
@@ -3959,6 +4484,34 @@ void main(){
     .mw-brush { position: fixed; z-index: 2147481500; pointer-events: none; border-radius: 50%; display: none;
       border: 1px solid rgba(255,255,255,.95); box-shadow: 0 0 0 1px rgba(0,0,0,.7), inset 0 0 0 1px rgba(0,0,0,.35); }
     html.mw-on.mw-quick .editor-view, html.mw-on.mw-quick .editor-view * { cursor: none !important; }
+    .mw-alpha { position: fixed; z-index: 900; width: 16px; height: 16px; box-sizing: border-box; cursor: pointer;
+      border: 1px solid #9a9ca5; border-radius: 2px; box-shadow: 0 0 0 1px rgba(0,0,0,.55);
+      background: conic-gradient(#c8c8c8 25%, #fff 0 50%, #c8c8c8 0 75%, #fff 0) 0 0 / 8px 8px; }
+    .mw-alpha.on { outline: 2px solid #2f80ed; outline-offset: 1px; }
+    html.mw-alpha-on .mw-adv { opacity: .6; }
+    .mw-eye { position: fixed; z-index: 2147482000; pointer-events: none; width: 120px; height: 120px; margin: -60px 0 0 -60px;
+      border-radius: 50%; box-sizing: border-box; border: 4px solid #8a8a8a;
+      background: radial-gradient(circle, transparent 36px, #8a8a8a 37px, #8a8a8a 39px, transparent 40px),
+        linear-gradient(to bottom, var(--mw-now, transparent) 50%, var(--mw-old, #000) 50%);
+      -webkit-mask: radial-gradient(circle, transparent 36px, #000 37px); mask: radial-gradient(circle, transparent 36px, #000 37px); }
+    @keyframes mwFlash { 0%, 40%, 80% { box-shadow: inset 0 0 0 2px #ffd23f; background-color: rgba(255,210,63,.28); }
+      20%, 60%, 100% { box-shadow: inset 0 0 0 2px transparent; background-color: transparent; } }
+    .mw-flashbox { position: fixed; z-index: 2147480500; pointer-events: none; border-radius: 3px; animation: mwFlash 1.5s ease-in-out; }
+    html.mw-lp editor-sliders > :not(.mw-lp-panel) { display: none !important; }
+    .mw-lp-panel { padding: 4px 6px 6px; box-sizing: border-box; width: 100%; font-size: 12px; }
+    .mw-lp-head { display: flex; gap: 8px; align-items: baseline; margin: 2px 0 6px; }
+    .mw-lp-title { font-weight: 600; white-space: nowrap; }
+    .mw-lp-name { color: #9a9ca5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mw-lp-sec { font-size: 11px; color: #9a9ca5; border-bottom: 1px solid rgba(255,255,255,.1); margin: 4px 0 6px; padding-bottom: 2px; }
+    .mw-lp-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 24px; margin-bottom: 4px; }
+    .mw-lp-color { width: 64px; height: 20px; border: 1px solid #555; background: none; padding: 0; cursor: pointer; }
+    .mw-lp-check { width: 15px; height: 15px; cursor: pointer; }
+    .mw-lp-tog { min-width: 52px; }
+    .mw-lp-off { opacity: .45; }
+    .mw-lp-btn svg { display: block; margin: auto; }
+    .mw-lp-bar { display: flex; justify-content: flex-end; margin: 2px 0; }
+    .mw-lp-bar .mw-lp-btn { width: 30px; height: 26px; }
+    .mw-lp-row { display: flex; align-items: center; gap: 8px; } .mw-lp-row .mw-lp-range { flex: 1; }
   `;
   let styleEl = null, toolBtn = null, titleEl = null, rowsEl = null, statusEl = null;
   let lastStatus = '';
@@ -4246,6 +4799,8 @@ void main(){
     if (!getCanvas()) { if (S.active) setActive(false); return; }
     ensureStyle();
     ensureToolButton();
+    alphaTick();
+    ensureLayerProps();
     if (S.active) {
       // 단축키 등으로 Magma가 다른 도구로 바뀌었으면 마법봉 끄기
       if (!S.busy && !S.switching && !switchingTo && currentTool() !== 'lassoSelectionIcon') { setActive(false); return; }
@@ -4258,13 +4813,14 @@ void main(){
 
   // 새 버전이 들어올 때 이 버전을 깨끗이 걷어낸다
   window.__magmaWand.destroy = () => {
+    destroyed = true;
     clearInterval(tick);
     clearTimeout(stabTimer); // 되돌릴 설정은 localStorage에 남아 있어 새 버전이 이어서 되돌린다
     BSZ.el?.remove(); BSZ.label?.remove(); BSZ.on = false;
     for (const f of cleanups.splice(0)) { try { f(); } catch { /* 무시 */ } }
     removeSettings();
-    document.querySelectorAll('.mw-menu, .mw-toast, .mw-dialog-wrap, .mw-shortcut, .mw-flyout, .mw-overlay, .mw-brush').forEach((e) => e.remove());
-    document.documentElement.classList.remove('mw-quick');
+    document.querySelectorAll('.mw-menu, .mw-toast, .mw-dialog-wrap, .mw-shortcut, .mw-flyout, .mw-overlay, .mw-brush, .mw-alpha, .mw-eye').forEach((e) => e.remove());
+    document.documentElement.classList.remove('mw-quick', 'mw-alpha-on', 'mw-lp');
     toolBtn?.remove(); styleEl?.remove();
     toolBtn = null; styleEl = null;
     S.active = false;
@@ -4283,6 +4839,7 @@ void main(){
     getEditor, ensureEditor, docContext, docImage, exactPath, withSpikes, magmaKeep, rasterPath, straightLoop,
     histCheck, histPoints, histCopyLayer, openHistoryDialog, histUsage, getBrushSize, sizeRow,
     openStrokeDialog, fxSet, fxGet, fxKick, fxState: () => FX,
-    advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, parseSut, getAA, setAA, docToBuffer, selectionExists };
+    advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, parseSut, getAA, setAA, docToBuffer, selectionExists,
+    setAlpha, advEraseCommit, fillSelection, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt };
   window.__magmaWand.ready = true; // 끝까지 시작됨 (실행기는 이 표시가 없으면 다시 넣는다)
 })();
