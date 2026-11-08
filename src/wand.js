@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.9.0';
+  const VERSION = '0.10.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -35,12 +35,14 @@
   // 빠른 선택: brush(보드 픽셀), qtol, qexpand, qref, qkeys
   // contig: true = 이어진 영역만, false = 보드 전체에서 같은 색 모두 (CSP·포토샵의 '인접'/'연속' 옵션)
   const DEFAULTS = { tol: 10, expand: 1, action: 'select', ref: 'all', keys: ['KeyW'], contig: true, histOn: true,
-    tool: 'wand', brush: 20, qtol: 12, qexpand: 1, qref: 'all', qkeys: ['Shift+KeyW'] };
+    tool: 'wand', brush: 20, qtol: 12, qexpand: 1, qref: 'all', qkeys: ['Shift+KeyW'],
+    bkeys: ['Shift+KeyB'], advBrushId: null, advOpacity: 100, advSize: 10 };
   const S = Object.assign({}, DEFAULTS, loadSettings(), { active: false, busy: false, switching: false });
   if (!['select', 'fill'].includes(S.action)) S.action = 'select';
   if (!['all', 'layer'].includes(S.ref)) S.ref = 'all';
   if (!['all', 'layer'].includes(S.qref)) S.qref = 'all';
-  if (!['wand', 'quick'].includes(S.tool)) S.tool = 'wand';
+  if (!['wand', 'quick', 'brush'].includes(S.tool)) S.tool = 'wand';
+  if (!Array.isArray(S.bkeys)) S.bkeys = DEFAULTS.bkeys.slice();
   if (!Array.isArray(S.qkeys)) S.qkeys = DEFAULTS.qkeys.slice();
   if (typeof S.contig !== 'boolean') S.contig = true;
 
@@ -53,9 +55,9 @@
   }
   function saveSettings() {
     try {
-      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys } = S;
+      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, advBrushId, advOpacity } = S;
       localStorage.setItem('magmaWand.settings',
-        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys }));
+        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, advBrushId, advOpacity }));
     } catch { /* 저장 못 해도 동작에는 지장 없음 */ }
   }
 
@@ -176,6 +178,12 @@
     }
     if (getStabilizer()) await setStabilizer(0);
     if (getAA() === true) await setAA(false);
+    // 도구를 막 바꿨으면 설정 칸이 늦게 나올 수 있다 → 안티에일리어스가 아직 켜져 있으면 칸을 기다렸다가 한 번 더
+    if (getAA() !== false) {
+      await waitFor(() => aaButton(), 800);
+      if (lassoAASaved === null && getAA() === true) { lassoAASaved = true; try { localStorage.setItem(PENDING_AA, '1'); } catch { } }
+      if (getAA() === true) await setAA(false);
+    }
   }
   function restoreLassoStab() {
     if (!pendingLasso() || currentTool() !== 'lassoSelectionIcon') return Promise.resolve(false);
@@ -1542,7 +1550,7 @@
   on(window, 'pointermove', (e) => { if (e.isTrusted && !e.altKey && !e.ctrlKey && !BSZ.on) rememberTool(); }, { capture: true, passive: true });
   function sizeGestureTarget() {
     if (S.busy) return null;
-    if (S.active) return S.tool === 'quick' ? 'quick' : null;
+    if (S.active) return S.tool === 'quick' ? 'quick' : S.tool === 'brush' && ADV.brush ? 'adv' : null;
     const t = SIZE_TOOLS.has(currentTool()) ? currentTool() : plainTool;
     return SIZE_TOOLS.has(t) ? 'brush' : null;
   }
@@ -1563,20 +1571,21 @@
   const roundSize = (v) => Math.min(500, Math.max(1, v < 10 ? Math.round(v * 10) / 10 : Math.round(v)));
   function sizeRender(mx, my) {
     const r = Math.hypot(mx - BSZ.ox, my - BSZ.oy);
-    BSZ.size = BSZ.quick ? Math.min(500, Math.max(1, Math.round(r / BSZ.zoom))) : roundSize((2 * r) / BSZ.zoom);
+    BSZ.size = BSZ.quick ? Math.min(500, Math.max(1, Math.round(r / BSZ.zoom)))
+      : BSZ.adv ? Math.min(3000, Math.max(0.5, Math.round((20 * r) / BSZ.zoom) / 10)) : roundSize((2 * r) / BSZ.zoom);
     const rr = BSZ.quick ? BSZ.size * BSZ.zoom : (BSZ.size / 2) * BSZ.zoom;
     Object.assign(BSZ.el.style, { left: (BSZ.ox - rr) + 'px', top: (BSZ.oy - rr) + 'px', width: 2 * rr + 'px', height: 2 * rr + 'px' });
-    BSZ.label.textContent = BSZ.quick ? `브러시 크기 ${BSZ.size}` : `Size ${BSZ.size}`;
+    BSZ.label.textContent = BSZ.quick || BSZ.adv ? `브러시 크기 ${BSZ.size}` : `Size ${BSZ.size}`;
     Object.assign(BSZ.label.style, { left: mx + 14 + 'px', top: my + 14 + 'px' });
   }
   function sizeStart(e, kind) {
     const zoom = viewZoom();
-    const cur = kind === 'quick' ? S.brush : (getBrushSize() || BSZ.lastSize);
+    const cur = kind === 'quick' ? S.brush : kind === 'adv' ? ADV.brush.size : (getBrushSize() || BSZ.lastSize);
     if (!(cur > 0)) return false;
     const rScreen = kind === 'quick' ? cur * zoom : (cur / 2) * zoom;
     const [dx, dy] = loadSizeDir();
     const L = Math.hypot(dx, dy) || 1;
-    Object.assign(BSZ, { on: true, quick: kind === 'quick', zoom, pid: e.pointerId,
+    Object.assign(BSZ, { on: true, quick: kind === 'quick', adv: kind === 'adv', zoom, pid: e.pointerId,
       ox: e.clientX - (dx / L) * rScreen, oy: e.clientY - (dy / L) * rScreen });
     if (!BSZ.el) {
       BSZ.el = document.createElement('div'); BSZ.el.className = 'mw-size-ring mw-el';
@@ -1584,7 +1593,7 @@
     }
     document.body.append(BSZ.el, BSZ.label);
     BSZ.el.style.display = BSZ.label.style.display = 'block';
-    if (kind === 'quick') qCursor(0, 0, false);
+    if (kind === 'quick' || kind === 'adv') qCursor(0, 0, false);
     sizeRender(e.clientX, e.clientY);
     return true;
   }
@@ -1599,6 +1608,11 @@
     if (BSZ.quick) {
       S.brush = BSZ.size; saveSettings(); rowsEl?.__mwSync?.();
       qCursor(e.clientX, e.clientY, true);
+      return;
+    }
+    if (BSZ.adv) {
+      if (ADV.brush) { ADV.brush.size = BSZ.size; S.advSize = BSZ.size; advSaveSoon(); rowsEl?.__mwSync?.(); }
+      advCursor(e.clientX, e.clientY, true);
       return;
     }
     const want = BSZ.size;
@@ -1635,9 +1649,806 @@
   for (const t of SIZE_EVENTS) on(window, t, onSizeGesture, true);
   on(window, 'blur', () => { if (BSZ.on) sizeEnd({ clientX: BSZ.ox, clientY: BSZ.oy }, true); });
 
+  // ---------- 고급 브러시 ① 클립 스튜디오 브러시(.sut) 읽기 ----------
+  // .sut = SQLite 파일. Variant 표 한 줄에 브러시 설정(크기·간격·필압 곡선·끝 모양·텍스처·스프레이…)이 평범하게 들어 있다.
+  // 끝 모양·텍스처 이미지(MaterialFile)는 tar 안의 C2F 묶음에 PNG로 들어 있는데, ASSETS 소재는 보호(암호화·바이트 섞기)돼
+  // 있어 풀지 않는다 → 온전한 PNG만 쓰고, 나머지는 사용자가 CSP에서 직접 저장한 PNG를 넣게 한다.
+  function sqliteTables(u8) {
+    if (new TextDecoder().decode(u8.subarray(0, 15)) !== 'SQLite format 3') throw new Error('클립 스튜디오 브러시(.sut) 파일이 아니에요');
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    let ps = dv.getUint16(16); if (ps === 1) ps = 65536;
+    const U = ps - u8[20];
+    const enc = dv.getUint32(56);
+    const td = new TextDecoder(enc === 2 ? 'utf-16le' : enc === 3 ? 'utf-16be' : 'utf-8');
+    const base = (n) => (n - 1) * ps;
+    const vi = (b, p) => { let v = 0; for (let i = 0; i < 8; i++) { const c = b[p + i]; v = v * 128 + (c & 127); if (!(c & 128)) return [v, p + i + 1]; } return [v * 256 + b[p + 8], p + 9]; };
+    const payload = (p, P) => {
+      const X = U - 35;
+      if (P <= X) return u8.subarray(p, p + P);
+      const M = Math.floor(((U - 12) * 32) / 255) - 23;
+      let K = M + ((P - M) % (U - 4)); if (K > X) K = M;
+      const out = new Uint8Array(P); out.set(u8.subarray(p, p + K), 0);
+      let off = K, ov = dv.getUint32(p + K), guard = 0;
+      while (off < P && ov && guard++ < 1e6) {
+        const b = base(ov), n = Math.min(U - 4, P - off);
+        out.set(u8.subarray(b + 4, b + 4 + n), off); off += n; ov = dv.getUint32(b);
+      }
+      return out;
+    };
+    const record = (b) => {
+      let [hs, p] = vi(b, 0); const types = [];
+      while (p < hs) { const r = vi(b, p); types.push(r[0]); p = r[1]; }
+      const bd = new DataView(b.buffer, b.byteOffset, b.byteLength); let q = hs; const vals = [];
+      for (const t of types) {
+        if (t === 0) vals.push(null);
+        else if (t >= 1 && t <= 6) { const n = [0, 1, 2, 3, 4, 6, 8][t]; let v = 0; for (let i = 0; i < n; i++) v = v * 256 + b[q + i]; if (b[q] & 0x80) v -= Math.pow(2, 8 * n); vals.push(v); q += n; }
+        else if (t === 7) { vals.push(bd.getFloat64(q)); q += 8; }
+        else if (t === 8 || t === 9) vals.push(t - 8);
+        else if (t >= 12 && !(t & 1)) { const n = (t - 12) / 2; vals.push(b.slice(q, q + n)); q += n; }
+        else if (t >= 13) { const n = (t - 13) / 2; vals.push(td.decode(b.subarray(q, q + n))); q += n; }
+        else vals.push(null);
+      }
+      return vals;
+    };
+    const walk = (pg, cb, depth = 0) => {
+      if (depth > 40) return;
+      const b = base(pg) + (pg === 1 ? 100 : 0), type = u8[b], n = dv.getUint16(b + 3), hdr = type === 5 || type === 2 ? 12 : 8;
+      for (let i = 0; i < n; i++) {
+        const cp = base(pg) + dv.getUint16(b + hdr + i * 2);
+        if (type === 13) { const [P, p] = vi(u8, cp); const [rowid, p2] = vi(u8, p); cb(rowid, record(payload(p2, P))); }
+        else if (type === 5) walk(dv.getUint32(cp), cb, depth + 1);
+      }
+      if (type === 5) walk(dv.getUint32(b + 8), cb, depth + 1);
+    };
+    const master = [];
+    walk(1, (_, r) => master.push(r));
+    const tables = {};
+    for (const [type, name, , root, sql] of master) {
+      if (type !== 'table' || !sql) continue;
+      const inner = sql.slice(sql.indexOf('(') + 1, sql.lastIndexOf(')'));
+      const parts = []; let depth = 0, cur = '';
+      for (const ch of inner) { if (ch === '(') depth++; if (ch === ')') depth--; if (ch === ',' && !depth) { parts.push(cur); cur = ''; } else cur += ch; }
+      parts.push(cur);
+      const cols = parts.map((s) => s.trim()).filter((s) => s && !/^(PRIMARY|UNIQUE|CHECK|FOREIGN|CONSTRAINT)\b/i.test(s))
+        .map((s) => ({ name: s.split(/\s+/)[0].replace(/["`[\]]/g, ''), ipk: /INTEGER\s+PRIMARY\s+KEY/i.test(s) }));
+      tables[name] = { read: () => { const rows = []; walk(root, (rowid, vals) => { const o = {}; cols.forEach((c, i) => { o[c.name] = c.ipk && vals[i] == null ? rowid : vals[i]; }); rows.push(o); }); return rows; } };
+    }
+    return tables;
+  }
+  function untar(u8) {
+    const out = {}; let p = 0;
+    const cstr = (b) => { let e = b.indexOf(0); if (e < 0) e = b.length; return new TextDecoder().decode(b.subarray(0, e)); };
+    while (p + 512 <= u8.length) {
+      const name = cstr(u8.subarray(p, p + 100)); if (!name) break;
+      const size = parseInt(cstr(u8.subarray(p + 124, p + 136)).trim() || '0', 8) || 0;
+      out[name] = u8.subarray(p + 512, p + 512 + size);
+      p += 512 + Math.ceil(size / 512) * 512;
+    }
+    return out;
+  }
+  const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  const crc32 = (b, s, e) => { let c = 0xffffffff; for (let i = s; i < e; i++) c = CRC_T[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  // C2F 묶음에서 온전한(조각 CRC가 모두 맞는) PNG만 꺼낸다. 보호돼 깨진 것은 null
+  function c2fPng(u8) {
+    if (!(u8[0] === 0x89 && u8[1] === 0x43 && u8[2] === 0x32 && u8[3] === 0x46)) return null;
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    const parts = []; let q = 8;
+    while (q + 8 <= u8.length) {
+      const ln = dv.getUint32(q, true), t = String.fromCharCode(u8[q + 4], u8[q + 5], u8[q + 6], u8[q + 7]);
+      if (t === 'dATA' && u8[q + 8] === 0 && u8[q + 9] === 0) parts.push(u8.subarray(q + 8, q + 8 + ln)); // 01 00 으로 시작하는 조각은 암호화 → 건너뜀
+      q += 12 + ln; if (t === 'TAIL') break;
+    }
+    for (const d of parts) {
+      for (let s = 0; s + 8 < d.length; s++) {
+        if (!(d[s] === 0x89 && d[s + 1] === 0x50 && d[s + 2] === 0x4e && d[s + 3] === 0x47)) continue;
+        const dd = new DataView(d.buffer, d.byteOffset, d.byteLength);
+        let p = s + 8, ok = true;
+        while (p + 12 <= d.length) {
+          const ln = dd.getUint32(p), t = String.fromCharCode(d[p + 4], d[p + 5], d[p + 6], d[p + 7]);
+          if (p + 12 + ln > d.length || crc32(d, p + 4, p + 8 + ln) !== dd.getUint32(p + 8 + ln)) { ok = false; break; }
+          p += 12 + ln;
+          if (t === 'IEND') return d.slice(s, p);
+        }
+        if (!ok) return null;
+      }
+    }
+    return null;
+  }
+  // 필압·속도·무작위 효과 (빅엔디언 정수 배열 + 곡선 [점 개수, (x,y) 실수 쌍])
+  function parseEffector(b) {
+    if (!b || b.length < 44) return null;
+    const dv = new DataView(b.buffer, b.byteOffset, b.byteLength), w = (i) => dv.getUint32(i * 4);
+    const mask = w(2);
+    const curve = (off) => {
+      if (!off || off + 12 > b.length) return null;
+      const n = dv.getUint32(off + 4), st = dv.getUint32(off + 8) || 16, pts = [];
+      for (let i = 0; i < n && off + 12 + i * st + 16 <= b.length; i++) pts.push([dv.getFloat64(off + 12 + i * st), dv.getFloat64(off + 20 + i * st)]);
+      return pts.length >= 2 ? pts.sort((a, c) => a[0] - c[0]) : null;
+    };
+    // 곡선 묶음은 44바이트부터 차례로: 첫째 = 필압 곡선(길이 w(8)), 둘째 = 속도 곡선(길이 w(9))
+    const c1 = w(8) ? curve(44) : null, c2 = w(9) ? curve(44 + w(8)) : null;
+    const e = {};
+    if (mask & 0x10) e.pressure = { min: w(3) / 100, curve: c1 };
+    if (mask & 0x40) e.velocity = { min: w(5) / 100, curve: c2 };
+    if (mask & 0x80) e.random = { min: w(6) / 100 };
+    return Object.keys(e).length ? e : null;
+  }
+  const evalCurve = (pts, x) => {
+    if (!pts) return x;
+    if (x <= pts[0][0]) return pts[0][1];
+    for (let i = 1; i < pts.length; i++) if (x <= pts[i][0]) { const [x0, y0] = pts[i - 1], [x1, y1] = pts[i]; return y0 + ((y1 - y0) * (x - x0)) / (x1 - x0 || 1); }
+    return pts[pts.length - 1][1];
+  };
+  // 효과 값(0~1): 필압·속도는 곡선을 거쳐 최소값~1, 무작위는 최소값~1 사이
+  function effectorValue(e, pr, speed, rnd) {
+    if (!e) return 1;
+    let v = 1;
+    if (e.pressure) v *= e.pressure.min + (1 - e.pressure.min) * Math.max(0, Math.min(1, evalCurve(e.pressure.curve, pr)));
+    if (e.velocity) { const t = Math.min(1, speed / 3); v *= 1 - (1 - e.velocity.min) * Math.max(0, Math.min(1, evalCurve(e.velocity.curve, t))); }
+    if (e.random) v *= e.random.min + (1 - e.random.min) * rnd;
+    return v;
+  }
+  // 소재 이름표 블롭(UTF-16LE 문자열들) 안의 소재 고유번호들
+  const blobStrings = (b) => {
+    if (!b || !b.length) return [];
+    const s = new TextDecoder('utf-16le').decode(b.subarray(b.length & 1 ? 1 : 0));
+    return (s.match(/[0-9a-f]{6,}-[0-9a-f-]{8,}/gi) || []);
+  };
+  async function parseSut(buf, fileName) {
+    const T = sqliteTables(new Uint8Array(buf));
+    if (!T.Variant) throw new Error('브러시 설정을 찾지 못했어요');
+    const node = T.Node ? T.Node.read().find((n) => n.NodeVariantID != null) : null;
+    const vars = T.Variant.read();
+    const v = (node && vars.find((r) => r.VariantID === node.NodeVariantID)) || vars[0];
+    const mats = T.MaterialFile ? T.MaterialFile.read() : [];
+    const materials = [];
+    for (const m of mats) {
+      const fd = m.FileData instanceof Uint8Array ? m.FileData : null;
+      let png = null, thumb = null;
+      if (fd) {
+        const files = untar(fd);
+        for (const [n, data] of Object.entries(files)) {
+          if (/\.layer$/i.test(n) && !png) png = c2fPng(data);
+          if (/thumbnail\.png$/i.test(n)) thumb = data.slice();
+        }
+      }
+      const uuid = (String(m.OriginalPath || m.CatalogPath || '').match(/[0-9a-f]{6,}-[0-9a-f-]{8,}/i) || [''])[0];
+      materials.push({ uuid, png: png ? new Blob([png], { type: 'image/png' }) : null, thumb: thumb ? new Blob([thumb], { type: 'image/png' }) : null });
+    }
+    const tipIds = blobStrings(v.BrushPatternImageArray), texIds = blobStrings(v.TextureImage);
+    const findMat = (id, i) => materials.find((m) => m.uuid && id && (m.uuid.includes(id) || id.includes(m.uuid))) || null;
+    const tips = v.BrushUsePatternImage ? [...new Set(tipIds.map((id) => findMat(id)).filter(Boolean))] : [];
+    if (v.BrushUsePatternImage && !tips.length && materials.length) tips.push(materials[0]);
+    const texture = texIds.length ? (findMat(texIds[0]) || materials.find((m) => !tips.includes(m)) || null) : null;
+    const num = (x, d) => (Number.isFinite(x) ? x : d);
+    const brush = {
+      name: (node && node.NodeName) || String(fileName || '브러시').replace(/\.sut$/i, ''),
+      size: num(v.BrushSize, 10), sizeEff: parseEffector(v.BrushSizeEffector),
+      opacity: num(v.Opacity, 100) / 100, opacityEff: parseEffector(v.BrushOpacityEffector),
+      flow: num(v.BrushFlow, 100) / 100, flowEff: parseEffector(v.BrushFlowEffector),
+      hardness: num(v.BrushHardness, 100) / 100,
+      interval: Math.max(0.01, num(v.BrushInterval, 10) / 100), intervalEff: parseEffector(v.BrushIntervalEffector),
+      thickness: num(v.BrushThickness, 100) / 100, thickEff: parseEffector(v.BrushThicknessEffector), vertical: !!v.BrushVerticalThicknes,
+      rotation: num(v.BrushRotation, 0), rotMask: num(v.BrushRotationEffector, 3), rotRandom: num(v.BrushRotationRandomScale, 100) / 100,
+      aa: num(v.AntiAlias, 1), smoothing: num(v.FlickerReduction, 0),
+      tipOrder: num(v.BrushPatternOrderType, 0), flipH: num(v.BrushPatternReverseHorizontal, 0), flipV: num(v.BrushPatternReverseVertical, 0),
+      ribbon: !!v.BrushRibbon,
+      texDensity: num(v.TextureDensity, 50) / 100, texDensEff: parseEffector(v.TextureDensityEffector), texScale: num(v.TextureScale2, 100) / 100,
+      texRotate: num(v.TextureRotate, 0), texInvert: !!v.TextureReverseDensity, texPerStamp: !!v.TextureForPlot,
+      spray: v.BrushUseSpray ? { size: num(v.BrushSpraySize, 2), sync: !!v.BrushSpraySizeSyncBrushSize, density: Math.max(1, num(v.BrushSprayDensity, 1)),
+        bias: num(v.BrushSprayBias, 0) / 100, sizeEff: parseEffector(v.BrushSpraySizeEffector), densEff: parseEffector(v.BrushSprayDensityEffector) } : null,
+      jitter: v.BrushChangePatternColor ? { h: num(v.BrushHueChange, 0), s: num(v.BrushSaturationChange, 0), v: num(v.BrushValueChange, 0) } : null,
+      taperIn: v.BrushUseIn ? num(v.BrushInLength, 20) : 0, taperOut: v.BrushUseOut ? num(v.BrushOutLength, 20) : 0,
+      erase: num(v.CompositeMode, 0) !== 0,
+      unsupported: [v.BrushUseWaterEdge && '수채 경계', v.UseDualBrush && '2중 브러시', v.BrushUseWaterColor && '색 혼합(물감)', num(v.CompositeMode, 0) !== 0 && '합성 모드'].filter(Boolean),
+    };
+    brush.baseSize = brush.size;
+    return { brush, tips, texture };
+  }
+
+  // 불러온 브러시 저장 (IndexedDB, 이 컴퓨터에만)
+  const ADV_DB = 'magmaWand.brushes';
+  let advDbP = null;
+  function advDb() {
+    if (advDbP) return advDbP;
+    advDbP = new Promise((res, rej) => {
+      const rq = indexedDB.open(ADV_DB, 1);
+      rq.onupgradeneeded = () => { const db = rq.result; db.createObjectStore('brushes', { keyPath: 'id' }); db.createObjectStore('images', { keyPath: 'key' }); };
+      rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error);
+    });
+    return advDbP;
+  }
+  async function advStore(name, mode = 'readonly') { return (await advDb()).transaction(name, mode).objectStore(name); }
+  async function advPutImage(blob) {
+    const key = 'img_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    await reqP((await advStore('images', 'readwrite')).put({ key, blob }));
+    return key;
+  }
+  async function advGetImage(key) { const r = key ? await reqP((await advStore('images')).get(key)) : null; return r ? r.blob : null; }
+  async function advListBrushes() { const all = await reqP((await advStore('brushes')).getAll()); return all.sort((a, b) => a.added - b.added); }
+  async function advSaveBrush(b) { await reqP((await advStore('brushes', 'readwrite')).put(b)); }
+  async function advDeleteBrush(b) {
+    await reqP((await advStore('brushes', 'readwrite')).delete(b.id));
+    const st = await advStore('images', 'readwrite');
+    for (const k of [...(b.tips || []).flatMap((t) => [t.key, t.thumbKey]), b.texture && b.texture.key, b.texture && b.texture.thumbKey]) if (k) st.delete(k);
+  }
+  // .sut 파일 → 저장된 브러시 (끝 모양 PNG가 보호돼 있으면 needPng 표시)
+  async function advImportSut(file) {
+    const { brush, tips, texture } = await parseSut(await file.arrayBuffer(), file.name);
+    // 온전한 PNG라도 그림이 비어 있으면(전부 투명이거나 한 가지 색) 실제 소재가 아니다 → PNG 필요
+    const usable = async (blob) => {
+      if (!blob) return false;
+      try {
+        const bmp = await createImageBitmap(blob);
+        const sc = Math.min(1, 256 / Math.max(bmp.width, bmp.height));
+        const w = Math.max(1, Math.round(bmp.width * sc)), h = Math.max(1, Math.round(bmp.height * sc));
+        const oc = new OffscreenCanvas(w, h), g = oc.getContext('2d', { willReadFrequently: true });
+        g.drawImage(bmp, 0, 0, w, h);
+        const d = g.getImageData(0, 0, w, h).data;
+        let amin = 255, amax = 0, lmin = 255, lmax = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          amin = Math.min(amin, d[i + 3]); amax = Math.max(amax, d[i + 3]);
+          if (d[i + 3] > 8) { const l = (d[i] + d[i + 1] + d[i + 2]) / 3; lmin = Math.min(lmin, l); lmax = Math.max(lmax, l); }
+        }
+        if (amax < 8) return false;                       // 전부 투명
+        if (amin > 247 && lmax - lmin < 8) return false;  // 불투명한 한 가지 색
+        return true;
+      } catch { return false; }
+    };
+    const slot = async (m) => {
+      const ok = await usable(m.png);
+      return { key: ok ? await advPutImage(m.png) : null, thumbKey: m.thumb ? await advPutImage(m.thumb) : null, needPng: !ok };
+    };
+    brush.id = 'b_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    brush.added = Date.now();
+    brush.tips = [];
+    for (const m of tips) brush.tips.push(await slot(m));
+    brush.texture = texture ? await slot(texture) : null;
+    await advSaveBrush(brush);
+    return brush;
+  }
+
+  // ---------- 고급 브러시 ② 그리는 엔진 ----------
+  // 끝 모양(도장)을 획을 따라 일정 간격으로 찍는다. 필압·속도·무작위로 크기·흐름·불투명도·두께·회전이 바뀌고,
+  // 스프레이(흩뿌리기)·텍스처·리본(긴 띠 끝 모양)·색 흔들기를 지원한다.
+  //  - 긋는 동안: 보드 크기의 내 WebGL 텍스처(획 버퍼)에 찍고, Magma 화면 위 내 캔버스에만 보여 준다(트래픽 0).
+  //  - 손을 떼면: 획을 보드 크기 PNG로 만들어 Magma에 '붙여넣기' 한 번(= 되돌리기 한 칸, 다른 사람에게도 보임).
+  const ADV = { gl: null, cv: null, P: {}, vao: null, ibuf: null, fb: null, W: 0, H: 0, S: null, C: null, cTimer: 0,
+    tips: new Map(), tex: null, brush: null, tipTex: [], texInfo: null, stroke: null, batch: [], raf: 0, lost: false, commitQ: Promise.resolve() };
+  const ADV_VS = `#version 300 es
+in vec2 aPos; in float aSize; in float aAngle; in vec2 aSq; in float aAlpha; in vec3 aColor; in vec2 aFlip; in vec2 aV;
+uniform vec2 uDoc; uniform float uRibbon;
+out vec2 vUV; out float vA; out vec3 vC; out vec2 vDoc; out vec2 vVSpan;
+void main(){
+  int k = gl_VertexID; vec2 c = vec2((k == 1 || k == 2 || k == 4) ? 1.0 : -1.0, (k == 2 || k == 4 || k == 5) ? 1.0 : -1.0);
+  vUV = c * 0.5 + 0.5; if (aFlip.x < 0.0) vUV.x = 1.0 - vUV.x; if (aFlip.y < 0.0) vUV.y = 1.0 - vUV.y;
+  vec2 hs = vec2(aSize * 0.5 * aSq.x, aSize * 0.5 * aSq.y);
+  if (uRibbon > 0.5) hs = vec2(aSize * 0.5 * aSq.x, aSq.y * 0.5);
+  vec2 l = c * hs; float cs = cos(aAngle), sn = sin(aAngle);
+  vec2 p = aPos + vec2(l.x * cs - l.y * sn, l.x * sn + l.y * cs);
+  vDoc = p; vA = aAlpha; vC = aColor; vVSpan = aV;
+  gl_Position = vec4(p / uDoc * 2.0 - 1.0, 0.0, 1.0);
+}`;
+  const ADV_FS = `#version 300 es
+precision highp float;
+in vec2 vUV; in float vA; in vec3 vC; in vec2 vDoc; in vec2 vVSpan;
+uniform sampler2D uTip; uniform sampler2D uTex; uniform float uRound; uniform float uHard; uniform float uAA;
+uniform float uUseTex; uniform float uTexDen; uniform vec2 uTexScale; uniform float uTexInv; uniform float uRibbon;
+out vec4 o;
+void main(){
+  float m;
+  if (uRound > 0.5) {
+    float r = length(vUV * 2.0 - 1.0);
+    float edge = max(fwidth(r), 0.0001);
+    m = uHard >= 0.999 ? 1.0 - smoothstep(1.0 - edge, 1.0, r) : 1.0 - smoothstep(uHard, 1.0, r);
+  } else {
+    vec2 uv = vUV;
+    if (uRibbon > 0.5) uv = vec2(vUV.x, fract(vVSpan.x + vUV.y * vVSpan.y));
+    m = texture(uTip, uv).r;
+  }
+  if (uAA < 0.5) m = m >= 0.5 ? 1.0 : 0.0;
+  if (uUseTex > 0.5) { float t = texture(uTex, vDoc / uTexScale).r; if (uTexInv > 0.5) t = 1.0 - t; m *= mix(1.0, t, uTexDen); }
+  float a = clamp(m * vA, 0.0, 1.0);
+  if (a <= 0.0005) discard;
+  o = vec4(vC * a, a);
+}`;
+  const ADV_SHOW_VS = `#version 300 es
+void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2)); gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }`;
+  // 화면 표시(uMode 0) / 확정용 잘라내기(uMode 1): 획 버퍼 × 전체 불투명도 × (획 단위 텍스처)
+  const ADV_SHOW_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uS; uniform sampler2D uTex; uniform vec3 uInv0; uniform vec3 uInv1; uniform float uH; uniform vec2 uDoc;
+uniform float uOp; uniform float uUseTex; uniform float uTexDen; uniform vec2 uTexScale; uniform float uTexInv; uniform float uMode; uniform vec2 uOff;
+out vec4 o;
+void main(){
+  vec2 p;
+  if (uMode > 0.5) p = uOff + gl_FragCoord.xy;
+  else { vec2 sp = vec2(gl_FragCoord.x, uH - gl_FragCoord.y); p = vec2(dot(uInv0, vec3(sp, 1.0)), dot(uInv1, vec3(sp, 1.0))); }
+  if (p.x < 0.0 || p.y < 0.0 || p.x >= uDoc.x || p.y >= uDoc.y) discard;
+  vec4 c = uMode > 0.5 ? texelFetch(uS, ivec2(p), 0) : texture(uS, p / uDoc);
+  float k = uOp;
+  if (uUseTex > 0.5) { float t = texture(uTex, p / uTexScale).r; if (uTexInv > 0.5) t = 1.0 - t; k *= mix(1.0, t, uTexDen); }
+  o = c * k;
+}`;
+  const advComp = (gl, vs, fs) => {
+    const mk = (t, s) => { const sh = gl.createShader(t); gl.shaderSource(sh, s); gl.compileShader(sh); if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error('셰이더: ' + gl.getShaderInfoLog(sh)); return sh; };
+    const p = gl.createProgram(); gl.attachShader(p, mk(gl.VERTEX_SHADER, vs)); gl.attachShader(p, mk(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('셰이더 연결: ' + gl.getProgramInfoLog(p));
+    const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+    for (let i = 0; i < n; i++) { const nm = gl.getActiveUniform(p, i).name; u[nm] = gl.getUniformLocation(p, nm); }
+    return { p, u };
+  };
+  const INST = 16; // aPos2 aSize aAngle aSq2 aAlpha aColor3 aFlip2 aV2 + 여분
+  function advEnsureGL(canvas, W, H) {
+    if (!ADV.cv || !ADV.cv.isConnected || ADV.cv.parentElement !== canvas.parentElement) {
+      ADV.cv?.remove();
+      ADV.cv = document.createElement('canvas'); ADV.cv.className = 'mw-adv mw-el';
+      ADV.gl = ADV.cv.getContext('webgl2', { premultipliedAlpha: true, alpha: true, antialias: false });
+      if (!ADV.gl) throw new Error('WebGL2를 쓸 수 없어요');
+      ADV.cv.addEventListener('webglcontextlost', (e) => { e.preventDefault(); ADV.lost = true; });
+      ADV.cv.addEventListener('webglcontextrestored', () => { ADV.lost = false; ADV.P = {}; ADV.S = ADV.C = null; ADV.tips.clear(); ADV.tex = null; ADV.W = 0; });
+      ADV.P = {}; ADV.S = ADV.C = null; ADV.tips.clear(); ADV.tex = null; ADV.W = 0;
+      canvas.after(ADV.cv);
+    }
+    Object.assign(ADV.cv.style, { position: 'absolute', left: canvas.offsetLeft + 'px', top: canvas.offsetTop + 'px',
+      width: canvas.offsetWidth + 'px', height: canvas.offsetHeight + 'px', pointerEvents: 'none' });
+    if (ADV.cv.width !== canvas.width || ADV.cv.height !== canvas.height) { ADV.cv.width = canvas.width; ADV.cv.height = canvas.height; }
+    const gl = ADV.gl;
+    if (!ADV.P.stamp) {
+      ADV.P.stamp = advComp(gl, ADV_VS, ADV_FS); ADV.P.show = advComp(gl, ADV_SHOW_VS, ADV_SHOW_FS);
+      ADV.vao = gl.createVertexArray(); gl.bindVertexArray(ADV.vao);
+      ADV.ibuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, ADV.ibuf);
+      const p = ADV.P.stamp.p, stride = INST * 4;
+      const attr = (name, n, off) => { const loc = gl.getAttribLocation(p, name); if (loc < 0) return; gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, n, gl.FLOAT, false, stride, off * 4); gl.vertexAttribDivisor(loc, 1); };
+      attr('aPos', 2, 0); attr('aSize', 1, 2); attr('aAngle', 1, 3); attr('aSq', 2, 4); attr('aAlpha', 1, 6); attr('aColor', 3, 7); attr('aFlip', 2, 10); attr('aV', 2, 12);
+      gl.bindVertexArray(null);
+      ADV.fb = gl.createFramebuffer();
+      const blank = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, blank);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 1, 1, 0, gl.RED, gl.UNSIGNED_BYTE, new Uint8Array([255]));
+      ADV.blank = blank;
+    }
+    if (ADV.W !== W || ADV.H !== H || !ADV.S) {
+      for (const t of [ADV.S, ADV.C]) if (t) gl.deleteTexture(t);
+      const mk = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, W, H);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; };
+      ADV.S = mk(); ADV.C = mk(); ADV.W = W; ADV.H = H; ADV.cBox = null;
+      advClear(ADV.S, null); advClear(ADV.C, null);
+    }
+    return gl;
+  }
+  function advClear(tex, box) {
+    const gl = ADV.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, ADV.fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.viewport(0, 0, ADV.W, ADV.H);
+    if (box) { gl.enable(gl.SCISSOR_TEST); gl.scissor(box.x, box.y, box.w, box.h); }
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+  // 끝 모양·텍스처 이미지 → 한 채널 마스크 (투명도가 있으면 알파, 없으면 어두운 정도)
+  async function advMaskTexture(key, repeat) {
+    const k = key + (repeat ? ':r' : '');
+    if (ADV.tips.has(k)) return ADV.tips.get(k);
+    const blob = await advGetImage(key);
+    if (!blob) return null;
+    const bmp = await createImageBitmap(blob);
+    const MAX = repeat ? 2048 : 1024;
+    const sc = Math.min(1, MAX / Math.max(bmp.width, bmp.height));
+    const w = Math.max(1, Math.round(bmp.width * sc)), h = Math.max(1, Math.round(bmp.height * sc));
+    const oc = new OffscreenCanvas(w, h), g = oc.getContext('2d', { willReadFrequently: true });
+    g.drawImage(bmp, 0, 0, w, h);
+    const px = g.getImageData(0, 0, w, h).data, m = new Uint8Array(w * h);
+    let transp = 0;
+    for (let i = 3; i < px.length; i += 4 * 7) if (px[i] < 200) transp++;
+    const useAlpha = transp > (w * h) / 7 * 0.02;
+    for (let i = 0, j = 0; j < m.length; i += 4, j++) {
+      const lum = (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114);
+      m[j] = useAlpha ? px[i + 3] * (1 - (lum / 255) * 0.0) : 255 - lum;
+    }
+    const gl = ADV.gl, t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, m);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, repeat ? gl.REPEAT : gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    const info = { tex: t, w: bmp.width, h: bmp.height };
+    ADV.tips.set(k, info);
+    return info;
+  }
+  // 지금 브러시의 끝 모양·텍스처를 GPU에 올려 둔다
+  async function advPrepare(brush) {
+    const canvas = getCanvas(), E = getEditor();
+    if (!canvas || !E || !brush) return false;
+    advEnsureGL(canvas, E.drawing.w, E.drawing.h);
+    const tips = [];
+    for (const t of brush.tips || []) { if (t.key) { const i = await advMaskTexture(t.key, false); if (i) tips.push(i); } }
+    const texInfo = brush.texture && brush.texture.key ? await advMaskTexture(brush.texture.key, true) : null;
+    ADV.tipTex = tips; ADV.texInfo = texInfo; ADV.brush = brush;
+    return true;
+  }
+  const hsv = (r, g, b) => { const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn; let h = 0;
+    if (d) h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; return [(h * 60 + 360) % 360, mx ? d / mx : 0, mx]; };
+  const rgb = (h, s, v) => { const c = v * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = v - c; const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x]; return [r + m, g + m, b + m]; };
+  function advColor() {
+    const E = getEditor();
+    const n = E && Number.isFinite(E.primaryColor) ? E.primaryColor >>> 8 : 0;
+    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+  }
+  // 획 시작
+  function advStrokeStart(e) {
+    const b = ADV.brush;
+    if (!b) return false;
+    // 설정 칸의 크기를 이 브러시 크기로 (바뀌었으면 저장)
+    if (S.advSize > 0 && S.advSize !== b.size) { b.size = S.advSize; advSaveSoon(); }
+    const s = { pts: [], acc: 0, dist: 0, last: null, speed: 0, idx: 0, dir: 1, box: null, color: advColor(), v: 0, n: 0 };
+    s.hsv = hsv(...s.color);
+    ADV.stroke = s;
+    advAddPoint(e);
+    return true;
+  }
+  function advDocPoint(e) {
+    const E = getEditor(), canvas = getCanvas();
+    const m = E.computedView.inverseTransform, r = canvas.getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
+  }
+  function advAddPoint(e) {
+    const s = ADV.stroke, b = ADV.brush;
+    if (!s || !b) return;
+    let [x, y] = advDocPoint(e);
+    const pr = e.pointerType === 'pen' ? Math.max(0.01, e.pressure || 0) : 1;
+    const t = e.timeStamp || performance.now();
+    if (s.last && b.smoothing > 0) { const k = Math.min(0.85, b.smoothing * 0.05); x = s.last.x + (x - s.last.x) * (1 - k); y = s.last.y + (y - s.last.y) * (1 - k); }
+    const cur = { x, y, p: pr, t };
+    if (!s.last) { s.last = cur; advStamp(cur.x, cur.y, cur.p, 0); return; }
+    const a = s.last, dx = x - a.x, dy = y - a.y, L = Math.hypot(dx, dy);
+    if (L < 0.01) return;
+    const dt = Math.max(1, t - a.t);
+    s.speed = s.speed * 0.7 + (L / dt) * 0.3;
+    const ang = Math.atan2(dy, dx);
+    let walked = 0;
+    for (let guard = 0; guard < 5000; guard++) {
+      const pNow = a.p + (pr - a.p) * (walked / L);
+      const size = Math.max(0.5, b.size * effectorValue(b.sizeEff, pNow, s.speed, 1));
+      const step = Math.max(0.3, size * b.interval * effectorValue(b.intervalEff, pNow, s.speed, Math.random()));
+      const need = step - s.acc;
+      if (walked + need > L) { s.acc += L - walked; break; }
+      walked += need; s.acc = 0;
+      const f = walked / L;
+      s.dist += need;
+      advStamp(a.x + dx * f, a.y + dy * f, a.p + (pr - a.p) * f, ang, need);
+    }
+    s.last = cur;
+  }
+  function advStamp(x, y, p, ang, stepLen) {
+    const s = ADV.stroke, b = ADV.brush;
+    const rnd = Math.random;
+    const taper = b.taperIn > 0 ? Math.min(1, 0.15 + s.dist / b.taperIn) : 1;
+    let size = b.size * effectorValue(b.sizeEff, p, s.speed, rnd()) * taper;
+    const flow = b.flow * effectorValue(b.flowEff, p, s.speed, rnd()) * effectorValue(b.opacityEff, p, s.speed, rnd());
+    let th = b.thickness * effectorValue(b.thickEff, p, s.speed, rnd());
+    let sq = [1, 1];
+    if (th < 1) sq = b.vertical ? [th, 1] : [1, th]; else if (th > 1) sq = b.vertical ? [1, 1 / th] : [1 / th, 1];
+    let angle = (b.rotation * Math.PI) / 180;
+    if (b.rotMask & 0x10) angle *= p;
+    if (b.rotMask & 0x40) angle += ang;
+    if (b.ribbon) angle = ang + Math.PI / 2; // 리본: 띠의 가로가 획을 가로지르게
+    if (b.rotMask & 0x80) angle += (rnd() - 0.5) * 2 * Math.PI * b.rotRandom;
+    let col = s.color;
+    if (b.jitter && (b.jitter.h || b.jitter.s || b.jitter.v)) {
+      const [h, sat, v] = s.hsv;
+      col = rgb((h + (rnd() - 0.5) * 2 * b.jitter.h * 1.8 + 360) % 360, Math.max(0, Math.min(1, sat + (rnd() - 0.5) * 2 * b.jitter.s / 100)), Math.max(0, Math.min(1, v + (rnd() - 0.5) * 2 * b.jitter.v / 100)));
+    }
+    const flip = () => [b.flipH === 2 ? (rnd() < 0.5 ? -1 : 1) : b.flipH === 1 ? -1 : 1, b.flipV === 2 ? (rnd() < 0.5 ? -1 : 1) : b.flipV === 1 ? -1 : 1];
+    const nTips = Math.max(1, ADV.tipTex.length);
+    const pickTip = () => {
+      if (nTips === 1) return 0;
+      if (b.tipOrder === 2 || b.tipOrder === 3) return Math.floor(rnd() * nTips);
+      if (b.tipOrder === 1) { const i = s.idx; s.idx += s.dir; if (s.idx >= nTips || s.idx < 0) { s.dir = -s.dir; s.idx += 2 * s.dir; } return Math.max(0, Math.min(nTips - 1, i)); }
+      return s.idx++ % nTips;
+    };
+    const tipAspect = (ti) => { const t = ADV.tipTex[ti]; if (!t) return [1, 1]; const mx = Math.max(t.w, t.h); return [t.w / mx, t.h / mx]; };
+    const push = (px, py, sz, a, sqx, sqy, alpha, ti) => {
+      const fl = flip(), asp = b.ribbon ? [1, 1] : tipAspect(ti);
+      let v = [0, 1];
+      let sy = sqy * asp[1], sx = sqx * asp[0];
+      if (b.ribbon) { const t = ADV.tipTex[ti]; const len = Math.max(0.5, stepLen || sz * 0.1); const rel = t ? (len / sz) * (t.w / t.h) : 0.01; v = [s.v, rel]; s.v = (s.v + rel) % 1; sy = len + 1; }
+      ADV.batch.push({ ti, d: [px, py, sz, a, sx, sy, alpha, col[0], col[1], col[2], fl[0], fl[1], v[0], v[1], 0, 0] });
+      const ext = sz * 0.75 * Math.max(sx, b.ribbon ? 1 : sy, 1) + (b.ribbon ? sy : 0) + 3;
+      const bx = { x: Math.floor(px - ext), y: Math.floor(py - ext), w: Math.ceil(2 * ext) + 1, h: Math.ceil(2 * ext) + 1 };
+      s.box = runion(s.box, bx);
+    };
+    if (b.spray) {
+      const n = Math.max(1, Math.round(b.spray.density * effectorValue(b.spray.densEff, p, s.speed, rnd())));
+      const R = size / 2;
+      const part = Math.max(0.5, (b.spray.sync ? b.spray.size * (b.size / (b.baseSize || b.size)) : b.spray.size) * effectorValue(b.spray.sizeEff, p, s.speed, rnd()));
+      const ex = Math.max(0.05, 0.5 * (1 + b.spray.bias));
+      for (let i = 0; i < n; i++) {
+        const th2 = rnd() * Math.PI * 2, r = R * Math.pow(rnd(), ex);
+        let a2 = (b.rotation * Math.PI) / 180 + ((b.rotMask & 0x80) ? (rnd() - 0.5) * 2 * Math.PI * b.rotRandom : 0) + ((b.rotMask & 0x40) ? ang : 0);
+        push(x + Math.cos(th2) * r, y + Math.sin(th2) * r, part, a2, sq[0], sq[1], flow, pickTip());
+      }
+    } else {
+      push(x, y, Math.max(0.5, size), angle, sq[0], sq[1], flow, pickTip());
+    }
+    s.n++;
+    advKick();
+  }
+  function advKick() { if (!ADV.raf) ADV.raf = requestAnimationFrame(advFrame); }
+  // 모아 둔 도장들을 획 버퍼에 찍고 화면에 보여 준다
+  function advFlush() {
+    const gl = ADV.gl, b = ADV.brush;
+    if (!gl || !ADV.batch.length || !b) return;
+    const P = ADV.P.stamp;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, ADV.fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ADV.S, 0);
+    gl.viewport(0, 0, ADV.W, ADV.H);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(P.p); gl.bindVertexArray(ADV.vao);
+    gl.uniform2f(P.u.uDoc, ADV.W, ADV.H);
+    const round = !ADV.tipTex.length;
+    gl.uniform1f(P.u.uRound, round ? 1 : 0); gl.uniform1f(P.u.uHard, b.hardness); gl.uniform1f(P.u.uAA, b.aa ? 1 : 0);
+    gl.uniform1f(P.u.uRibbon, b.ribbon && !round ? 1 : 0);
+    const useTex = ADV.texInfo && b.texPerStamp;
+    gl.uniform1f(P.u.uUseTex, useTex ? 1 : 0);
+    if (ADV.texInfo) {
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, ADV.texInfo.tex);
+      gl.uniform1i(P.u.uTex, 1); gl.uniform1f(P.u.uTexDen, b.texDensity); gl.uniform2f(P.u.uTexScale, ADV.texInfo.w * b.texScale, ADV.texInfo.h * b.texScale); gl.uniform1f(P.u.uTexInv, b.texInvert ? 1 : 0);
+    } else { gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, ADV.blank); gl.uniform1i(P.u.uTex, 1); }
+    gl.uniform1i(P.u.uTip, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, ADV.ibuf);
+    const groups = new Map();
+    for (const it of ADV.batch) { const k = round ? 0 : it.ti; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(it.d); }
+    for (const [ti, list] of groups) {
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, round ? ADV.blank : ADV.tipTex[ti].tex);
+      const arr = new Float32Array(list.length * INST);
+      list.forEach((d, i) => arr.set(d, i * INST));
+      gl.bufferData(gl.ARRAY_BUFFER, arr, gl.STREAM_DRAW);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, list.length);
+    }
+    ADV.batch = [];
+    gl.bindVertexArray(null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+  function advShow() {
+    const gl = ADV.gl, E = getEditor(), canvas = getCanvas(), b = ADV.brush;
+    if (!gl || !E || !canvas || !b) return;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, ADV.cv.width, ADV.cv.height);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    if (!ADV.stroke && !ADV.cBox) return;
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    const P = ADV.P.show; gl.useProgram(P.p); gl.bindVertexArray(ADV.vao);
+    const r = canvas.getBoundingClientRect(), k = canvas.width / (r.width || canvas.width), m = E.computedView.inverseTransform;
+    gl.uniform3f(P.u.uInv0, m[0] / k, m[2] / k, m[4]); gl.uniform3f(P.u.uInv1, m[1] / k, m[3] / k, m[5]);
+    gl.uniform1f(P.u.uH, ADV.cv.height); gl.uniform2f(P.u.uDoc, ADV.W, ADV.H); gl.uniform1f(P.u.uMode, 0);
+    advTexUniforms(P);
+    for (const [tex, op] of [[ADV.C, ADV.cOp || 1], [ADV.S, advOpacity()]]) {
+      if (tex === ADV.C && !ADV.cBox) continue;
+      if (tex === ADV.S && !ADV.stroke) continue;
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(P.u.uS, 0);
+      gl.uniform1f(P.u.uOp, op);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    gl.bindVertexArray(null);
+  }
+  function advTexUniforms(P) {
+    const gl = ADV.gl, b = ADV.brush, useTex = ADV.texInfo && !b.texPerStamp;
+    gl.uniform1f(P.u.uUseTex, useTex ? 1 : 0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, useTex ? ADV.texInfo.tex : ADV.blank); gl.uniform1i(P.u.uTex, 1);
+    if (useTex) { gl.uniform1f(P.u.uTexDen, b.texDensity); gl.uniform2f(P.u.uTexScale, ADV.texInfo.w * b.texScale, ADV.texInfo.h * b.texScale); gl.uniform1f(P.u.uTexInv, b.texInvert ? 1 : 0); }
+  }
+  const advOpacity = () => (ADV.brush ? ADV.brush.opacity : 1) * (S.advOpacity == null ? 1 : S.advOpacity / 100);
+  function advFrame() {
+    ADV.raf = 0;
+    if (ADV.lost) return;
+    try { advFlush(); advShow(); } catch (e) { console.warn('[MagmaWand] 고급 브러시', e); }
+    if (ADV.stroke || ADV.cBox) ADV.raf = requestAnimationFrame(advFrame);
+  }
+  // 획 끝: 보드 크기 PNG로 만들어 Magma에 한 번 붙여넣는다
+  async function advStrokeEnd(cancel) {
+    const s = ADV.stroke;
+    if (!s) return;
+    advFlush();
+    ADV.stroke = null;
+    const gl = ADV.gl;
+    const box = rclip(s.box || { x: 0, y: 0, w: 0, h: 0 }, ADV.W, ADV.H);
+    if (cancel || !box) { advClear(ADV.S, box); advKick(); return; }
+    // 확정용: 획 버퍼 × 불투명도 × 획 단위 텍스처를 box 크기로 잘라 읽는다
+    const op = advOpacity();
+    const out = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, out); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, box.w, box.h);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, ADV.fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, out, 0);
+    gl.viewport(0, 0, box.w, box.h); gl.disable(gl.BLEND);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    const P = ADV.P.show; gl.useProgram(P.p); gl.bindVertexArray(ADV.vao);
+    gl.uniform1f(P.u.uMode, 1); gl.uniform2f(P.u.uOff, box.x, box.y); gl.uniform2f(P.u.uDoc, ADV.W, ADV.H); gl.uniform1f(P.u.uOp, op);
+    advTexUniforms(P);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ADV.S); gl.uniform1i(P.u.uS, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const px = new Uint8Array(box.w * box.h * 4);
+    gl.readPixels(0, 0, box.w, box.h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.bindVertexArray(null); gl.deleteTexture(out);
+    // 화면에는 확정될 때까지 잠깐 남겨 둔다 (S ↔ C 바꾸고 새 S는 비움)
+    if (ADV.cBox) advClear(ADV.C, ADV.cBox);
+    const t = ADV.C; ADV.C = ADV.S; ADV.S = t; ADV.cBox = box; ADV.cOp = op;
+    advKick();
+    // 미리곱셈 → 일반 알파
+    let any = false;
+    for (let i = 0; i < px.length; i += 4) {
+      const a = px[i + 3];
+      if (a) { any = true; if (a < 255) { px[i] = Math.min(255, (px[i] * 255) / a); px[i + 1] = Math.min(255, (px[i + 1] * 255) / a); px[i + 2] = Math.min(255, (px[i + 2] * 255) / a); } }
+    }
+    const done = () => { clearTimeout(ADV.cTimer); ADV.cTimer = setTimeout(() => { if (ADV.cBox === box) { advClear(ADV.C, box); ADV.cBox = null; advKick(); } }, 260); };
+    if (!any) { done(); return; }
+    ADV.commitQ = ADV.commitQ.then(async () => {
+      try {
+        const W = ADV.W, H = ADV.H;
+        const oc = new OffscreenCanvas(W, H);
+        oc.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(px.buffer), box.w, box.h), box.x, box.y);
+        const blob = await oc.convertToBlob({ type: 'image/png' });
+        const dt = new DataTransfer();
+        dt.items.add(new File([blob], 'brush.png', { type: 'image/png' }));
+        document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      } catch (e) {
+        console.warn('[MagmaWand] 획 붙이기 실패', e);
+        toast('획을 보드에 넣지 못했어요: ' + (e && e.message || e));
+      } finally { done(); }
+    });
+  }
+
+  // ---------- 고급 브러시 ③ 도구 연결 (입력·커서·브러시 고르기) ----------
+  let advSaveTimer = 0;
+  function advSaveSoon() { clearTimeout(advSaveTimer); advSaveTimer = setTimeout(() => { if (ADV.brush) advSaveBrush(ADV.brush).catch(() => { }); }, 600); }
+  async function advSelect(id) {
+    const list = await advListBrushes();
+    const b = list.find((x) => x.id === id) || list[0] || null;
+    if (!b) { ADV.brush = null; S.advBrushId = null; saveSettings(); return null; }
+    S.advBrushId = b.id; saveSettings();
+    try { await advPrepare(b); } catch (e) { console.warn('[MagmaWand] 브러시 준비 실패', e); toast('브러시를 준비하지 못했어요: ' + (e && e.message || e)); return null; }
+    S.advSize = Math.round(b.size * 10) / 10;
+    rowsEl?.__mwSync?.();
+    return b;
+  }
+  function advCursor(cx, cy, show) {
+    if (!Q.cursor) { Q.cursor = document.createElement('div'); Q.cursor.className = 'mw-brush mw-el'; document.body.appendChild(Q.cursor); }
+    if (!show || !ADV.brush) { Q.cursor.style.display = 'none'; return; }
+    const d = Math.max(4, (S.advSize > 0 ? S.advSize : ADV.brush.size) * viewZoom());
+    Object.assign(Q.cursor.style, { display: 'block', width: d + 'px', height: d + 'px', left: (cx - d / 2) + 'px', top: (cy - d / 2) + 'px' });
+  }
+  function advPointerDown(e) {
+    if (ADV.stroke || BSZ.on) return;
+    if (!ADV.brush) { toast('먼저 오른쪽 설정 칸에서 브러시(.sut)를 가져와 주세요'); return; }
+    if (ADV.brush.erase) { toast('이 브러시는 지우개·특수 합성이라 아직 쓸 수 없어요'); return; }
+    if (ADV.brush.tips.length && !ADV.tipTex.length) { toast('이 브러시는 끝 모양 PNG가 필요해요 — 설정 칸의 "끝 모양 PNG 넣기"를 눌러 주세요'); return; }
+    const E = getEditor();
+    if (!E) return;
+    const L = E.model.user.activeLayers && E.model.user.activeLayers[0];
+    if (!L) { toast('그릴 레이어를 먼저 골라 주세요'); return; }
+    if (E.model.settings && E.model.settings.pasteNewLayer) toast('주의: Magma 설정 "붙여넣기를 새 레이어로"가 켜져 있어 획마다 새 레이어가 생겨요');
+    advEnsureGL(getCanvas(), E.drawing.w, E.drawing.h);
+    ADV.pid = e.pointerId;
+    advStrokeStart(e);
+  }
+  function advPointerMove(e) {
+    if (!ADV.stroke || e.pointerId !== ADV.pid) return;
+    const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+    for (const ce of (evs.length ? evs : [e])) advAddPoint(ce);
+  }
+  // 설정 칸: 브러시 목록 + 가져오기 + 끝 모양 PNG 넣기
+  function advBuildRows(tplBtn) {
+    const box = document.createElement('div');
+    box.className = 'mw-advbox mw-el';
+    const mkBtn = (text, cls = 'sm btn secondary') => { const b = document.createElement('button'); b.type = 'button'; b.className = cls; b.textContent = text; return b; };
+    const list = document.createElement('div'); list.className = 'mw-advlist';
+    const actions = document.createElement('div'); actions.className = 'mw-advacts';
+    const info = document.createElement('div'); info.className = 'mw-advinfo';
+    const fileIn = document.createElement('input'); fileIn.type = 'file'; fileIn.accept = '.sut'; fileIn.multiple = true; fileIn.style.display = 'none';
+    const imp = mkBtn('＋ 브러시 가져오기 (.sut)');
+    const png = mkBtn('끝 모양 PNG 넣기');
+    const del = mkBtn('지우기');
+    actions.append(imp, png, del, fileIn);
+    box.append(list, actions, info);
+    imp.addEventListener('click', (e) => { e.preventDefault(); fileIn.click(); });
+    fileIn.addEventListener('change', async () => {
+      const files = [...fileIn.files]; fileIn.value = '';
+      let last = null, fails = 0;
+      for (const f of files) {
+        try { last = await advImportSut(f); }
+        catch (err) { fails++; console.warn('[MagmaWand] 가져오기 실패', f.name, err); toast(`${f.name}: ${err && err.message || err}`); }
+      }
+      if (last) { await advSelect(last.id); toast(`브러시 ${files.length - fails}개를 가져왔어요` + (last.tips.some((t) => t.needPng) ? ' — 끝 모양 PNG가 필요한 브러시가 있어요' : '')); }
+      render();
+    });
+    png.addEventListener('click', (e) => { e.preventDefault(); if (ADV.brush) openAdvPngDialog(ADV.brush, render); });
+    let armed = false;
+    del.addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (!ADV.brush) return;
+      if (!armed) { armed = true; del.textContent = '한 번 더 누르면 지워요'; setTimeout(() => { armed = false; del.textContent = '지우기'; }, 3000); return; }
+      armed = false; del.textContent = '지우기';
+      await advDeleteBrush(ADV.brush); ADV.brush = null; await advSelect(null); render();
+    });
+    async function render() {
+      const brushes = await advListBrushes().catch(() => []);
+      list.innerHTML = '';
+      if (!brushes.length) { list.innerHTML = '<div class="mw-advempty">가져온 브러시가 없어요. 클립 스튜디오 브러시 파일(.sut)을 가져오세요.</div>'; }
+      for (const b of brushes) {
+        const it = mkBtn(b.name, 'sm btn ' + (ADV.brush && ADV.brush.id === b.id ? 'primary' : 'secondary'));
+        it.classList.add('mw-advitem');
+        if (b.tips.some((t) => t.needPng) || (b.texture && b.texture.needPng)) it.textContent += ' ⚠';
+        it.addEventListener('click', async (e) => { e.preventDefault(); await advSelect(b.id); render(); });
+        list.appendChild(it);
+      }
+      const cur = ADV.brush;
+      png.style.display = cur && (cur.tips.length || cur.texture) ? '' : 'none';
+      del.style.display = cur ? '' : 'none';
+      const need = cur ? cur.tips.filter((t) => t.needPng).length + (cur.texture && cur.texture.needPng ? 1 : 0) : 0;
+      info.textContent = !cur ? '' : [
+        need ? `⚠ 보호된 소재 ${need}개: CSP에서 PNG로 저장해 "끝 모양 PNG 넣기"로 넣어 주세요` : '',
+        cur.unsupported.length ? `아직 안 되는 기능: ${cur.unsupported.join(', ')} (나머지 설정으로 그려요)` : '',
+      ].filter(Boolean).join('\n');
+    }
+    box.__mwRender = render;
+    render();
+    return box;
+  }
+  function openAdvPngDialog(brush, after) {
+    document.querySelector('.mw-dialog-wrap')?.remove();
+    const wrap = document.createElement('div');
+    wrap.className = 'mw-dialog-wrap mw-el';
+    wrap.innerHTML = `<div class="mw-dialog mw-hist" role="dialog">
+      <div class="mw-dialog-title">끝 모양·텍스처 PNG <span class="mw-hist-sub"></span></div>
+      <div class="mw-hist-help">이 브러시의 소재 이미지는 보호돼 있어 직접 꺼낼 수 없어요. 클립 스튜디오에서 해당 소재(소재 팔레트의 브러시 끝 모양·텍스처)를
+        캔버스에 붙여 <b>PNG로 저장</b>한 뒤, 아래 같은 모양 옆의 <b>PNG 고르기</b>로 넣어 주세요. 작은 그림은 알아보기 쉽게 보여 주는 미리보기예요.</div>
+      <div class="mw-hist-list mw-pnglist"></div>
+      <div class="mw-dialog-btns"><button type="button" class="md btn primary mw-ok">닫기</button></div></div>`;
+    document.body.appendChild(wrap);
+    wrap.querySelector('.mw-hist-sub').textContent = brush.name;
+    const urls = [];
+    const close = () => { urls.forEach((u) => URL.revokeObjectURL(u)); wrap.remove(); after && after(); };
+    wrap.addEventListener('pointerdown', (e) => { e.stopPropagation(); if (e.target === wrap) close(); });
+    wrap.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Escape') close(); });
+    wrap.querySelector('.mw-ok').addEventListener('click', close);
+    const listEl = wrap.querySelector('.mw-pnglist');
+    const slots = [...brush.tips.map((t, i) => ({ t, label: `끝 모양 ${i + 1}` })), ...(brush.texture ? [{ t: brush.texture, label: '텍스처' }] : [])];
+    for (const { t, label } of slots) {
+      const row = document.createElement('div'); row.className = 'mw-hist-row';
+      const img = document.createElement('img'); img.className = 'mw-hist-thumb';
+      (async () => { const bl = (await advGetImage(t.key)) || (await advGetImage(t.thumbKey)); if (bl) { const u = URL.createObjectURL(bl); urls.push(u); img.src = u; } })();
+      const tx = document.createElement('div'); tx.className = 'mw-hist-info';
+      tx.innerHTML = `<div class="mw-hist-time"></div><div class="mw-hist-meta"></div>`;
+      tx.querySelector('.mw-hist-time').textContent = label;
+      tx.querySelector('.mw-hist-meta').textContent = t.needPng ? 'PNG 필요 (미리보기는 소재 썸네일)' : '준비됨';
+      const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/png,image/*'; inp.style.display = 'none';
+      const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'sm btn secondary'; btn.textContent = t.needPng ? 'PNG 고르기' : '바꾸기';
+      btn.addEventListener('click', (e) => { e.preventDefault(); inp.click(); });
+      inp.addEventListener('change', async () => {
+        const f = inp.files[0]; inp.value = '';
+        if (!f) return;
+        try {
+          await createImageBitmap(f); // 열리는 그림인지 확인
+          t.key = await advPutImage(f); t.needPng = false;
+          await advSaveBrush(brush);
+          ADV.tips.clear();
+          if (ADV.brush && ADV.brush.id === brush.id) await advPrepare(brush);
+          tx.querySelector('.mw-hist-meta').textContent = '준비됨'; btn.textContent = '바꾸기';
+          const u = URL.createObjectURL(f); urls.push(u); img.src = u;
+        } catch (err) { toast('그림을 열지 못했어요: ' + (err && err.message || err)); }
+      });
+      row.append(img, tx, btn, inp);
+      listEl.appendChild(row);
+    }
+  }
+
   // ---------- 입력 가로채기 ----------
   // 도구가 켜져 있으면 그림판 위의 실제 클릭·끌기는 Magma에 넘기지 않고 이 도구가 처리한다.
-  const BLOCK = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'touchstart', 'touchend'];
+  const BLOCK = ['pointerdown', 'pointerup', 'pointercancel', 'mousedown', 'mouseup', 'click', 'touchstart', 'touchend'];
   let pendingDown = false;
   function onInput(e) {
     if (!S.active || e.__magmaWand || !e.isTrusted) return;
@@ -1649,6 +2460,11 @@
       if (e.type === 'pointerup') qFinish(canvas, false);
       return;
     }
+    if (S.tool === 'brush' && ADV.stroke && (e.type === 'pointerup' || e.type === 'pointercancel' || e.type === 'mouseup')) {
+      e.stopImmediatePropagation(); e.preventDefault();
+      if (e.type !== 'mouseup' && e.pointerId === ADV.pid) advStrokeEnd(e.type === 'pointercancel');
+      return;
+    }
     if (e.target !== canvas) return;
     if (e.type.startsWith('touch')) { e.stopImmediatePropagation(); return; }
     if (e.button !== 0) return; // 가운데/오른쪽 버튼(화면 이동 등)은 그대로 통과
@@ -1656,6 +2472,10 @@
     e.preventDefault();
     if (S.tool === 'quick') {
       if (e.type === 'pointerdown' && !S.busy && !Q.stroking) qStart(e, canvas);
+      return;
+    }
+    if (S.tool === 'brush') {
+      if (e.type === 'pointerdown') advPointerDown(e);
       return;
     }
     if (e.type === 'pointerdown') pendingDown = true;
@@ -1668,6 +2488,13 @@
   on(window, 'pointermove', (e) => {
     if (!S.active || !e.isTrusted || e.__magmaWand) return;
     const canvas = getCanvas();
+    if (S.tool === 'brush' && canvas) {
+      const r = canvas.getBoundingClientRect();
+      const over = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+      advCursor(e.clientX, e.clientY, (over || ADV.stroke) && !BSZ.on);
+      if (ADV.stroke) { e.stopImmediatePropagation(); advPointerMove(e); }
+      return;
+    }
     if (S.tool === 'quick' && canvas) {
       const r = canvas.getBoundingClientRect();
       const over = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
@@ -1681,6 +2508,22 @@
       return;
     }
     if (pendingDown) e.stopImmediatePropagation();
+  }, true);
+  on(window, 'keydown', (e) => {
+    if (!S.active || S.tool !== 'brush' || !e.isTrusted || !ADV.brush) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (e.code === 'Escape' && ADV.stroke) { e.preventDefault(); e.stopImmediatePropagation(); advStrokeEnd(true); return; }
+    if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      const v = S.advSize || ADV.brush.size, step = v < 10 ? 1 : v < 50 ? 5 : v < 200 ? 10 : 50;
+      S.advSize = Math.min(1000, Math.max(1, Math.round(v + (e.code === 'BracketRight' ? step : -step))));
+      ADV.brush.size = S.advSize; advSaveSoon(); rowsEl?.__mwSync?.();
+      if (Q.cursor && Q.cursor.style.display === 'block') {
+        const cx = parseFloat(Q.cursor.style.left) + parseFloat(Q.cursor.style.width) / 2, cy = parseFloat(Q.cursor.style.top) + parseFloat(Q.cursor.style.height) / 2;
+        advCursor(cx, cy, true);
+      }
+    }
   }, true);
   on(window, 'keydown', (e) => {
     if (!S.active || S.tool !== 'quick' || !e.isTrusted) return;
@@ -1759,8 +2602,8 @@
     .replace(/^Arrow/, '').replace(/^Bracket(Left|Right)$/, (_, s) => (s === 'Left' ? '[' : ']'));
   const comboParts = (c) => c.split('+').map((p, i, a) => (i === a.length - 1 ? keyLabel(p) : p));
   const comboText = (c) => comboParts(c).join('+');
-  const TOOL_LABEL = { wand: '마법봉', quick: '빠른 선택' };
-  const TOOL_KEYS = { wand: 'keys', quick: 'qkeys' };
+  const TOOL_LABEL = { wand: '마법봉', quick: '빠른 선택', brush: '고급 브러시' };
+  const TOOL_KEYS = { wand: 'keys', quick: 'qkeys', brush: 'bkeys' };
   function syncTooltip() {
     if (!toolBtn) return;
     const k = S[TOOL_KEYS[S.tool]];
@@ -1774,7 +2617,7 @@
     if (!getCanvas() || document.querySelector('.modal-dialog')) return;
     const c = comboOf(e);
     if (!c) return;
-    const tool = S.keys.includes(c) ? 'wand' : S.qkeys.includes(c) ? 'quick' : null;
+    const tool = S.keys.includes(c) ? 'wand' : S.qkeys.includes(c) ? 'quick' : S.bkeys.includes(c) ? 'brush' : null;
     if (!tool) return;
     // 사용자가 고른 키이므로 Magma의 같은 키 동작보다 이 도구를 우선한다
     e.preventDefault(); e.stopImmediatePropagation();
@@ -1783,18 +2626,18 @@
 
   // 설정 창의 단축키 표(Tools)에 '마법봉'·'빠른 선택' 줄을 Magma 줄과 같은 모양으로 넣는다.
   // 바꾼 내용은 설정 창의 Save를 눌러야 저장되고, Cancel·닫기면 버려진다 (Magma와 같은 방식)
-  const SC_ROWS = [{ key: 'keys', label: '마법봉 (Magic Wand)' }, { key: 'qkeys', label: '빠른 선택 (Quick Selection)' }];
+  const SC_ROWS = [{ key: 'keys', label: '마법봉 (Magic Wand)' }, { key: 'qkeys', label: '빠른 선택 (Quick Selection)' }, { key: 'bkeys', label: '고급 브러시 (CSP Brush)' }];
   let scRows = {}, stagedAll = null, capturingKey = false, hookedModal = null;
   function ensureShortcutRow() {
     const modal = [...document.querySelectorAll('.modal-dialog')].find((m) => /Application settings/.test(m.textContent));
     if (!modal) { scRows = {}; stagedAll = null; capturingKey = false; hookedModal = null; return; }
-    if (stagedAll === null) stagedAll = { keys: S.keys.slice(), qkeys: S.qkeys.slice() };
+    if (stagedAll === null) stagedAll = { keys: S.keys.slice(), qkeys: S.qkeys.slice(), bkeys: S.bkeys.slice() };
     if (hookedModal !== modal) {
       hookedModal = modal;
       modal.addEventListener('click', (e) => {
         const b = e.target.closest && e.target.closest('button');
         if (b && b.textContent.trim() === 'Save' && stagedAll) {
-          S.keys = stagedAll.keys.slice(); S.qkeys = stagedAll.qkeys.slice(); saveSettings(); syncTooltip();
+          S.keys = stagedAll.keys.slice(); S.qkeys = stagedAll.qkeys.slice(); S.bkeys = stagedAll.bkeys.slice(); saveSettings(); syncTooltip();
         }
       }, true);
     }
@@ -3041,7 +3884,11 @@ void main(){
   // 빠른 선택: 점선 원(선택) + 붓
   const QUICK_SVG = '<path fill="none" stroke="currentColor" stroke-width="34" stroke-dasharray="58 40" d="M256 60a196 196 0 1 0 0.1 0"/>' +
     '<path fill="currentColor" d="M330 120l62 62-150 150-62-62z"/><path fill="currentColor" d="M168 300c40 0 70 30 64 66-8 46-74 76-132 64 34-20 22-56 30-84 6-28 18-46 38-46z"/>';
-  const TOOL_SVG = { wand: WAND_SVG, quick: QUICK_SVG };
+  // 고급 브러시: 붓 + 별
+  const BRUSH_SVG = '<path fill="currentColor" d="M420 40c24-8 52 20 44 44L300 300l-56-56z"/>' +
+    '<path fill="currentColor" d="M222 266l56 56c-6 60-50 110-130 118-34 4-70-2-100-16 40-8 52-40 56-76 8-52 52-86 118-82z"/>' +
+    '<path fill="currentColor" d="M110 70l12 28 28 12-28 12-12 28-12-28-28-12 28-12z"/>';
+  const TOOL_SVG = { wand: WAND_SVG, quick: QUICK_SVG, brush: BRUSH_SVG };
   const CSS = `
     html.mw-on editor-tools button.tool.on:not(.mw-tool) { background: transparent !important; border-color: transparent !important; }
     html.mw-on .editor-view, html.mw-on .editor-view * { cursor: crosshair !important; }
@@ -3072,6 +3919,13 @@ void main(){
       color: #fff; font: 12px/1.3 system-ui, 'Malgun Gothic', sans-serif; padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
     .mw-hist { width: min(640px, 94vw); }
     .mw-fxdlg { width: min(400px, 94vw); }
+    html.mw-on.mw-advmode editor-sliders .selection-tool > :not(.mw-el) { display: none !important; }
+    .mw-advbox { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; }
+    .mw-advlist { display: flex; flex-wrap: wrap; gap: 4px; max-height: 150px; overflow-y: auto; }
+    .mw-advlist .mw-advitem { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mw-advacts { display: flex; flex-wrap: wrap; gap: 4px; }
+    .mw-advinfo { font-size: 11.5px; color: #c9a227; white-space: pre-line; }
+    .mw-advempty { font-size: 12px; color: #9a9a9a; }
     .mw-fxdlg input[type=range] { width: 130px; vertical-align: middle; }
     .mw-fxdlg .mw-dialog-row { margin-bottom: 10px; }
     .mw-fxdlg .mw-dialog-input { width: 64px; }
@@ -3114,7 +3968,8 @@ void main(){
     if (statusEl) statusEl.textContent = msg;
     console.log('[MagmaWand]', msg);
   }
-  const hint = () => S.tool === 'quick'
+  const hint = () => S.tool === 'brush' ? '그리기: 손을 떼면 보드에 들어가요 · Ctrl+Alt 끌기: 크기 · [ ]: 크기'
+    : S.tool === 'quick'
     ? '문지르기: 선택(선택이 있으면 추가) · Alt: 빼기 · [ ]: 브러시 크기'
     : S.action === 'fill' ? '클릭한 영역을 지금 색으로 채워요' : '클릭: 선택 · Shift: 추가 · Alt: 빼기';
 
@@ -3176,7 +4031,7 @@ void main(){
     flyEl = document.createElement('div');
     flyEl.className = 'mw-flyout mw-el';
     flyEl.style.background = bg || '#2a2a2a';
-    for (const tool of ['wand', 'quick']) {
+    for (const tool of ['wand', 'quick', 'brush']) {
       const b = toolBtn.cloneNode(true);
       b.classList.remove('mw-tool');
       b.classList.add('mw-fly-btn');
@@ -3298,7 +4153,13 @@ void main(){
     statusEl = document.createElement('div');
     statusEl.className = 'mw-status';
     statusEl.textContent = lastStatus || hint();
-    if (S.tool === 'quick') {
+    if (S.tool === 'brush') {
+      const adv = advBuildRows();
+      const sizeRow2 = sliderRow('브러시 크기', 'advSize', 1, 1000);
+      const opRow = sliderRow('불투명도 (%)', 'advOpacity', 1, 100);
+      rowsEl.append(adv, sizeRow2, opRow, statusEl);
+      rowsEl.__advRender = adv.__mwRender;
+    } else if (S.tool === 'quick') {
       rowsEl.append(
         segRow('참조', 'qref', [['all', '모든 레이어'], ['layer', '현재 레이어']]),
         sliderRow('브러시 크기', 'brush', 1, 200),
@@ -3360,12 +4221,15 @@ void main(){
       if (S.active) { removeSettings(); lastStatus = hint(); }
     }
     document.documentElement.classList.toggle('mw-quick', S.tool === 'quick');
-    if (S.tool !== 'quick') qCursor(0, 0, false);
+    document.documentElement.classList.toggle('mw-advmode', S.tool === 'brush');
+    if (S.tool !== 'quick' && S.tool !== 'brush') qCursor(0, 0, false);
+    if (S.tool !== 'brush' && ADV.stroke) advStrokeEnd(false);
+    if (onNow && S.tool === 'brush' && !ADV.brush) advSelect(S.advBrushId).then(() => rowsEl?.__advRender?.());
     if (onNow === S.active) { syncToolButton(); if (onNow) ensureSettings(); return; }
     S.active = onNow;
     document.documentElement.classList.toggle('mw-on', onNow);
     syncToolButton();
-    if (!onNow) { closeFlyout(); qCursor(0, 0, false); if (Q.stroking) qFinish(getCanvas(), true); }
+    if (!onNow) { closeFlyout(); qCursor(0, 0, false); if (Q.stroking) qFinish(getCanvas(), true); if (ADV.stroke) advStrokeEnd(false); }
     if (onNow) {
       S.switching = true;
       try { await selectTool('lassoSelectionIcon'); } finally { S.switching = false; }
@@ -3418,6 +4282,7 @@ void main(){
     edtSq, growShrinkMask, maskToSinglePolygon, viewTransform, copyMergedSelection, growShrinkSelection, openGrowDialog,
     getEditor, ensureEditor, docContext, docImage, exactPath, withSpikes, magmaKeep, rasterPath, straightLoop,
     histCheck, histPoints, histCopyLayer, openHistoryDialog, histUsage, getBrushSize, sizeRow,
-    openStrokeDialog, fxSet, fxGet, fxKick, fxState: () => FX, getAA, setAA, docToBuffer, selectionExists };
+    openStrokeDialog, fxSet, fxGet, fxKick, fxState: () => FX,
+    advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, parseSut, getAA, setAA, docToBuffer, selectionExists };
   window.__magmaWand.ready = true; // 끝까지 시작됨 (실행기는 이 표시가 없으면 다시 넣는다)
 })();
