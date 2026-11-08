@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Magma 마법봉",
+  "version": "1.0.0",
+  "description": "Magma 그림판에 클립 스튜디오식 마법봉을 추가합니다. 마법봉 코드는 자동으로 최신 버전을 받아요.",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": [
+    "https://github.com/*",
+    "https://objects.githubusercontent.com/*",
+    "https://release-assets.githubusercontent.com/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://magma.com/*", "https://*.magma.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
