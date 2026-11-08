@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.7.0';
+  const VERSION = '0.8.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -1492,6 +1492,149 @@
     }
   }
 
+  // ---------- Ctrl+Alt 끌기로 브러시 크기 바꾸기 (클립 스튜디오 방식) ----------
+  // 펜·브러시·지우개·블렌드·리퀴파이(그리고 빠른 선택)에서 Ctrl+Alt를 누른 채 그림판을 끌면:
+  //  - 원의 중심(영점)에서 마우스까지의 거리가 브러시 반지름이 된다.
+  //  - 영점은 '지금 크기의 원 위에, 마지막으로 조정을 끝냈던 방향에 마우스가 오도록' 잡는다.
+  //    그래서 다시 조정할 때 원이 지난번과 같은 방향으로 나타나고, 누르는 순간 크기가 튀지 않는다.
+  //  - 끄는 동안은 내 화면에만 원을 그리고, 손을 뗄 때 Magma 크기 칸에 한 번만 넣는다(설정 변경 1회).
+  // Magma의 Size = 지름(보드 픽셀). 크기 칸은 1~500까지 입력된다(Magma 소스).
+  const SIZE_TOOLS = new Set(['faPencil', 'faPaintBrush', 'faEraser', 'blendIcon', 'liquifyIcon']);
+  const SIZE_DIR_KEY = 'magmaWand.sizeDir';
+  const BSZ = { on: false, quick: false, ox: 0, oy: 0, zoom: 1, size: 0, el: null, label: null, pid: null };
+  function sizeRow() {
+    return magmaRows().find((r) => /^Size(\s+x[\d.]+)?$/.test(r.querySelector('.slider-label')?.textContent.replace(/\s+/g, ' ').trim() || ''));
+  }
+  function getBrushSize() {
+    const v = parseFloat(sizeRow()?.querySelector('editable-number')?.textContent.trim());
+    return Number.isFinite(v) ? v : null;
+  }
+  async function setRowNumber(row, v) {
+    const en = row?.querySelector('editable-number');
+    if (!en) return false;
+    en.querySelector('button')?.click();
+    await nextFrame();
+    const inp = en.querySelector('input');
+    if (!inp) return false;
+    inp.focus();
+    inp.value = String(v);
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    inp.blur();
+    return true;
+  }
+  // Magma는 Alt를 누르고 있는 동안 도구를 잠깐 스포이트로 바꾼다 → 수정키를 누르기 전의 도구를 기억해 둔다
+  let plainTool = null, rememberAt = 0;
+  const rememberTool = (force) => {
+    const now = performance.now();
+    if (!force && now - rememberAt < 250) return; // 마우스 움직임마다 화면을 뒤지지 않게
+    rememberAt = now;
+    const t = currentTool();
+    if (!t) return;
+    plainTool = t;
+    if (SIZE_TOOLS.has(t)) { const v = getBrushSize(); if (v) BSZ.lastSize = v; }
+  };
+  on(window, 'keydown', (e) => {
+    if (!e.isTrusted || e.repeat) return;
+    if ((e.key === 'Alt' && !e.ctrlKey) || (e.key === 'Control' && !e.altKey)) rememberTool(true);
+  }, true);
+  on(window, 'pointermove', (e) => { if (e.isTrusted && !e.altKey && !e.ctrlKey && !BSZ.on) rememberTool(); }, { capture: true, passive: true });
+  function sizeGestureTarget() {
+    if (S.busy) return null;
+    if (S.active) return S.tool === 'quick' ? 'quick' : null;
+    const t = SIZE_TOOLS.has(currentTool()) ? currentTool() : plainTool;
+    return SIZE_TOOLS.has(t) ? 'brush' : null;
+  }
+  function viewZoom() {
+    const E = getEditor();
+    const z = E && E.view && E.view.scale;
+    if (z > 0) return z;
+    const vt = viewTransform();
+    return vt && vt.zoom > 0 ? vt.zoom : 1;
+  }
+  function loadSizeDir() {
+    try {
+      const d = JSON.parse(localStorage.getItem(SIZE_DIR_KEY) || 'null');
+      if (Array.isArray(d) && Number.isFinite(d[0]) && Number.isFinite(d[1]) && Math.hypot(d[0], d[1]) > 0.5) return d;
+    } catch { /* 무시 */ }
+    return [1, 0]; // 처음: 원의 오른쪽 가장자리에 마우스
+  }
+  const roundSize = (v) => Math.min(500, Math.max(1, v < 10 ? Math.round(v * 10) / 10 : Math.round(v)));
+  function sizeRender(mx, my) {
+    const r = Math.hypot(mx - BSZ.ox, my - BSZ.oy);
+    BSZ.size = BSZ.quick ? Math.min(500, Math.max(1, Math.round(r / BSZ.zoom))) : roundSize((2 * r) / BSZ.zoom);
+    const rr = BSZ.quick ? BSZ.size * BSZ.zoom : (BSZ.size / 2) * BSZ.zoom;
+    Object.assign(BSZ.el.style, { left: (BSZ.ox - rr) + 'px', top: (BSZ.oy - rr) + 'px', width: 2 * rr + 'px', height: 2 * rr + 'px' });
+    BSZ.label.textContent = BSZ.quick ? `브러시 크기 ${BSZ.size}` : `Size ${BSZ.size}`;
+    Object.assign(BSZ.label.style, { left: mx + 14 + 'px', top: my + 14 + 'px' });
+  }
+  function sizeStart(e, kind) {
+    const zoom = viewZoom();
+    const cur = kind === 'quick' ? S.brush : (getBrushSize() || BSZ.lastSize);
+    if (!(cur > 0)) return false;
+    const rScreen = kind === 'quick' ? cur * zoom : (cur / 2) * zoom;
+    const [dx, dy] = loadSizeDir();
+    const L = Math.hypot(dx, dy) || 1;
+    Object.assign(BSZ, { on: true, quick: kind === 'quick', zoom, pid: e.pointerId,
+      ox: e.clientX - (dx / L) * rScreen, oy: e.clientY - (dy / L) * rScreen });
+    if (!BSZ.el) {
+      BSZ.el = document.createElement('div'); BSZ.el.className = 'mw-size-ring mw-el';
+      BSZ.label = document.createElement('div'); BSZ.label.className = 'mw-size-label mw-el';
+    }
+    document.body.append(BSZ.el, BSZ.label);
+    BSZ.el.style.display = BSZ.label.style.display = 'block';
+    if (kind === 'quick') qCursor(0, 0, false);
+    sizeRender(e.clientX, e.clientY);
+    return true;
+  }
+  async function sizeEnd(e, cancel) {
+    if (!BSZ.on) return;
+    BSZ.on = false;
+    BSZ.el.style.display = BSZ.label.style.display = 'none';
+    if (cancel) return;
+    sizeRender(e.clientX, e.clientY);
+    const vx = e.clientX - BSZ.ox, vy = e.clientY - BSZ.oy, L = Math.hypot(vx, vy);
+    if (L > 2) { try { localStorage.setItem(SIZE_DIR_KEY, JSON.stringify([vx / L, vy / L])); } catch { } }
+    if (BSZ.quick) {
+      S.brush = BSZ.size; saveSettings(); rowsEl?.__mwSync?.();
+      qCursor(e.clientX, e.clientY, true);
+      return;
+    }
+    const want = BSZ.size;
+    try {
+      // Alt를 떼서 원래 도구(크기 칸)가 돌아올 때까지 기다렸다가 한 번만 넣는다
+      await waitFor(() => SIZE_TOOLS.has(currentTool()) && sizeRow(), 3000);
+      if (!sizeRow() || !SIZE_TOOLS.has(currentTool())) { toast('브러시 크기 칸을 찾지 못해 바꾸지 못했어요'); return; }
+      if (getBrushSize() === want) return;
+      await setRowNumber(sizeRow(), want);
+      await waitFor(() => getBrushSize() === want, 400);
+    } catch (err) { console.warn('[MagmaWand] 브러시 크기 바꾸기 실패', err); }
+  }
+  const SIZE_EVENTS = ['pointerdown', 'pointermove', 'pointerrawupdate', 'pointerup', 'pointercancel', 'mousedown', 'mousemove', 'mouseup', 'click', 'contextmenu'];
+  function onSizeGesture(e) {
+    if (!e.isTrusted || e.__magmaWand) return;
+    if (BSZ.on) {
+      // 조정 중에는 Magma가 그리지 않도록 모든 입력을 가로챈다
+      e.stopImmediatePropagation();
+      if (e.cancelable) e.preventDefault();
+      if (e.type === 'pointermove' && e.pointerId === BSZ.pid) sizeRender(e.clientX, e.clientY);
+      else if ((e.type === 'pointerup' || e.type === 'pointercancel') && e.pointerId === BSZ.pid) sizeEnd(e, e.type === 'pointercancel');
+      return;
+    }
+    if (e.type !== 'pointerdown' || !e.ctrlKey || !e.altKey || e.button !== 0) return;
+    const canvas = getCanvas();
+    if (!canvas || e.target !== canvas) return;
+    const kind = sizeGestureTarget();
+    if (!kind) return;
+    if (!sizeStart(e, kind)) return;
+    e.stopImmediatePropagation();
+    e.preventDefault();
+  }
+  // 마법봉 입력 처리보다 먼저 받도록 맨 앞에 등록 (window 캡처 단계, 등록 순서대로 실행)
+  for (const t of SIZE_EVENTS) on(window, t, onSizeGesture, true);
+  on(window, 'blur', () => { if (BSZ.on) sizeEnd({ clientX: BSZ.ox, clientY: BSZ.oy }, true); });
+
   // ---------- 입력 가로채기 ----------
   // 도구가 켜져 있으면 그림판 위의 실제 클릭·끌기는 Magma에 넘기지 않고 이 도구가 처리한다.
   const BLOCK = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'touchstart', 'touchend'];
@@ -2492,6 +2635,10 @@
     .mw-dialog-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
     .mw-dialog-input { width: 90px; background: #151515; color: #f4f4f4; border: 1px solid #555; border-radius: 4px; padding: 5px 8px; font: inherit; }
     .mw-dialog-btns { display: flex; justify-content: flex-end; }
+    .mw-size-ring { position: fixed; z-index: 2147482000; pointer-events: none; border-radius: 50%; box-sizing: border-box;
+      border: 1px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.75), inset 0 0 0 1px rgba(0,0,0,.75); display: none; }
+    .mw-size-label { position: fixed; z-index: 2147482001; pointer-events: none; display: none; background: rgba(20,20,22,.85);
+      color: #fff; font: 12px/1.3 system-ui, 'Malgun Gothic', sans-serif; padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
     .mw-hist { width: min(640px, 94vw); }
     .mw-hist-sub { font-size: 12px; font-weight: 400; color: #9a9a9a; margin-left: 6px; }
     .mw-hist-help { font-size: 12.5px; color: #c8c8c8; margin: -4px 0 12px; }
@@ -2814,6 +2961,7 @@
   window.__magmaWand.destroy = () => {
     clearInterval(tick);
     clearTimeout(stabTimer); // 되돌릴 설정은 localStorage에 남아 있어 새 버전이 이어서 되돌린다
+    BSZ.el?.remove(); BSZ.label?.remove(); BSZ.on = false;
     for (const f of cleanups.splice(0)) { try { f(); } catch { /* 무시 */ } }
     removeSettings();
     document.querySelectorAll('.mw-menu, .mw-toast, .mw-dialog-wrap, .mw-shortcut, .mw-flyout, .mw-overlay, .mw-brush').forEach((e) => e.remove());
@@ -2834,6 +2982,6 @@
     getBrushMode, setBrushMode, getAutoErase, setAutoErase, layerRows, personalState, soloCurrentLayer, restoreLayers,
     edtSq, growShrinkMask, maskToSinglePolygon, viewTransform, copyMergedSelection, growShrinkSelection, openGrowDialog,
     getEditor, ensureEditor, docContext, docImage, exactPath, withSpikes, magmaKeep, rasterPath, straightLoop,
-    histCheck, histPoints, histCopyLayer, openHistoryDialog, histUsage, getAA, setAA, docToBuffer, selectionExists };
+    histCheck, histPoints, histCopyLayer, openHistoryDialog, histUsage, getBrushSize, sizeRow, getAA, setAA, docToBuffer, selectionExists };
   window.__magmaWand.ready = true; // 끝까지 시작됨 (실행기는 이 표시가 없으면 다시 넣는다)
 })();
