@@ -194,6 +194,91 @@ function Get-Targets {
   try { return Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/list" -TimeoutSec 2 -UseBasicParsing } catch { return $null }
 }
 
+# ---------------- Better Magma 연동 (광고 숨기기) ----------------
+# 사용자가 크롬에 'Better Magma' 확장을 설치해 두었으면, 그 확장의 코드를 데스크톱 앱에도 그대로 적용한다.
+# (남의 코드를 이 프로젝트에 복사·배포하지 않고, 사용자가 이미 설치한 것을 쓴다)
+# 이 코드는 페이지가 시작되기 전에 들어가야 제대로 동작하므로, 화면(타깃)마다 연결을 열어 둔 채
+# '새 문서마다 실행' 스크립트로 등록한다. 연결을 닫으면 등록이 풀리므로 Magma가 켜져 있는 동안 유지한다.
+function Find-BetterMagma {
+  $roots = @(
+    (Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data'),
+    (Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\User Data')
+  )
+  foreach ($root in $roots) {
+    if (-not (Test-Path $root)) { continue }
+    $mans = Get-ChildItem -Path $root -Filter 'manifest.json' -Recurse -Depth 4 -ErrorAction SilentlyContinue |
+      Where-Object { $_.FullName -match '\\Extensions\\' }
+    foreach ($m in $mans) {
+      try {
+        $j = Get-Content $m.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j.name -ne 'Better Magma') { continue }
+        $dir = Split-Path $m.FullName -Parent
+        $src = ''
+        foreach ($cs in $j.content_scripts) {
+          foreach ($f in $cs.js) { $src += [IO.File]::ReadAllText((Join-Path $dir $f), [Text.Encoding]::UTF8) + "`n;`n" }
+        }
+        if ($src) { Write-Log "Better Magma 찾음: v$($j.version)"; return $src }
+      } catch { }
+    }
+  }
+  return $null
+}
+$BMSrc = $null
+$Persist = @{}   # 타깃 id → 열어 둔 연결
+$StartedAt = $null; $Reloaded = @{}
+function Ensure-StartScript($t) {
+  if (-not $BMSrc) { return }
+  $p = $Persist[$t.id]
+  if ($p -and $p.ws.State -eq [Net.WebSockets.WebSocketState]::Open) { return }
+  $ws = New-Object System.Net.WebSockets.ClientWebSocket
+  if (-not $ws.ConnectAsync([Uri]$t.webSocketDebuggerUrl, $CT).Wait(4000)) { $ws.Dispose(); return }
+  $id = 0
+  # '새 문서마다 실행' 등록은 Page 기능이 켜져 있어야 동작하고, 끄면 풀린다(실측). 그래서 켜 둔 채 유지한다.
+  foreach ($c in @(
+      @{ method = 'Page.enable'; params = @{} },
+      @{ method = 'Page.addScriptToEvaluateOnNewDocument'; params = @{ source = $BMSrc } },
+      @{ method = 'Runtime.evaluate'; params = @{ expression = $BMSrc } })) {
+    $id++
+    $json = @{ id = $id; method = $c.method; params = $c.params } | ConvertTo-Json -Compress -Depth 8
+    $seg = New-Object 'System.ArraySegment[byte]' -ArgumentList (, [Text.Encoding]::UTF8.GetBytes($json))
+    $ws.SendAsync($seg, [Net.WebSockets.WebSocketMessageType]::Text, $true, $CT).Wait()
+  }
+  # 실행기가 방금 Magma를 열었다면(아직 그림을 그리기 전) 한 번 새로고침해서 처음부터 적용
+  # (첫 화면이 등록보다 먼저 떠 버리면 광고 칸 자리가 화면 배치에 남는다)
+  if ($script:StartedAt -and ((Get-Date) - $script:StartedAt).TotalSeconds -lt 30 -and -not $script:Reloaded.ContainsKey($t.id)) {
+    $script:Reloaded[$t.id] = $true
+    $id++
+    $json = @{ id = $id; method = 'Page.reload'; params = @{} } | ConvertTo-Json -Compress
+    $seg = New-Object 'System.ArraySegment[byte]' -ArgumentList (, [Text.Encoding]::UTF8.GetBytes($json))
+    $ws.SendAsync($seg, [Net.WebSockets.WebSocketMessageType]::Text, $true, $CT).Wait()
+    Write-Log '광고 숨기기 적용을 위해 첫 화면 한 번 새로고침'
+  }
+  $Persist[$t.id] = @{ ws = $ws; task = $null; buf = (New-Object byte[] 65536) }
+  Drain-Persist
+  Write-Log "광고 숨기기 등록: $($t.url)"
+}
+# 켜 둔 Page 기능이 보내는 알림 메시지를 계속 비워 준다 (안 읽으면 메모리에 쌓임)
+function Drain-Persist {
+  foreach ($k in @($Persist.Keys)) {
+    $p = $Persist[$k]
+    try {
+      for ($n = 0; $n -lt 2000; $n++) {
+        if ($p.task -and -not $p.task.IsCompleted) { break }
+        if ($p.task -and ($p.task.IsFaulted -or $p.task.IsCanceled -or $p.task.Result.MessageType -eq [Net.WebSockets.WebSocketMessageType]::Close)) { throw 'closed' }
+        $seg = New-Object 'System.ArraySegment[byte]' -ArgumentList (, $p.buf)
+        $p.task = $p.ws.ReceiveAsync($seg, $CT)
+      }
+    } catch {
+      try { $p.ws.Dispose() } catch { }
+      $Persist.Remove($k)
+    }
+  }
+}
+function Close-Persist {
+  foreach ($p in $Persist.Values) { try { $p.ws.Dispose() } catch { } }
+  $Persist.Clear()
+}
+
 $WandSrc = $null; $WandVer = $null
 function Load-Wand {
   $p = Join-Path $Cache 'wand.js'
@@ -202,7 +287,8 @@ function Load-Wand {
 }
 
 function Sync-Target($t) {
-  $check = @{ method = 'Runtime.evaluate'; params = @{ expression = "(window.__magmaWand && window.__magmaWand.version) || ''"; returnByValue = $true } }
+  # 끝까지 시작된(ready) 경우만 '들어 있음'으로 본다 (시작하다 멈췄으면 다시 넣음)
+  $check = @{ method = 'Runtime.evaluate'; params = @{ expression = "(window.__magmaWand && window.__magmaWand.ready && window.__magmaWand.version) || ''"; returnByValue = $true } }
   $r = Invoke-Cdp $t.webSocketDebuggerUrl @($check) 4000
   $have = $r[0].result.result.value
   if ($have -eq $WandVer) { return }
@@ -269,11 +355,13 @@ try {
     }
     Write-Log "Magma 열기: $magma"
     Start-Process -FilePath $magma -ArgumentList $magmaArgs
+    $StartedAt = Get-Date
     for ($i = 0; $i -lt 60 -and -not (Test-Port); $i++) { Start-Sleep -Milliseconds 500 }
     if (-not (Test-Port)) { Write-Log 'Magma 원격 연결 실패'; Show-Info 'Magma에 연결하지 못했어요. Magma가 업데이트로 막았을 수 있어요.'; exit 1 }
   }
 
   Load-Wand
+  try { $BMSrc = Find-BetterMagma } catch { $BMSrc = $null }
   $lastUpdate = Get-Date
   $misses = 0
   while ($true) {
@@ -285,6 +373,7 @@ try {
       $misses = 0
       foreach ($t in $targets) {
         if ($t.type -eq 'page' -and $t.url -match '^https://([a-z0-9-]+\.)?magma\.com/' -and $t.webSocketDebuggerUrl) {
+          try { Drain-Persist; Ensure-StartScript $t } catch { Write-Log "광고 숨기기 실패: $_" }
           try { Sync-Target $t } catch { Write-Log "넣기 실패: $_" }
         }
       }
@@ -297,5 +386,6 @@ try {
     Start-Sleep -Milliseconds 1500
   }
 } finally {
+  Close-Persist
   $mutex.ReleaseMutex(); $mutex.Dispose()
 }
