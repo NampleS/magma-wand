@@ -122,6 +122,23 @@ function Update-Files {
   return $remote.version
 }
 
+# 받아 둔 크롬 확장 묶음(zip)이 바뀌었으면 설치 폴더의 확장도 새로 풀어 둔다 (크롬을 다시 켜면 적용)
+function Sync-ChromeExtension {
+  $zip = Join-Path $Cache 'magma-wand-chrome.zip'
+  if (-not (Test-Path $zip)) { return }
+  $ext = Join-Path $Root 'chrome-extension'
+  $mark = Join-Path $Root 'chrome-extension.sha'
+  $h = (Get-FileHash $zip -Algorithm SHA256).Hash
+  if ((Test-Path $mark) -and ((Get-Content $mark -Raw).Trim() -eq $h) -and (Test-Path $ext)) { return }
+  $tmp = Join-Path $Root 'chrome-extension.new'
+  if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+  Expand-Archive -Path $zip -DestinationPath $tmp -Force
+  if (Test-Path $ext) { Remove-Item -Recurse -Force $ext }
+  Move-Item $tmp $ext
+  Set-Content -Path $mark -Value $h -Encoding ASCII
+  Write-Log "크롬 확장 폴더 갱신"
+}
+
 function Get-LocalVersion {
   $p = Join-Path $Cache 'version.json'
   if (Test-Path $p) { return (Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json).version }
@@ -220,6 +237,7 @@ $magma = Find-Magma
 if ($Repair) {
   # 로그인할 때 한 번: 업데이트 확인 + Magma 업데이트로 원래대로 돌아간 바로가기 다시 연결
   try { Update-Files | Out-Null } catch { Write-Log "업데이트 확인 실패: $_" }
+  try { Sync-ChromeExtension } catch { Write-Log "크롬 확장 갱신 실패: $_" }
   Repair-Shortcuts $magma
   exit 0
 }
@@ -274,7 +292,7 @@ try {
     # 5분마다 새 버전 확인 → 받으면 다음 바퀴에서 열린 화면에 바로 바꿔 끼움
     if (((Get-Date) - $lastUpdate).TotalMinutes -ge [double]$Cfg.checkMinutes) {
       $lastUpdate = Get-Date
-      try { Update-Files | Out-Null; Load-Wand } catch { Write-Log "업데이트 확인 실패: $_" }
+      try { Update-Files | Out-Null; Load-Wand; Sync-ChromeExtension } catch { Write-Log "업데이트 확인 실패: $_" }
     }
     Start-Sleep -Milliseconds 1500
   }

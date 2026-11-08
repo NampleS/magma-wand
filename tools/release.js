@@ -1,6 +1,7 @@
 // 릴리스 도구
 //   node tools/release.js <버전> ["변경 내용"]          → dist/ 만들기만
 //   node tools/release.js <버전> ["변경 내용"] --publish → 커밋·태그·푸시 + GitHub 릴리스 올리기
+//   node tools/release.js <버전> "사유" --kill --publish → 비상 정지(모든 설치본의 마법봉을 끔)
 // 릴리스가 올라가는 즉시 설치된 모든 컴퓨터가 5~10분 안에 새 버전을 받아 간다.
 'use strict';
 const fs = require('fs');
@@ -22,12 +23,30 @@ const p = (...a) => path.join(ROOT, ...a);
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex').toUpperCase();
 const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 
+// 비상 정지: --kill 이면 배포되는 wand.js를 "옛 버전을 걷어내고 아무것도 안 하는" 코드로 바꾼다.
+// (src/wand.js는 건드리지 않는다. 고친 뒤 더 높은 버전으로 다시 배포하면 원래대로 돌아온다.)
+const kill = args.includes('--kill');
+const KILL_STUB = `// Magma 마법봉 — 비상 정지 버전 (${version})
+(() => {
+  const VERSION = '${version}';
+  const isNewer = (a, b) => { const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
+    for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); } return false; };
+  const prev = window.__magmaWand;
+  if (prev && !isNewer(VERSION, prev.version)) return;
+  try { prev && prev.destroy && prev.destroy(); } catch (e) { }
+  window.__magmaWand = { version: VERSION, disabled: true, destroy() { } };
+  console.warn('[MagmaWand] 비상 정지됨: ' + ${JSON.stringify(notes)});
+})();
+`;
+
 // 1) 버전 번호 넣기
 const wandPath = p('src', 'wand.js');
-let wand = fs.readFileSync(wandPath, 'utf8');
-wand = wand.replace(/const VERSION = '[^']*';/, `const VERSION = '${version}';`);
-fs.writeFileSync(wandPath, wand);
-fs.copyFileSync(wandPath, p('extension', 'wand.js')); // 크롬 확장 기본 버전
+if (!kill) {
+  let wand = fs.readFileSync(wandPath, 'utf8');
+  wand = wand.replace(/const VERSION = '[^']*';/, `const VERSION = '${version}';`);
+  fs.writeFileSync(wandPath, wand);
+  fs.copyFileSync(wandPath, p('extension', 'wand.js')); // 크롬 확장 기본 버전
+}
 
 // 2) PowerShell 파일은 BOM이 있어야 한국어가 안 깨진다 (Windows PowerShell 5.1)
 for (const f of fs.readdirSync(p('app')).filter((f) => f.endsWith('.ps1'))) {
@@ -38,7 +57,8 @@ for (const f of fs.readdirSync(p('app')).filter((f) => f.endsWith('.ps1'))) {
 // 3) dist 만들기
 fs.rmSync(DIST, { recursive: true, force: true });
 fs.mkdirSync(DIST);
-fs.copyFileSync(wandPath, path.join(DIST, 'wand.js'));
+if (kill) fs.writeFileSync(path.join(DIST, 'wand.js'), KILL_STUB);
+else fs.copyFileSync(wandPath, path.join(DIST, 'wand.js'));
 for (const f of ['launcher.ps1', 'boot.ps1', 'run.vbs', 'install.ps1', 'uninstall.ps1', 'MagmaWand-Setup.cmd']) {
   fs.copyFileSync(p('app', f), path.join(DIST, f));
 }
@@ -48,7 +68,7 @@ execFileSync('powershell.exe', ['-NoProfile', '-Command',
 
 // 자동 업데이트 대상 = version.json의 files
 const files = {};
-for (const f of ['wand.js', 'launcher.ps1']) files[f] = sha(path.join(DIST, f));
+for (const f of ['wand.js', 'launcher.ps1', 'magma-wand-chrome.zip']) files[f] = sha(path.join(DIST, f));
 fs.writeFileSync(path.join(DIST, 'version.json'),
   JSON.stringify({ version, date: new Date().toISOString(), notes, files }, null, 2));
 console.log(`dist 준비 완료: v${version}`);
