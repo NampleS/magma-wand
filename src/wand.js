@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.3.2';
+  const VERSION = '0.3.3';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -590,7 +590,9 @@
         // 올가미 시작점에 커서 흔적이 남지 않도록 실제 마우스 위치로 되돌림
         const c = getCanvas();
         if (c) {
-          const ev = new PointerEvent('pointermove', { clientX, clientY, bubbles: true, composed: true,
+          const [mx, my] = lastReal || [clientX, clientY];
+          lastReal = null;
+          const ev = new PointerEvent('pointermove', { clientX: mx, clientY: my, bubbles: true, composed: true,
             view: window, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: -1, buttons: 0 });
           ev.__magmaWand = true;
           c.dispatchEvent(ev);
@@ -624,6 +626,23 @@
   on(window, 'pointermove', (e) => {
     if (S.active && pendingDown && e.isTrusted && !e.__magmaWand) e.stopImmediatePropagation();
   }, true);
+
+  // 마법봉이 올가미를 대신 긋는 동안에는 실제 마우스·펜·터치 입력을 Magma에 전혀 넘기지 않는다.
+  // (넘기면 실제 커서 위치가 올가미 경로에 섞여 선택이 삼각형으로 잘린다 — 0.3.2까지의 버그)
+  const BUSY_BLOCK = ['pointermove', 'pointerrawupdate', 'pointerdown', 'pointerup', 'pointercancel',
+    'pointerover', 'pointerout', 'pointerenter', 'pointerleave', 'mousemove', 'mousedown', 'mouseup',
+    'mouseover', 'mouseout', 'click', 'dblclick', 'contextmenu', 'touchstart', 'touchmove', 'touchend', 'wheel'];
+  const busyGuard = (e) => {
+    if (!S.busy || !e.isTrusted || e.__magmaWand) return;
+    e.stopImmediatePropagation();
+    if (e.cancelable && e.type !== 'wheel') e.preventDefault();
+    if (e.type === 'pointermove' || e.type === 'mousemove') lastReal = [e.clientX, e.clientY];
+  };
+  let lastReal = null;
+  for (const t of BUSY_BLOCK) {
+    on(window, t, busyGuard, { capture: true, passive: false });
+    on(document, t, busyGuard, { capture: true, passive: false });
+  }
 
   // 다른 도구 버튼을 누르면 마법봉 끄기 (Magma가 그 도구로 바꾼다)
   on(window, 'pointerdown', (e) => {
