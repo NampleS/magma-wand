@@ -1,12 +1,12 @@
 // Magma 마법봉
 // Magma 페이지 안에서 직접 실행되는 스크립트. 크롬 확장과 데스크톱 앱 실행기가 같은 파일을 쓴다.
-// 동작: 화면에 보이는 그림 픽셀을 읽어 클릭한 곳과 비슷한 색으로 이어진 영역을 계산하고,
-//       그 테두리를 따라 Magma 자체 올가미(선택 / 올가미 채우기)를 대신 그어 준다.
+// 동작: 보드의 실제 그림 픽셀(Magma 내부 읽기 전용 함수, 못 쓰면 화면)을 읽어 클릭한 곳과 비슷한 색의 영역을 계산하고,
+//       그 테두리를 픽셀 그대로 따라 Magma 자체 올가미(선택 / 올가미 채우기)를 한 번 대신 그어 준다.
 // 화면: 왼쪽 도구 막대에 마법봉 버튼, 오른쪽 도구 설정 칸에 설정 (Magma 선택 도구 설정과 함께 표시)
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.5.0';
+  const VERSION = '0.6.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -33,7 +33,8 @@
   // keys: 마법봉 단축키 목록. 키보드 위치(e.code) 기준이라 한글 입력 상태에서도 동작. 조합은 'Ctrl+Shift+KeyW' 형식
   // tool: 도구 묶음에서 마지막으로 쓴 도구 ('wand' 마법봉 | 'quick' 빠른 선택)
   // 빠른 선택: brush(보드 픽셀), qtol, qexpand, qref, qkeys
-  const DEFAULTS = { tol: 10, expand: 1, action: 'select', ref: 'all', keys: ['KeyW'],
+  // contig: true = 이어진 영역만, false = 보드 전체에서 같은 색 모두 (CSP·포토샵의 '인접'/'연속' 옵션)
+  const DEFAULTS = { tol: 10, expand: 1, action: 'select', ref: 'all', keys: ['KeyW'], contig: true,
     tool: 'wand', brush: 20, qtol: 12, qexpand: 1, qref: 'all', qkeys: ['Shift+KeyW'] };
   const S = Object.assign({}, DEFAULTS, loadSettings(), { active: false, busy: false, switching: false });
   if (!['select', 'fill'].includes(S.action)) S.action = 'select';
@@ -41,6 +42,7 @@
   if (!['all', 'layer'].includes(S.qref)) S.qref = 'all';
   if (!['wand', 'quick'].includes(S.tool)) S.tool = 'wand';
   if (!Array.isArray(S.qkeys)) S.qkeys = DEFAULTS.qkeys.slice();
+  if (typeof S.contig !== 'boolean') S.contig = true;
 
   function loadSettings() {
     try {
@@ -51,9 +53,9 @@
   }
   function saveSettings() {
     try {
-      const { tol, expand, action, ref, keys, growPx, tool, brush, qtol, qexpand, qref, qkeys } = S;
+      const { tol, expand, action, ref, keys, contig, growPx, tool, brush, qtol, qexpand, qref, qkeys } = S;
       localStorage.setItem('magmaWand.settings',
-        JSON.stringify({ tol, expand, action, ref, keys, growPx, tool, brush, qtol, qexpand, qref, qkeys }));
+        JSON.stringify({ tol, expand, action, ref, keys, contig, growPx, tool, brush, qtol, qexpand, qref, qkeys }));
     } catch { /* 저장 못 해도 동작에는 지장 없음 */ }
   }
 
@@ -62,7 +64,7 @@
 
   // ---------- Magma 화면 요소 ----------
   const getCanvas = () => document.querySelector('.editor-canvas canvas');
-  const toolSliders = () => document.querySelector('.tool-sliders');
+  const toolSliders = () => document.querySelector('editor-sliders .tool-sliders') || document.querySelector('.tool-sliders:not(.layers-options)');
 
   // Magma 도구 막대의 버튼들 (마법봉 묶음 버튼·펼침 상자 버튼 제외)
   function toolButtons() {
@@ -100,7 +102,7 @@
   }
 
   // 현재 도구 설정 칸의 Magma 줄들 (마법봉이 끼워 넣은 줄은 제외)
-  function magmaRows() { return [...document.querySelectorAll('.tool-sliders .tool-slider:not(.mw-el)')]; }
+  function magmaRows() { return [...document.querySelectorAll('editor-sliders .tool-sliders .tool-slider:not(.mw-el)')]; }
 
   // "Stabilizer"(손떨림 보정) 값
   function stabilizerRow() {
@@ -138,34 +140,64 @@
 
   // 올가미 선택의 손떨림 보정: 연속 클릭 동안은 0으로 두고, 1.2초 쉬거나 다른 도구로 갈 때 원래 값으로.
   // 창을 닫아도 다음에 되돌릴 수 있게 원래 값을 저장해 둔다.
-  const PENDING_STAB = 'magmaWand.pendingLassoStab';
-  let lassoStabSaved = null, stabTimer = null, stabRestoring = null;
+  // 안티에일리어스(Anti-alias)도 같은 방식: 켜져 있으면 선택 가장자리가 반투명이 되어 픽셀 단위로 정확하지 않으므로
+  // 마법봉이 긋는 동안만 끄고 되돌린다.
+  const PENDING_STAB = 'magmaWand.pendingLassoStab', PENDING_AA = 'magmaWand.pendingLassoAA';
+  let lassoStabSaved = null, lassoAASaved = null, stabTimer = null, stabRestoring = null;
   try { const p = localStorage.getItem(PENDING_STAB); if (p !== null && p !== '') lassoStabSaved = +p; } catch { }
+  try { if (localStorage.getItem(PENDING_AA) === '1') lassoAASaved = true; } catch { }
+  function aaButton() {
+    const cb = [...document.querySelectorAll('editor-sliders .selection-tool custom-checkbox')]
+      .find((c) => /^Anti-?alias$/i.test(c.textContent.trim()));
+    return cb ? cb.querySelector('button.tgl') : null;
+  }
+  function getAA() { const b = aaButton(); return b ? b.classList.contains('on') : null; }
+  async function setAA(v) {
+    const b = aaButton();
+    if (!b) return false;
+    if (getAA() === v) return true;
+    b.click();
+    return waitFor(() => getAA() === v);
+  }
+  const pendingLasso = () => lassoStabSaved !== null || lassoAASaved !== null;
   async function lassoStabZero() {
     clearTimeout(stabTimer);
     if (stabRestoring) await stabRestoring;
     if (lassoStabSaved === null) {
       const v = getStabilizer();
-      if (!v) return;
-      lassoStabSaved = v;
-      try { localStorage.setItem(PENDING_STAB, String(v)); } catch { }
+      if (v) {
+        lassoStabSaved = v;
+        try { localStorage.setItem(PENDING_STAB, String(v)); } catch { }
+      }
     }
-    if (getStabilizer() !== 0) await setStabilizer(0);
+    if (lassoAASaved === null && getAA() === true) {
+      lassoAASaved = true;
+      try { localStorage.setItem(PENDING_AA, '1'); } catch { }
+    }
+    if (getStabilizer()) await setStabilizer(0);
+    if (getAA() === true) await setAA(false);
   }
   function restoreLassoStab() {
-    if (lassoStabSaved === null || currentTool() !== 'lassoSelectionIcon') return Promise.resolve(false);
+    if (!pendingLasso() || currentTool() !== 'lassoSelectionIcon') return Promise.resolve(false);
     if (stabRestoring) return stabRestoring;
-    const v = lassoStabSaved;
     stabRestoring = (async () => {
-      const ok = getStabilizer() === v || await setStabilizer(v);
-      if (ok) { lassoStabSaved = null; try { localStorage.removeItem(PENDING_STAB); } catch { } }
+      let ok = true;
+      if (lassoStabSaved !== null) {
+        const v = lassoStabSaved;
+        if (getStabilizer() === v || await setStabilizer(v)) { lassoStabSaved = null; try { localStorage.removeItem(PENDING_STAB); } catch { } }
+        else ok = false;
+      }
+      if (lassoAASaved !== null) {
+        if (await setAA(true)) { lassoAASaved = null; try { localStorage.removeItem(PENDING_AA); } catch { } }
+        else ok = false;
+      }
       return ok;
     })().finally(() => { stabRestoring = null; });
     return stabRestoring;
   }
   function scheduleStabRestore(ms = 1200) {
     clearTimeout(stabTimer);
-    if (lassoStabSaved === null) return;
+    if (!pendingLasso()) return;
     stabTimer = setTimeout(() => { if (S.busy) scheduleStabRestore(ms); else restoreLassoStab(); }, ms);
   }
   // 패널이 새 도구 것으로 바뀔 때까지 기다림 (안 그러면 이전 도구 설정을 건드림)
@@ -196,7 +228,7 @@
 
   // 올가미 채우기 도구의 "Mode: draw / erase"와 "auto erase mode"
   function brushModeButtons() {
-    return [...document.querySelectorAll('.tool-sliders .tool-row-buttons button')]
+    return [...document.querySelectorAll('editor-sliders .tool-sliders .tool-row-buttons button')]
       .filter((b) => /^(draw|erase)$/i.test(b.textContent.trim()));
   }
   function getBrushMode() {
@@ -351,10 +383,352 @@
     return i > 0 ? poly.slice(i).concat(poly.slice(0, i)) : poly;
   }
 
+  // ---------- Magma 편집기 안의 그림 직접 읽기 (읽기 전용, 트래픽 0) ----------
+  // Magma가 '다운로드'에 쓰는 내부 함수(renderer.getDrawingSnapshotAsBinary / getLayerRawData)로 보드 해상도의
+  // 실제 픽셀을 읽는다. 화면 확대·축소와 상관없이 정확하고, 서버로 아무것도 보내지 않는다(내 컴퓨터 안에서만 읽음).
+  // 편집기 객체는 Angular가 화면 조각을 등록하는 표(Map)에서 찾는다: Map.prototype.set을 잠깐 감싸 그 표를 한 번
+  // 알아낸 뒤 바로 원래대로 돌린다. 읽기 함수만 부르고, 그림을 바꾸는 함수는 절대 부르지 않는다.
+  let lviewMap = null, editorRef = null, unhookMap = null;
+  function hookLViewMap() {
+    if (lviewMap || unhookMap) return;
+    const MS = Map.prototype.set;
+    const hook = function (k, v) {
+      if (!lviewMap && typeof k === 'number' && Array.isArray(v) && v.length > 20 && v[1] && typeof v[1] === 'object' &&
+          'blueprint' in v[1]) {
+        lviewMap = this;
+        queueMicrotask(() => unhookMap && unhookMap());
+      }
+      return MS.call(this, k, v);
+    };
+    const timer = setTimeout(() => unhookMap && unhookMap(), 30 * 60 * 1000);
+    unhookMap = () => { clearTimeout(timer); if (Map.prototype.set === hook) Map.prototype.set = MS; unhookMap = null; };
+    Map.prototype.set = hook;
+  }
+  hookLViewMap();
+  cleanups.push(() => unhookMap && unhookMap());
+  const isEditor = (e) => {
+    try {
+      return !!(e && e.drawing && e.model && e.view && e.renderer &&
+        typeof e.renderer.getDrawingSnapshotAsBinary === 'function' && typeof e.renderer.getLayerRawData === 'function');
+    } catch { return false; }
+  };
+  function getEditor() {
+    if (isEditor(editorRef) && editorRef.element?.isConnected !== false) return editorRef;
+    editorRef = null;
+    if (!lviewMap) return null;
+    let n = 0;
+    for (const el of document.querySelectorAll('drawing-page, editor-box, editor-sliders, editor-tools, editor-box *')) {
+      if (typeof el.__ngContext__ !== 'number' || ++n > 400) continue;
+      const lv = lviewMap.get(el.__ngContext__);
+      if (!Array.isArray(lv)) continue;
+      for (let i = 0; i < lv.length && i < 300; i++) {
+        const o = lv[i];
+        if (!o || typeof o !== 'object' || o instanceof Node) continue;
+        try {
+          if (isEditor(o.editor) && o.editor.element?.isConnected !== false) { editorRef = o.editor; return editorRef; }
+        } catch { /* 무시 */ }
+      }
+    }
+    return null;
+  }
+  // 편집기가 아직 안 잡혔으면, Angular가 화면 조각을 하나 새로 만들게 해서(도구 설정 칸 다시 그리기) 잡는다
+  async function ensureEditor() {
+    if (getEditor()) return editorRef;
+    if (lviewMap) return null;
+    hookLViewMap();
+    if (currentTool() === 'lassoSelectionIcon') {
+      await selectTool('lassoBrushIcon'); await sleep(60); await selectTool('lassoSelectionIcon');
+    } else await selectTool('lassoSelectionIcon');
+    await sleep(60);
+    return getEditor();
+  }
+
+  // 보드 좌표 ↔ 화면 좌표. 회전·뒤집기 상태거나 주소(#v)의 값과 어긋나면 null (그때는 예전 화면 기준 방식)
+  const MAX_DOC_PX = 50e6;
+  function docContext(canvas) {
+    const E = getEditor();
+    if (!E || !canvas) return null;
+    let v, d;
+    try { v = E.view; d = E.drawing; } catch { return null; }
+    if (!v || !(v.scale > 0) || v.rotation || v.flipped) return null;
+    if (!d || !(d.w > 0) || !(d.h > 0) || d.w * d.h > MAX_DOC_PX) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (!(rect.width > 0)) return null;
+    const kx = canvas.width / rect.width, ky = canvas.height / rect.height;
+    const vx = v.x, vy = v.y, sc = v.scale;
+    // 안전 확인: 주소의 화면 정보와 같은 곳을 가리키는지 (1.5보드픽셀 이내)
+    const vt = viewTransform();
+    if (vt && vt.zoom > 0) {
+      const cx = (rect.width / 2 - vx) / sc, cy = (rect.height / 2 - vy) / sc;
+      if (Math.abs(cx - vt.cx) > 1.5 || Math.abs(cy - vt.cy) > 1.5 || Math.abs(sc - vt.zoom) / vt.zoom > 0.01) return null;
+    }
+    return {
+      E, W: d.w, H: d.h, scale: sc, kx, ky, rect,
+      toDoc: (cx, cy) => [(cx - rect.left - vx) / sc, (cy - rect.top - vy) / sc],
+      toBuf: ([x, y]) => [(vx + x * sc) * kx, (vy + y * sc) * ky],
+      xf: [sc * kx, vx * kx, vy * ky],                // 보드 → 화면 버퍼 (덧그림용)
+      spike: SPIKE,                                    // 정밀 올가미의 최소 점 간격 (보드 픽셀)
+    };
+  }
+  // 보드 크기의 RGBA 그림. ref: 'all' 보이는 그림 전체 / 'layer' 현재 레이어만(없는 곳은 투명)
+  // { fallback: true } = 이 방법으로는 못 읽음 → 예전 방식으로
+  function docImage(D, ref) {
+    const { E, W, H } = D;
+    try {
+      if (ref === 'layer') {
+        const L = E.model.user && E.model.user.activeLayers && E.model.user.activeLayers[0];
+        if (!L) return { error: '현재 레이어를 찾지 못했어요' };
+        const data = new Uint8ClampedArray(W * H * 4);
+        const r = L.rect;
+        if (r && r.w > 0 && r.h > 0) {
+          if (!L.texture || L.unloadedImage) return { fallback: true };
+          const raw = E.renderer.getLayerRawData(L);
+          if (!raw || raw.width !== r.w || raw.height !== r.h || raw.data.length !== r.w * r.h * 4) return { fallback: true };
+          for (let y = 0; y < r.h; y++) {
+            const by = r.y + y;
+            if (by < 0 || by >= H) continue;
+            const x0 = Math.max(0, -r.x), x1 = Math.min(r.w, W - r.x);
+            if (x1 <= x0) continue;
+            data.set(raw.data.subarray((y * r.w + x0) * 4, (y * r.w + x1) * 4), (by * W + r.x + x0) * 4);
+          }
+        }
+        return { w: W, h: H, data, layer: L.name };
+      }
+      if (E.drawing.layers.some((l) => l.unloadedImage && !l.texture)) return { fallback: true };
+      const buf = E.renderer.getDrawingSnapshotAsBinary(E.drawing);
+      if (!buf || buf.length !== W * H * 4) return { fallback: true };
+      return { w: W, h: H, data: buf };
+    } catch (e) {
+      console.warn('[MagmaWand] 보드 그림 읽기 실패 → 화면 기준으로', e);
+      return { fallback: true };
+    }
+  }
+
+  // ---------- 픽셀 정확한 올가미 경로 ----------
+  // 선택 마스크를 Magma 올가미 한 번으로 '픽셀 단위로 똑같이' 옮기기 위한 경로를 만든다.
+  // Magma 올가미 동작(소스 확인 + 실측):
+  //  - 점은 보드 좌표를 정수로 반올림해 저장하고, 앞 점과 가로·세로 모두 1픽셀 이내면 버린다
+  //    → 1픽셀 계단의 모서리가 버려져 대각선으로 뭉개짐 (예전 '끄트머리 픽셀이 남는' 원인)
+  //  - 안티에일리어스를 끄면 정수 다각형을 그림판(2D 캔버스)으로 칠해 선택 마스크를 만든다
+  //  - 한 번에 약 5,000점을 넘으면 모양이 깨진다(4,828점 정상, 5,518점 깨짐 실측)
+  // 그래서:
+  //  1) 픽셀 테두리(정수 모서리)를 그대로 따라간다 — 가로·세로 변뿐이라 칠하면 픽셀이 정확히 0 또는 1로 덮인다
+  //  2) 가까운 점 사이에는 그 변 방향으로 2픽셀 튀어나갔다 돌아오는 점(폭 0 가시)을 넣어 Magma가 버리지 않게 한다
+  //  3) 덩어리·구멍들은 폭 0 왕복 다리로 이어 한 붓으로 만든다
+  //  4) Magma가 버릴 점·반올림까지 흉내 내서 칠해 보고, 원래 마스크와 한 픽셀도 다르지 않을 때만 정밀 경로를 쓴다
+  //  점이 너무 많으면 작은 조각부터 빼고, 그래도 많으면 예전처럼 매끈하게 줄인다(이때만 정밀도가 떨어짐).
+  const MAX_LASSO_PTS = 4500;
+  const SPIKE = 2; // 앞 점과 가로·세로 1픽셀 넘게 떨어지도록
+  function hilbertD(n, x, y) {
+    let d = 0;
+    for (let s = n >> 1; s > 0; s >>= 1) {
+      const rx = (x & s) > 0 ? 1 : 0, ry = (y & s) > 0 ? 1 : 0;
+      d += s * s * ((3 * rx) ^ ry);
+      if (ry === 0) { if (rx === 1) { x = s - 1 - x; y = s - 1 - y; } const t = x; x = y; y = t; }
+    }
+    return d;
+  }
+  // 앞 점과 가로·세로 모두 1픽셀 이내인 점 앞에, 그 변 방향으로 SPIKE만큼 나갔다 오는 점을 넣는다(폭 0 가시).
+  // 방향은 가로·세로 중 큰 쪽이 1이 되게 맞춰서, 정수 좌표 경로에서는 가시도 정수 좌표(같은 선 위)가 된다.
+  // 가시가 보드 밖으로 나가면 Magma가 보드 가장자리로 당겨 다시 가까워지므로, 그때는 반대쪽(앞 점 너머)으로 낸다.
+  function withSpikes(loop, W = Infinity, H = Infinity) {
+    const out = [];
+    const n = loop.length;
+    const inB = (x, y) => x >= 0 && y >= 0 && x <= W && y <= H;
+    for (let i = 0; i < n; i++) {
+      const A = loop[(i - 1 + n) % n], B = loop[i];
+      const dx = B[0] - A[0], dy = B[1] - A[1];
+      if ((dx || dy) && Math.abs(dx) <= 1.05 && Math.abs(dy) <= 1.05) {
+        const c = Math.max(Math.abs(dx), Math.abs(dy)), ux = dx / c, uy = dy / c;
+        let sx = B[0] + ux * SPIKE, sy = B[1] + uy * SPIKE;
+        if (!inB(sx, sy)) { sx = B[0] - ux * (SPIKE + 1); sy = B[1] - uy * (SPIKE + 1); }
+        out.push([sx, sy]);
+      }
+      out.push(B);
+    }
+    return out;
+  }
+  // Magma 올가미가 실제로 받아들일 점만 남겨 본다 (정수로 반올림 → 보드 안으로 당김 → 앞 점과 가로·세로 모두 1픽셀 이내면 버림)
+  function magmaKeep(pts, W, H) {
+    const out = [];
+    let lx = -1e5, ly = -1e5;
+    for (const [x0, y0] of pts) {
+      const x = Math.min(W, Math.max(0, Math.round(x0))), y = Math.min(H, Math.max(0, Math.round(y0)));
+      if (Math.abs(x - lx) > 1 || Math.abs(y - ly) > 1) { out.push([x, y]); lx = x; ly = y; }
+    }
+    return out;
+  }
+  // 경로(닫힌 한 붓)를 Magma와 같은 방식으로 칠해 본다: 픽셀 중심에서 오른쪽으로 뻗은 선이 변을 홀수 번 넘으면 안
+  // (Magma 소스: 안티에일리어스 끈 올가미는 픽셀 중심 홀짝 판정 → 그 마스크의 테두리를 다시 따서 채움).
+  // 단, Magma의 테두리 다시 따기는 '모서리로만 맞닿은 1픽셀 구멍'을 메우는 일이 드물게 있다(올가미로는 피할 수 없음).
+  function rasterPath(pts, W, H) {
+    const n = pts.length, cnt = new Int32Array(H + 1);
+    const rows = (a, b) => {
+      const lo = Math.min(a, b), hi = Math.max(a, b);
+      return [Math.max(0, Math.ceil(lo - 0.5)), Math.min(H - 1, Math.ceil(hi - 0.5) - 1)];
+    };
+    for (let i = 0; i < n; i++) {
+      const a = pts[i], b = pts[(i + 1) % n];
+      if (a[1] === b[1]) continue;
+      const [r0, r1] = rows(a[1], b[1]);
+      for (let r = r0; r <= r1; r++) cnt[r + 1]++;
+    }
+    for (let r = 0; r < H; r++) cnt[r + 1] += cnt[r];
+    const xs = new Float64Array(cnt[H]), fillp = cnt.slice(0, H);
+    for (let i = 0; i < n; i++) {
+      const a = pts[i], b = pts[(i + 1) % n];
+      if (a[1] === b[1]) continue;
+      const [r0, r1] = rows(a[1], b[1]);
+      for (let r = r0; r <= r1; r++) {
+        const y = r + 0.5, k = fillp[r]++;
+        xs[k] = a[0] + (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]);
+      }
+    }
+    const out = new Uint8Array(W * H);
+    const idx = [];
+    for (let r = 0; r < H; r++) {
+      const s = cnt[r], e = cnt[r + 1];
+      if (e - s < 2) continue;
+      idx.length = 0;
+      for (let k = s; k < e; k++) idx.push(k);
+      idx.sort((p, q) => xs[p] - xs[q]);
+      let par = 0;
+      for (let j = 0; j < idx.length; j++) {
+        const k = idx[j];
+        if (j > 0 && par) {
+          const x0 = Math.max(0, Math.ceil(xs[idx[j - 1]] - 0.5)), x1 = Math.min(W, Math.ceil(xs[k] - 0.5));
+          for (let x = x0; x < x1; x++) out[r * W + x] = 1;
+        }
+        par ^= 1;
+      }
+    }
+    return out;
+  }
+  // 테두리들을 한 붓으로: s0 → 테두리0 → s0 → s1 → 테두리1 → s1 → … → sN → 테두리N → sN → s(N-1) → … → s1 (→ s0)
+  // 가까운 테두리끼리 이어지도록 시작점을 힐베르트 곡선 순서로 놓는다(다리가 짧아 점선이 덜 어지럽다).
+  function chainLoops(loops, W, H) {
+    const n2 = 1 << Math.ceil(Math.log2(Math.max(W, H, 2)));
+    const ls = loops.map((l) => ({ l, k: hilbertD(n2, Math.min(n2 - 1, Math.max(0, l[0][0] | 0)), Math.min(n2 - 1, Math.max(0, l[0][1] | 0))) }))
+      .sort((a, b) => a.k - b.k).map((o) => o.l);
+    const path = [];
+    for (const l of ls) path.push(...l, l[0]);
+    for (let i = ls.length - 2; i >= 1; i--) path.push(ls[i][0]);
+    if (ls.length === 1) path.pop();
+    const out = [];
+    for (const p of path) { const q = out[out.length - 1]; if (!q || q[0] !== p[0] || q[1] !== p[1]) out.push(p); }
+    if (out.length > 1 && out[0][0] === out[out.length - 1][0] && out[0][1] === out[out.length - 1][1]) out.pop();
+    return withSpikes(out, W, H);
+  }
+  // 픽셀 계단을 긴 직선으로 바꾼다 (꼭짓점은 정수 좌표 그대로).
+  // Magma는 '픽셀 중심이 도형 안에 있는가'로 칠하므로(실측: 넓이 40%만 덮인 픽셀도 중심이 안이면 선택),
+  // 직선이 테두리 양옆 픽셀 중심들의 '안쪽/바깥쪽'을 그대로 지키면 결과가 똑같다.
+  // 한 꼭짓점에서 출발해, 지나온 테두리의 안쪽 중심은 모두 직선의 안쪽, 바깥쪽 중심은 모두 바깥쪽에 오게 하는
+  // 방향 범위(부채꼴)를 좁혀 가며 가장 멀리 갈 수 있는 꼭짓점까지 한 번에 잇는다. 중심을 정확히 지나는 직선은 쓰지 않는다.
+  function straightLoop(loop) {
+    // 단위 길이 꼭짓점들로 펼치기
+    const P = [];
+    const n0 = loop.length;
+    for (let i = 0; i < n0; i++) {
+      const a = loop[i], b = loop[(i + 1) % n0];
+      const sx = Math.sign(b[0] - a[0]), sy = Math.sign(b[1] - a[1]), len = Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]);
+      for (let k = 0; k < len; k++) P.push([a[0] + sx * k, a[1] + sy * k]);
+    }
+    const m = P.length;
+    if (m < 8) return loop;
+    const out = [];
+    const MAXRUN = 400, MARGIN = 0.1; // 직선은 모든 픽셀 중심에서 0.1픽셀 넘게 떨어져야 (그림판 칠하기의 반올림 차이 대비)
+    const cin = new Float64Array(MAXRUN * 2), cout = new Float64Array(MAXRUN * 2);
+    let i = 0;
+    while (i < m) {
+      const vx = P[i][0], vy = P[i][1];
+      let Ax = 0, Ay = 0, hasA = false, Bx = 0, By = 0, hasB = false;
+      const cands = [];
+      let nc = 0;
+      for (let j = i + 1; j <= m && j - i <= MAXRUN; j++) {
+        // 변 j-1 → j 양옆의 픽셀 중심 (안쪽 = 진행 방향 기준 (dy, -dx) 쪽)
+        const a = P[(j - 1) % m], b = P[j % m];
+        const dx = b[0] - a[0], dy = b[1] - a[1];
+        const mx = (a[0] + b[0]) / 2 - vx, my = (a[1] + b[1]) / 2 - vy;
+        const ix = mx + dy * 0.5, iy = my - dx * 0.5, ox = mx - dy * 0.5, oy = my + dx * 0.5;
+        cin[nc * 2] = ix; cin[nc * 2 + 1] = iy; cout[nc * 2] = ox; cout[nc * 2 + 1] = oy; nc++;
+        // 안쪽 중심: 방향이 그보다 반시계 쪽이어야 → 가장 반시계인 것을 A로
+        if (!hasA || Ax * iy - Ay * ix > 0) { Ax = ix; Ay = iy; hasA = true; }
+        // 바깥쪽 중심: 방향이 그보다 시계 쪽이어야 → 가장 시계인 것을 B로
+        if (!hasB || ox * By - oy * Bx > 0) { Bx = ox; By = oy; hasB = true; }
+        if (Ax * By - Ay * Bx <= 0) break; // 가능한 방향이 없어짐
+        const ex = b[0] - vx, ey = b[1] - vy;
+        if (Ax * ey - Ay * ex > 0 && ex * By - ey * Bx > 0) cands.push([j, nc]);
+      }
+      // 먼 후보부터: 지나온 모든 중심이 직선에서 MARGIN 넘게 떨어져 있으면 채택
+      let best = i + 1;
+      for (let q = cands.length - 1; q >= 0; q--) {
+        const [j, cnt] = cands[q];
+        if (j - i <= 1) break;
+        const ex = P[j % m][0] - vx, ey = P[j % m][1] - vy, L = Math.hypot(ex, ey), lim = MARGIN * L;
+        let ok = true;
+        for (let k = 0; k < cnt && ok; k++) {
+          if (-(ex * cin[k * 2 + 1] - ey * cin[k * 2]) <= lim) ok = false;      // 안쪽 중심: cross(e, c) < -lim
+          else if (ex * cout[k * 2 + 1] - ey * cout[k * 2] <= lim) ok = false;  // 바깥쪽 중심: cross(e, c) > lim
+        }
+        if (ok) { best = j; break; }
+      }
+      out.push(P[i]);
+      i = best;
+    }
+    return out;
+  }
+
+  function exactPath(mask, W, H, _unused, opts = {}) {
+    const maxPts = opts.maxPts || MAX_LASSO_PTS;
+    const loops = traceContours(mask, W, H).filter((l) => l.length >= 3);
+    if (!loops.length) return null;
+    const total = loops.length;
+    const straight = opts.pixelOnly ? loops : loops.map(straightLoop);
+    const cost = (l) => withSpikes(l).length + 3;
+    let keep = loops.map((_, i) => i), dropped = 0;
+    let sum = straight.reduce((s, l) => s + cost(l), 0);
+    if (sum > maxPts && loops.length > 1) {
+      // 점이 너무 많으면 작은 조각(구멍·덩어리)부터 뺀다
+      const order = loops.map((l, i) => ({ i, a: Math.abs(area(l)) })).sort((a, b) => b.a - a.a);
+      const k2 = [];
+      let s2 = 0;
+      for (const o of order) {
+        const c = cost(straight[o.i]);
+        if (s2 + c > maxPts && k2.length) { dropped++; continue; }
+        k2.push(o.i); s2 += c;
+      }
+      keep = k2.sort((a, b) => a - b); sum = s2;
+    }
+    const kept = keep.map((i) => loops[i]);
+    let target = mask;
+    if (dropped) { target = new Uint8Array(W * H); for (const l of kept) rasterPath(l, W, H).forEach((v, i) => { if (v) target[i] ^= 1; }); }
+    // 확인: Magma가 실제로 받아들일 점으로 칠한 결과가 (뺀 조각을 뺀) 마스크와 같아야 하고,
+    // 경로를 아주 조금씩 흔들어도 같아야 한다(픽셀 중심을 정확히 지나는 선이 없음 = Magma의 경계 처리에 기대지 않음)
+    const verify = (path) => {
+      if (path.length > maxPts * 1.1) return false;
+      const k = magmaKeep(path, W, H);
+      for (const [ox, oy] of [[0, 0], [0.011, 0.004], [-0.011, -0.004], [0.004, -0.011], [-0.004, 0.011]]) {
+        const r = rasterPath(ox || oy ? k.map(([x, y]) => [x + ox, y + oy]) : k, W, H);
+        for (let i = 0; i < r.length; i++) if (r[i] !== (target[i] ? 1 : 0)) return false;
+      }
+      return true;
+    };
+    // pixelOnly: 올가미 채우기용 — 채우기는 대각선 변의 가장자리를 반투명하게 칠하므로 가로·세로 변(픽셀 테두리)만 쓴다
+    let path = opts.pixelOnly ? null : chainLoops(keep.map((i) => straight[i]), W, H), mode = 'straight';
+    if (!path || !verify(path)) {
+      path = chainLoops(kept, W, H); mode = 'pixel';
+      if (!verify(path)) {
+        // 점이 너무 많으면(아주 복잡한 테두리) 예전처럼 매끈하게 줄인다 — 이때만 정밀도가 조금 떨어짐
+        path = chainLoops(kept.map((l) => simplify(l, 0.7)), W, H); mode = 'rough';
+      }
+    }
+    return { pts: path, loops: keep.length, dropped, simplified: mode === 'rough', mode, total };
+  }
+
   // ---------- 영역 계산 ----------
   // wild: 기존 선택의 점선이 그려진 화면 픽셀 — 색과 상관없이 통과시킨다 (점선이 벽이 되지 않게)
   // withAlpha: 레이어 그림처럼 투명도가 있는 그림 — 투명도까지 비교 (투명끼리는 같은 색으로 본다)
-  function floodFill(img, sx, sy, tolPct, wild = null, withAlpha = false) {
+  function floodFill(img, sx, sy, tolPct, wild = null, withAlpha = false, contig = true) {
     const { w, h, data } = img;
     const mask = new Uint8Array(w * h);
     const si = (sy * w + sx) * 4;
@@ -372,6 +746,12 @@
       if (wild && wild[p]) return true;
       return Math.abs(data[i] - r0) <= t && Math.abs(data[i + 1] - g0) <= t && Math.abs(data[i + 2] - b0) <= t;
     };
+    if (contig === false) {
+      // 이어지지 않아도 보드 전체에서 같은 색이면 모두 (CSP·포토샵의 '인접' 끄기)
+      let count = 0;
+      for (let p = 0, n = w * h; p < n; p++) if (ok(p)) { mask[p] = 1; count++; }
+      return { mask, count };
+    }
     const stack = new Int32Array(w * h);
     let sp = 0;
     const start = sy * w + sx;
@@ -595,9 +975,14 @@
       T.repaired = sel.error ? -1 : repairUnderSelection(sel, canvas, img);
       mark('antsRemoved');
     }
-    const { mask, count } = floodFill(img, bx, by, S.tol);
+    const { mask, count } = floodFill(img, bx, by, S.tol, null, false, S.contig);
     if (S.expand > 0) dilate(mask, img.w, img.h, S.expand);
     for (let i = 0; i < mask.length; i++) if (outside[i]) mask[i] = 0;
+    if (!S.contig) {
+      const P = exactPath(mask, img.w, img.h, 2, { pixelOnly: S.action === 'fill' });
+      if (!P) return { error: '영역을 만들지 못했어요' };
+      return { poly: P.pts, count, holes: 0, pieces: P.loops, samples: sampleMask(mask, img.w, img.h) };
+    }
     const res = buildPolygon(mask, img.w, img.h);
     if (!res) return { error: '영역을 만들지 못했어요' };
     const poly = rotateStart(insetFromOutside(res.poly, outside, img.w, img.h), outside, img.w, img.h);
@@ -712,18 +1097,38 @@
         data[d] = L.rgba[s]; data[d + 1] = L.rgba[s + 1]; data[d + 2] = L.rgba[s + 2]; data[d + 3] = L.rgba[s + 3];
       }
     }
-    const { mask, count } = floodFill({ w: W, h: H, data }, dx, dy, S.tol, null, true);
+    const { mask, count } = floodFill({ w: W, h: H, data }, dx, dy, S.tol, null, true, S.contig);
     if (S.expand > 0) dilate(mask, W, H, S.expand);
-    const res = buildPolygon(mask, W, H);
-    if (!res) return { error: '영역을 만들지 못했어요' };
-    // 보드 좌표 → 캔버스 버퍼 좌표. 채우기용은 보드 밖 점이 버려지므로 보드 안쪽으로 살짝 당긴다
+    // 보드 좌표 → 캔버스 버퍼 좌표 (exactPath가 보드 밖 점을 안쪽으로 당겨 둠)
     const kx = canvas.width / rect.width, ky = canvas.height / rect.height;
-    const toBuf = ([x, y]) => {
-      if (fill) { x = Math.min(W - 0.6, Math.max(0.6, x)); y = Math.min(H - 0.6, Math.max(0.6, y)); }
-      return [(rect.width / 2 + (x - vt.cx) * vt.zoom) * kx, (rect.height / 2 + (y - vt.cy) * vt.zoom) * ky];
-    };
+    const toBuf = ([x, y]) => [(rect.width / 2 + (x - vt.cx) * vt.zoom) * kx, (rect.height / 2 + (y - vt.cy) * vt.zoom) * ky];
+    const spike = SPIKE;
+    const P = exactPath(mask, W, H, spike, { pixelOnly: fill });
+    if (!P) return { error: '영역을 만들지 못했어요' };
     T.docRegion = true;
-    return { poly: res.poly.map(toBuf), count, holes: res.holes, samples: sampleMask(mask, W, H, 1500, toBuf) };
+    return { poly: P.pts.map(toBuf), count, holes: Math.max(0, P.loops - 1), pieces: P.loops,
+      samples: sampleMask(mask, W, H, 1500, toBuf), minSeg: spike * vt.zoom * kx };
+  }
+
+  // ---------- 영역 계산: 보드 실제 픽셀 기준 (기본) ----------
+  // 화면이 아니라 보드 해상도 그림으로 계산하므로 축소해 봐도 깨지지 않고, 테두리를 픽셀 그대로 따라 긋는다.
+  async function regionFromDoc(D, clientX, clientY, fill, T, mark) {
+    const img = docImage(D, S.ref);
+    mark('docRead');
+    if (img.fallback || img.error) return img;
+    const [fx, fy] = D.toDoc(clientX, clientY);
+    const dx = Math.floor(fx), dy = Math.floor(fy);
+    if (dx < 0 || dy < 0 || dx >= img.w || dy >= img.h) return { error: '보드 바깥을 눌렀어요' };
+    const { mask, count } = floodFill(img, dx, dy, S.tol, null, true, S.contig);
+    if (S.expand > 0) dilate(mask, img.w, img.h, S.expand);
+    mark('filled');
+    const P = exactPath(mask, img.w, img.h, D.spike, { pixelOnly: fill });
+    if (!P) return { error: '영역을 만들지 못했어요' };
+    T.doc = true; T.loops = P.loops; T.points = P.pts.length; T.pathMode = P.mode;
+    if (P.dropped) T.dropped = P.dropped;
+    const note = P.dropped ? ` · 작은 조각 ${P.dropped}개는 점이 너무 많아 뺐어요` : (P.simplified ? ' · 테두리가 복잡해 조금 매끈하게 그었어요' : '');
+    return { poly: P.pts.map(D.toBuf), count, holes: Math.max(0, P.loops - 1), samples: sampleMask(mask, img.w, img.h, 1500, D.toBuf),
+      minSeg: D.spike * D.scale * D.kx, note, pieces: P.loops };
   }
 
   // ---------- 클릭 한 번의 전체 흐름 ----------
@@ -742,9 +1147,16 @@
       status('영역 계산 중…');
       if (currentTool() !== 'lassoSelectionIcon') await selectTool('lassoSelectionIcon');
       mark('ready');
-      // 1~2) 영역 계산 — '모든 레이어'는 화면 기준, '현재 레이어'는 레이어 그림(보드 해상도) 기준
-      const R = S.ref === 'layer' ? await regionFromLayer(canvas, clientX, clientY, fill, T, mark)
-        : await regionFromScreen(canvas, clientX, clientY, T, mark);
+      // 1~2) 영역 계산 — 기본은 보드 실제 픽셀(Magma 내부 읽기). 못 쓰면(화면 회전 등) 예전 방식:
+      //      '모든 레이어'는 화면 기준, '현재 레이어'는 Ctrl+C 가로채기
+      await ensureEditor();
+      const D = docContext(canvas);
+      let R = D ? await regionFromDoc(D, clientX, clientY, fill, T, mark) : { fallback: true };
+      if (R.fallback) {
+        T.fallback = true;
+        R = S.ref === 'layer' ? await regionFromLayer(canvas, clientX, clientY, fill, T, mark)
+          : await regionFromScreen(canvas, clientX, clientY, T, mark);
+      }
       if (R.error) return status(R.error);
       const { poly, count, holes } = R;
       mark('computed'); T.vertices = poly.length;
@@ -777,7 +1189,7 @@
       } else {
         // Shift: 추가, Alt: 빼기 (그 외엔 설정 칸의 선택 모드)
         const mode = mods.alt ? 'subtract' : (mods.shift ? 'add' : prevSelMode || 'select');
-        const plan = await planSelectionLasso(canvas, poly, mode, R.samples || []);
+        const plan = await planSelectionLasso(canvas, poly, mode, R.samples || [], R.minSeg || 0);
         T.plan = plan.mode + (plan.deselectFirst ? '+deselect' : '');
         if (plan.mode !== prevSelMode) wantMode = plan.mode; // finally에서 원래 모드로 되돌림
         await drawSelectionPlan(canvas, plan);
@@ -785,7 +1197,9 @@
       mark('drawn');
       if (fill) layerDirty = true; // 현재 레이어가 바뀌었으므로 받아 둔 레이어 그림은 버림
       const ms = Math.round(performance.now() - t0);
-      status(`${fill ? '채움' : '선택'}: ${count.toLocaleString()}픽셀${holes ? `, 구멍 ${holes}개` : ''} (${(ms / 1000).toFixed(1)}초)`);
+      const parts = !S.contig && R.pieces > 1 ? `, 테두리 ${R.pieces}개` : (holes ? `, 구멍 ${holes}개` : '');
+      status(`${fill ? '채움' : '선택'}: ${count.toLocaleString()}픽셀${parts} (${(ms / 1000).toFixed(1)}초)` +
+        (R.note || '') + (T.fallback ? ' · 화면 기준' : ''));
     } catch (err) {
       console.error('[MagmaWand]', err);
       status('오류: ' + (err && err.message || err));
@@ -832,6 +1246,28 @@
     const rect = canvas.getBoundingClientRect();
     const kx = canvas.width / rect.width, ky = canvas.height / rect.height;
     const vt = viewTransform();
+    // 기본: 보드 실제 픽셀 (투명한 곳은 KEY_RGB로 깔아 RGB만으로 비교)
+    await ensureEditor();
+    const D = docContext(canvas);
+    if (D) {
+      const img = docImage(D, S.qref);
+      if (img.error) return img;
+      if (!img.fallback) {
+        const n = img.w * img.h, src = img.data, data = new Uint8ClampedArray(n * 4);
+        for (let i = 0, o = 0; i < n; i++, o += 4) {
+          const a = src[o + 3];
+          if (a === 255) { data[o] = src[o]; data[o + 1] = src[o + 1]; data[o + 2] = src[o + 2]; }
+          else {
+            const f = a / 255;
+            data[o] = src[o] * f + KEY_RGB[0] * (1 - f) + 0.5; data[o + 1] = src[o + 1] * f + KEY_RGB[1] * (1 - f) + 0.5;
+            data[o + 2] = src[o + 2] * f + KEY_RGB[2] * (1 - f) + 0.5;
+          }
+          data[o + 3] = 255;
+        }
+        return { w: img.w, h: img.h, data, space: 'doc', xf: D.xf, rect, kx, ky, forbid: null,
+          toSrc: D.toDoc, toBuf: D.toBuf, radius: () => S.brush, spike: D.spike, minSeg: D.spike * D.scale * D.kx };
+      }
+    }
     if (S.qref === 'layer') {
       if (!vt || !(vt.zoom > 0) || Math.abs(vt.rot) > 1e-6 || vt.flags) return { error: '화면을 회전·뒤집은 상태에서는 현재 레이어 참조를 쓸 수 없어요' };
       const L = await getCurrentLayerImage();
@@ -846,10 +1282,12 @@
           for (let c = 0; c < 3; c++) data[d + c] = Math.round(L.rgba[s + c] * a + KEY_RGB[c] * (1 - a));
         }
       }
-      return { w: W, h: H, data, space: 'doc', vt, rect, kx, ky, forbid: null,
+      const spike = SPIKE;
+      return { w: W, h: H, data, space: 'doc', rect, kx, ky, forbid: null,
+        xf: [vt.zoom * kx, (rect.width / 2 - vt.cx * vt.zoom) * kx, (rect.height / 2 - vt.cy * vt.zoom) * ky],
         toSrc: (cx, cy) => [vt.cx + (cx - (rect.left + rect.width / 2)) / vt.zoom, vt.cy + (cy - (rect.top + rect.height / 2)) / vt.zoom],
         toBuf: ([x, y]) => [(rect.width / 2 + (x - vt.cx) * vt.zoom) * kx, (rect.height / 2 + (y - vt.cy) * vt.zoom) * ky],
-        radius: () => S.brush };
+        radius: () => S.brush, spike, minSeg: spike * vt.zoom * kx };
     }
     const img = await readScreen(canvas);
     if (img.blank) return { error: '화면을 읽지 못했어요 (Magma 창이 가려져 있지 않은지 확인해 주세요)' };
@@ -975,9 +1413,9 @@
       g.setTransform(1, 0, 0, 1, 0, 0);
       g.clearRect(0, 0, Q.ov.width, Q.ov.height);
       if (Q.src.space === 'doc') {
-        const vt = Q.src.vt, s = vt.zoom * Q.src.kx;
+        const [s, ox, oy] = Q.src.xf;
         g.imageSmoothingEnabled = false;
-        g.setTransform(s, 0, 0, s, (Q.src.rect.width / 2 - vt.cx * vt.zoom) * Q.src.kx, (Q.src.rect.height / 2 - vt.cy * vt.zoom) * Q.src.ky);
+        g.setTransform(s, 0, 0, s, ox, oy);
       }
       g.drawImage(Q.off, 0, 0);
     });
@@ -1027,13 +1465,16 @@
       if (S.qexpand > 0) dilate(mask, w, h, S.qexpand);
       if (Q.src.forbid) for (let i = 0; i < mask.length; i++) if (Q.src.forbid[i]) mask[i] = 0;
       let count = 0; for (let i = 0; i < mask.length; i++) count += mask[i];
-      const poly0 = maskToSinglePolygon(mask, w, h);
+      // 보드 픽셀 기준이면 픽셀 그대로의 정밀 경로, 화면 기준(예전 방식)이면 매끈하게 줄인 경로
+      let poly0 = null;
+      if (Q.src.space === 'doc') { const P = exactPath(mask, w, h, Q.src.spike); poly0 = P && P.pts; }
+      else poly0 = maskToSinglePolygon(mask, w, h);
       if (!poly0) { status('영역을 만들지 못했어요'); return; }
       const poly = poly0.map(Q.src.toBuf);
       const mode = Q.subtract ? 'subtract' : (Q.add || selectionExists() ? 'add' : 'select');
       prevSelMode = getSelectionMode();
       await lassoStabZero();
-      const plan = await planSelectionLasso(canvas, poly, mode, sampleMask(mask, w, h, 1500, Q.src.toBuf));
+      const plan = await planSelectionLasso(canvas, poly, mode, sampleMask(mask, w, h, 1500, Q.src.toBuf), Q.src.minSeg || 0);
       changed = plan.mode !== prevSelMode;
       await drawSelectionPlan(canvas, plan); // 올가미 한 번 = 되돌리기 한 칸
       status(`${Q.subtract ? '뺌' : '선택'}: ${count.toLocaleString()}픽셀`);
@@ -1142,7 +1583,7 @@
     if (!b || b.classList.contains('mw-tool') || b.closest('.mw-flyout')) return;
     if (switchingTo) { e.stopImmediatePropagation(); e.preventDefault(); return; }
     if (!S.active) return;
-    if (lassoStabSaved !== null && currentTool() === 'lassoSelectionIcon' && e.type === 'pointerdown') {
+    if (pendingLasso() && currentTool() === 'lassoSelectionIcon' && e.type === 'pointerdown') {
       e.stopImmediatePropagation(); e.preventDefault();
       switchingTo = b;
       (async () => {
@@ -1359,7 +1800,7 @@
   //  - 새 영역이 기존 선택 안에 완전히 들어감 → '교차' 모드 (결과가 새 영역과 정확히 같음)
   //  - 그 밖(드묾) → 선택 해제 후 그음 (이때만 되돌리기 2칸)
   // samples: 새 영역 안쪽 점들(버퍼 좌표) — 포함 여부 확인용
-  async function planSelectionLasso(canvas, poly, mode, samples) {
+  async function planSelectionLasso(canvas, poly, mode, samples, minSeg = 0) {
     if (mode !== 'select' || !selectionExists()) return { poly, mode };
     const sel = await copyMergedSelection();
     const vt = viewTransform();
@@ -1381,7 +1822,7 @@
       if (inSel(x, y) || inSel(x - r, y) || inSel(x + r, y) || inSel(x, y - r) || inSel(x, y + r)) continue;
       for (let j = 0; j < poly.length; j++) {
         const d = (poly[j][0] - x) ** 2 + (poly[j][1] - y) ** 2;
-        if (!best || d < best.d) best = { d, s: [x, y], j };
+        if (d >= minSeg * minSeg && (!best || d < best.d)) best = { d, s: [x, y], j };
       }
     }
     if (best && best.d <= (12 * kx) ** 2) {
@@ -1579,7 +2020,10 @@
       const vr = verifyTransform(sel, toClient, img, canvas);
       if (!vr.pass) return toast(vr.tried < 20 ? '선택 영역이 화면에 충분히 보이도록 한 뒤 다시 해 주세요' : '화면 위치 계산이 맞지 않아 안전을 위해 멈췄어요');
       const gs = growShrinkMask(sel, n);
-      const poly = maskToSinglePolygon(gs.mask, gs.W, gs.H);
+      // 픽셀 그대로의 정밀 경로 (짧은 변 사이를 벌려 Magma가 계단을 뭉개지 않게)
+      const spike = SPIKE;
+      const EP = exactPath(gs.mask, gs.W, gs.H, spike);
+      const poly = EP && EP.pts;
       prevSelMode = getSelectionMode();
       await lassoStabZero();
       if (!poly) {
@@ -1593,7 +2037,7 @@
       const pts = poly.map(([x, y]) => toBuf([x + gs.ox, y + gs.oy]));
       // 새 선택으로 바꾼다 (축소는 기존 선택 안쪽이므로 '교차' 모드로 정확히 같은 결과)
       const plan = await planSelectionLasso(canvas, pts, 'select',
-        sampleMask(gs.mask, gs.W, gs.H, 1500, ([x, y]) => toBuf([x + gs.ox, y + gs.oy])));
+        sampleMask(gs.mask, gs.W, gs.H, 1500, ([x, y]) => toBuf([x + gs.ox, y + gs.oy])), spike * vt.zoom * kx);
       changedMode = plan.mode !== prevSelMode;
       await drawSelectionPlan(canvas, plan);
       toast(`${label} 완료`);
@@ -1720,7 +2164,7 @@
   const CSS = `
     html.mw-on editor-tools button.tool.on:not(.mw-tool) { background: transparent !important; border-color: transparent !important; }
     html.mw-on .editor-view, html.mw-on .editor-view * { cursor: crosshair !important; }
-    .mw-hide, html.mw-on .tool-sliders > :not(.mw-el):not(.selection-tool) {
+    .mw-hide, html.mw-on editor-sliders .tool-sliders:not(.layers-options) > :not(.mw-el):not(.selection-tool) {
       height: 0 !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important;
       overflow: hidden !important; opacity: 0 !important; pointer-events: none !important; }
     .mw-el { animation: mwSlide .22s ease-out; }
@@ -1960,6 +2404,7 @@
       rowsEl.append(
         segRow('동작', 'action', [['select', '선택'], ['fill', '채우기']]),
         segRow('참조', 'ref', [['all', '모든 레이어'], ['layer', '현재 레이어']]),
+        segRow('범위', 'contig', [[true, '이어진 곳만'], [false, '전체 같은 색']]),
         sliderRow('허용 오차', 'tol', 0, 100),
         sliderRow('영역 확장', 'expand', 0, 10),
         statusEl,
@@ -1986,6 +2431,8 @@
         const label = r.querySelector('.slider-label')?.textContent.trim();
         if (label === 'Stabilizer' || /Send to chat|Set as My Avatar/i.test(r.textContent)) r.classList.add('mw-hide');
       }
+      // 안티에일리어스는 마법봉이 알아서 끄고 켜므로 숨긴다 (마법봉은 항상 픽셀 단위로 정확하게)
+      aaButton()?.closest('custom-checkbox')?.classList.add('mw-hide');
     }
     if (ts.firstElementChild !== titleEl) ts.prepend(titleEl);
     // 순서: 마법봉 제목 → 전체 선택/해제 → 선택 모드 → (마법봉 설정) → 삭제/반전/복제
@@ -2033,7 +2480,7 @@
       // 단축키 등으로 Magma가 다른 도구로 바뀌었으면 마법봉 끄기
       if (!S.busy && !S.switching && !switchingTo && currentTool() !== 'lassoSelectionIcon') { setActive(false); return; }
       ensureSettings();
-    } else if (lassoStabSaved !== null && !switchingTo && currentTool() === 'lassoSelectionIcon') {
+    } else if (pendingLasso() && !switchingTo && currentTool() === 'lassoSelectionIcon') {
       // 되돌리지 못한 손떨림 보정(단축키로 도구를 바꿨거나 창을 닫았던 경우)을 올가미 선택이 보일 때 되돌림
       restoreLassoStab();
     }
@@ -2060,6 +2507,7 @@
   window.__magmaWand.internals = { floodFill, dilate, traceContours, buildPolygon, area, outsideMask,
     selectTool, currentTool, getStabilizer, setStabilizer, getSelectionMode, setSelectionMode, drawLasso, readScreen,
     getBrushMode, setBrushMode, getAutoErase, setAutoErase, layerRows, personalState, soloCurrentLayer, restoreLayers,
-    edtSq, growShrinkMask, maskToSinglePolygon, viewTransform, copyMergedSelection, growShrinkSelection, openGrowDialog };
+    edtSq, growShrinkMask, maskToSinglePolygon, viewTransform, copyMergedSelection, growShrinkSelection, openGrowDialog,
+    getEditor, ensureEditor, docContext, docImage, exactPath, withSpikes, magmaKeep, rasterPath, straightLoop, getAA, setAA, docToBuffer, selectionExists };
   window.__magmaWand.ready = true; // 끝까지 시작됨 (실행기는 이 표시가 없으면 다시 넣는다)
 })();
