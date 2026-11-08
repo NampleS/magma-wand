@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.6.0';
+  const VERSION = '0.7.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -34,7 +34,7 @@
   // tool: 도구 묶음에서 마지막으로 쓴 도구 ('wand' 마법봉 | 'quick' 빠른 선택)
   // 빠른 선택: brush(보드 픽셀), qtol, qexpand, qref, qkeys
   // contig: true = 이어진 영역만, false = 보드 전체에서 같은 색 모두 (CSP·포토샵의 '인접'/'연속' 옵션)
-  const DEFAULTS = { tol: 10, expand: 1, action: 'select', ref: 'all', keys: ['KeyW'], contig: true,
+  const DEFAULTS = { tol: 10, expand: 1, action: 'select', ref: 'all', keys: ['KeyW'], contig: true, histOn: true,
     tool: 'wand', brush: 20, qtol: 12, qexpand: 1, qref: 'all', qkeys: ['Shift+KeyW'] };
   const S = Object.assign({}, DEFAULTS, loadSettings(), { active: false, busy: false, switching: false });
   if (!['select', 'fill'].includes(S.action)) S.action = 'select';
@@ -53,9 +53,9 @@
   }
   function saveSettings() {
     try {
-      const { tol, expand, action, ref, keys, contig, growPx, tool, brush, qtol, qexpand, qref, qkeys } = S;
+      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys } = S;
       localStorage.setItem('magmaWand.settings',
-        JSON.stringify({ tol, expand, action, ref, keys, contig, growPx, tool, brush, qtol, qexpand, qref, qkeys }));
+        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys }));
     } catch { /* 저장 못 해도 동작에는 지장 없음 */ }
   }
 
@@ -2113,6 +2113,8 @@
     '<path fill="currentColor" d="M240 160h32v80h80v32h-80v80h-32v-80h-80v-32h80z"/>';
   const SHRINK_SVG = '<path fill="currentColor" d="M64 64h96v32H96v64H64zM352 64h96v96h-32V96h-64zM64 352h32v64h64v32H64zM416 352h32v96h-96v-32h64z"/>' +
     '<path fill="currentColor" d="M160 240h192v32H160z"/>';
+  const HIST_SVG = '<path fill="currentColor" d="M256 48a208 208 0 1 1-147 61l-37-37v112h112l-43-43a144 144 0 1 1-34 93H43A213 213 0 1 0 256 48z"/>' +
+    '<path fill="currentColor" d="M240 144h40v104l72 44-20 34-92-56z"/>';
   function ensureMenuItems() {
     for (const menu of document.querySelectorAll('.dropdown-menu')) {
       const items = [...menu.querySelectorAll('command-menu-item')];
@@ -2120,7 +2122,7 @@
       if (!inv || menu.querySelector('.mw-menu')) continue;
       const invBtn = inv.querySelector('button');
       const disabled = !!(invBtn && (invBtn.disabled || invBtn.classList.contains('disabled')));
-      const make = (text, svg, grow) => {
+      const make = (text, svg, grow, onClick) => {
         const it = inv.cloneNode(true);
         it.classList.add('mw-menu', 'mw-el');
         it.querySelector('kbd')?.remove();
@@ -2132,7 +2134,8 @@
         const b = it.querySelector('button');
         if (b) {
           b.removeAttribute('commandclick');
-          if (disabled) { b.disabled = true; b.classList.add('disabled'); }
+          if (onClick) { b.disabled = false; b.classList.remove('disabled'); b.removeAttribute('disabled'); it.querySelectorAll('.disabled').forEach((x) => x.classList.remove('disabled')); }
+          else if (disabled) { b.disabled = true; b.classList.add('disabled'); }
           b.addEventListener('click', (e) => {
             e.preventDefault(); e.stopImmediatePropagation();
             if (b.disabled) return;
@@ -2142,15 +2145,319 @@
             document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
             document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
             document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-            openGrowDialog(grow);
+            if (onClick) onClick(); else openGrowDialog(grow);
           }, true);
         }
         return it;
       };
       const a = make('선택 범위 확장…', GROW_SVG, true);
       const b = make('선택 범위 축소…', SHRINK_SVG, false);
-      inv.after(a, b);
+      const h = make('작업 기록 (내 컴퓨터)…', HIST_SVG, false, () => openHistoryDialog());
+      inv.after(a, b, h);
     }
+  }
+
+  // ---------- 작업 기록 (내 컴퓨터에만 저장하는 레이어 백업) ----------
+  // Magma 되돌리기는 서버가 보드마다 15칸으로 관리해서 늘릴 수 없다(내 쪽에서만 늘리면 보드가 어긋남).
+  // 대신 몇 분마다 '바뀐 레이어만' 이 컴퓨터(IndexedDB)에 PNG로 저장해 두고, 필요하면 그 시점의 레이어를
+  // 보드 크기 그림으로 클립보드에 복사해 준다. 붙이기는 사용자가 Edit → Paste on new layer(또는 Ctrl+V)로 직접 한다
+  // — 마법봉이 보드를 직접 바꾸지 않는다(보드 크기 그림은 화면 위치와 상관없이 제자리에 붙음, 실측).
+  // 저장은 Magma 내부 '읽기' 함수만 쓰고 서버로 아무것도 보내지 않는다(트래픽 0).
+  const HIST_DB = 'magmaWand.history';
+  const HIST_EVERY = 2 * 60 * 1000;        // 바뀐 레이어 확인 간격
+  const HIST_FULL_EVERY = 10 * 60 * 1000;  // 썸네일로 안 보이는 작은 변화까지 보는 정밀 확인 간격
+  const HIST_KEEP = 60;                    // 보드마다 남길 시점 수
+  const HIST_MAX_BYTES = 300 * 1024 * 1024; // 모든 보드를 합친 저장 상한
+  const HS = { db: null, timer: 0, boards: new Map(), orders: new Map(), lastFull: 0, running: false, lastInput: 0, rr: 0 };
+  on(window, 'pointerdown', (e) => { if (e.isTrusted) HS.lastInput = Date.now(); }, true);
+  on(window, 'keydown', (e) => { if (e.isTrusted) HS.lastInput = Date.now(); }, true);
+
+  function histOpen() {
+    if (HS.db) return Promise.resolve(HS.db);
+    return new Promise((res, rej) => {
+      const rq = indexedDB.open(HIST_DB, 1);
+      rq.onupgradeneeded = () => {
+        const db = rq.result;
+        db.createObjectStore('points', { keyPath: 'id', autoIncrement: true }).createIndex('board', 'board');
+        db.createObjectStore('blobs', { keyPath: 'key' });
+      };
+      rq.onsuccess = () => { HS.db = rq.result; res(HS.db); };
+      rq.onerror = () => rej(rq.error);
+    });
+  }
+  const reqP = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  async function hstore(name, mode = 'readonly') { return (await histOpen()).transaction(name, mode).objectStore(name); }
+  async function histPoints(board) {
+    const pts = await reqP((await hstore('points')).index('board').getAll(board));
+    return pts.sort((a, b) => a.id - b.id);
+  }
+  const boardId = () => (/\/d\/([^/?#]+)/.exec(location.pathname) || [])[1] || null;
+  function hash32(u8) {
+    const u = new Uint32Array(u8.buffer, u8.byteOffset, u8.byteLength >> 2);
+    let h = 2166136261, h2 = 0;
+    for (let i = 0; i < u.length; i++) { h = Math.imul(h ^ u[i], 16777619); h2 = (h2 + Math.imul(u[i], i + 1)) | 0; }
+    return (h >>> 0).toString(36) + '.' + (h2 >>> 0).toString(36);
+  }
+  async function rawToPng(raw) {
+    const cv = new OffscreenCanvas(raw.width, raw.height);
+    const px = new Uint8ClampedArray(raw.data.buffer, raw.data.byteOffset, raw.data.byteLength);
+    cv.getContext('2d').putImageData(new ImageData(px, raw.width, raw.height), 0, 0);
+    return cv.convertToBlob({ type: 'image/png' });
+  }
+
+  // 바뀐 레이어가 있으면 새 시점을 저장한다. force: 지금 바로(사용자가 '지금 저장'을 누름)
+  async function histCheck(force = false) {
+    if (HS.running || S.busy || Q.stroking || S.histOn === false && !force) return false;
+    if (!force && (document.hidden || Date.now() - HS.lastInput < 4000)) return false; // 그리는 중이면 다음에
+    const board = boardId();
+    const E = getEditor();
+    if (!board || !E) return false;
+    HS.running = true;
+    try {
+      const d = E.drawing;
+      if (!d || !Array.isArray(d.layers)) return false;
+      let known = HS.boards.get(board);
+      if (!known) {
+        known = new Map();
+        const last = (await histPoints(board)).pop();
+        if (last) { for (const l of last.layers) known.set(l.uid, l); HS.orders.set(board, last.layers.map((l) => l.uid).join(',')); }
+        HS.boards.set(board, known);
+      }
+      const fullDue = force || Date.now() - HS.lastFull > HIST_FULL_EVERY;
+      const now = Date.now();
+      const layers = [];
+      let changed = 0, fullReads = 0;
+      // 정밀 확인(썸네일로 안 보이는 작은 변화)은 큰 보드에서 버벅이지 않게 한 번에 3개 레이어씩 돌아가며
+      const nL = d.layers.length, rrStart = HS.rr % Math.max(1, nL);
+      const fullPick = new Set();
+      for (let k = 0; k < Math.min(3, nL); k++) fullPick.add((rrStart + k) % nL);
+      if (fullDue && !force) HS.rr += 3;
+      let li = -1;
+      for (const L of d.layers) {
+        li++;
+        const uid = L.uid || 'id' + L.id;
+        const r = L.rect;
+        const empty = !r || !(r.w > 0 && r.h > 0);
+        const rectKey = empty ? '0' : `${r.x},${r.y},${r.w},${r.h}`;
+        const prev = known.get(uid);
+        const meta = { name: String(L.name || ''), rect: empty ? null : { x: r.x, y: r.y, w: r.w, h: r.h }, visible: L.visible !== false };
+        if (!empty && (!L.texture || L.unloadedImage)) { if (prev) layers.push({ ...prev, ...meta }); continue; } // 지금은 못 읽음 → 전 기록 유지
+        const thumbSig = rectKey + ':' + (L.thumbData && L.thumbData.data ? hash32(L.thumbData.data) : '');
+        let entry;
+        if (prev && prev.rectKey === rectKey && prev.thumbSig === thumbSig && (!fullDue || (!force && !fullPick.has(li)))) entry = prev;
+        else if (empty) entry = { uid, rectKey, thumbSig, hash: 'empty', key: null, size: 0 };
+        else {
+          if (fullReads++) await nextFrame();          // 레이어 사이에 한 프레임씩 쉬어 화면이 멈추지 않게
+          const raw = E.renderer.getLayerRawData(L);  // 읽기 전용
+          if (!raw || raw.width !== r.w || raw.height !== r.h) { if (prev) layers.push({ ...prev, ...meta }); continue; }
+          const h = hash32(raw.data);
+          if (prev && prev.hash === h && prev.rectKey === rectKey) entry = { ...prev, thumbSig };
+          else {
+            const blob = await rawToPng(raw);
+            const key = `${board}:${uid}:${now}`;
+            await reqP((await hstore('blobs', 'readwrite')).put({ key, board, size: blob.size, blob }));
+            entry = { uid, rectKey, thumbSig, hash: h, key, size: blob.size };
+            changed++;
+          }
+        }
+        layers.push({ ...entry, ...meta });
+      }
+      if (fullDue) HS.lastFull = Date.now();
+      const order = layers.map((l) => l.uid).join(',');
+      for (const l of layers) known.set(l.uid, l);
+      if (!changed && order === HS.orders.get(board)) return false; // 바뀐 게 없음
+      HS.orders.set(board, order);
+      let thumb = null;
+      try {
+        if (E.renderer.getDrawingSnapshotScaledBlob) thumb = await E.renderer.getDrawingSnapshotScaledBlob(d, { x: 0, y: 0, w: d.w, h: d.h }, 240, 'image/png');
+      } catch { thumb = null; }
+      await reqP((await hstore('points', 'readwrite')).add({ board, t: now, w: d.w, h: d.h, layers, thumb, title: document.title, changed }));
+      await histPrune(board);
+      return true;
+    } catch (e) {
+      console.warn('[MagmaWand] 작업 기록 저장 실패', e);
+      return false;
+    } finally {
+      HS.running = false;
+    }
+  }
+  // 오래된 시점 지우기 + 어느 시점도 쓰지 않는 그림 지우기 + 전체 용량 제한
+  async function histGc(board) {
+    const keep = new Set();
+    for (const p of await histPoints(board)) for (const l of p.layers) if (l.key) keep.add(l.key);
+    const bs = await hstore('blobs', 'readwrite');
+    const keys = await reqP(bs.getAllKeys(IDBKeyRange.bound(board + ':', board + ':￿')));
+    const del = await hstore('blobs', 'readwrite');
+    for (const k of keys) if (!keep.has(k)) del.delete(k);
+  }
+  async function histPrune(board) {
+    const pts = await histPoints(board);
+    if (pts.length > HIST_KEEP) {
+      const st = await hstore('points', 'readwrite');
+      for (const p of pts.slice(0, pts.length - HIST_KEEP)) st.delete(p.id);
+    }
+    await histGc(board);
+    // 전체 용량이 넘으면 가장 오래된 시점부터 (모든 보드)
+    for (let guard = 0; guard < 50; guard++) {
+      const all = await reqP((await hstore('blobs')).getAll());
+      const total = all.reduce((s, b) => s + (b.size || 0), 0);
+      if (total <= HIST_MAX_BYTES) break;
+      const oldest = await reqP((await hstore('points')).openCursor());
+      if (!oldest) break;
+      const p = oldest.value;
+      await reqP((await hstore('points', 'readwrite')).delete(p.id));
+      await histGc(p.board);
+    }
+  }
+  async function histUsage() {
+    const all = await reqP((await hstore('blobs')).getAll());
+    return all.reduce((s, b) => s + (b.size || 0), 0);
+  }
+  function histStart() {
+    clearInterval(HS.timer);
+    HS.timer = setInterval(() => { histCheck(false); }, HIST_EVERY);
+    setTimeout(() => histCheck(false), 20000);
+  }
+  if (typeof indexedDB !== 'undefined' && typeof OffscreenCanvas !== 'undefined') histStart();
+  cleanups.push(() => { clearInterval(HS.timer); try { HS.db && HS.db.close(); } catch { } });
+
+  // 그 시점의 레이어를 보드 크기 그림으로 만들어 클립보드에 복사
+  async function histCopyLayer(point, l) {
+    const rec = await reqP((await hstore('blobs')).get(l.key));
+    if (!rec) throw new Error('저장된 그림을 찾지 못했어요');
+    const E = getEditor();
+    const W = (E && E.drawing && E.drawing.w) || point.w, H = (E && E.drawing && E.drawing.h) || point.h;
+    let png = rec.blob;
+    if (!(l.rect && l.rect.x === 0 && l.rect.y === 0 && l.rect.w === W && l.rect.h === H)) {
+      const bmp = await createImageBitmap(rec.blob);
+      const cv = new OffscreenCanvas(W, H);
+      cv.getContext('2d').drawImage(bmp, l.rect.x, l.rect.y);
+      png = await cv.convertToBlob({ type: 'image/png' });
+    }
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+  }
+
+  function fmtTime(t) {
+    const d = new Date(t), now = Date.now(), s = Math.round((now - t) / 1000);
+    const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    const ago = s < 60 ? '방금' : s < 3600 ? `${Math.round(s / 60)}분 전` : s < 86400 ? `${Math.round(s / 3600)}시간 전` : `${Math.round(s / 86400)}일 전`;
+    const day = new Date(now).toDateString() === d.toDateString() ? '오늘' : `${d.getMonth() + 1}/${d.getDate()}`;
+    return `${day} ${hm} · ${ago}`;
+  }
+  const fmtMB = (b) => (b / 1048576).toFixed(b < 10485760 ? 1 : 0) + 'MB';
+
+  async function openHistoryDialog() {
+    document.querySelector('.mw-dialog-wrap')?.remove();
+    const board = boardId();
+    const wrap = document.createElement('div');
+    wrap.className = 'mw-dialog-wrap mw-el';
+    wrap.innerHTML = `
+      <div class="mw-dialog mw-hist" role="dialog">
+        <div class="mw-dialog-title">작업 기록 <span class="mw-hist-sub">내 컴퓨터에만 저장</span></div>
+        <div class="mw-hist-help">몇 분마다 바뀐 레이어를 이 컴퓨터에 저장해요(다른 사람에게 보내는 건 없어요).
+          되살리고 싶은 레이어의 <b>복사</b>를 누른 뒤 <b>Edit → Paste on new layer</b>를 누르면 새 레이어로 원래 자리에 들어가요.</div>
+        <div class="mw-hist-list"><div class="mw-hist-empty">불러오는 중…</div></div>
+        <div class="mw-hist-foot">
+          <label class="mw-hist-auto"><input type="checkbox" ${S.histOn === false ? '' : 'checked'}> 자동 기록</label>
+          <span class="mw-hist-usage"></span>
+          <span class="mw-hist-gap"></span>
+          <button type="button" class="md btn secondary mw-hist-clear">이 보드 기록 지우기</button>
+          <button type="button" class="ml-2 md btn secondary mw-hist-now">지금 저장</button>
+          <button type="button" class="ml-2 md btn primary mw-ok">닫기</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+    const urls = [];
+    const close = () => { urls.forEach((u) => URL.revokeObjectURL(u)); wrap.remove(); };
+    wrap.addEventListener('pointerdown', (e) => { e.stopPropagation(); if (e.target === wrap) close(); });
+    wrap.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Escape') close(); });
+    wrap.querySelector('.mw-ok').addEventListener('click', close);
+    const list = wrap.querySelector('.mw-hist-list');
+    const usage = wrap.querySelector('.mw-hist-usage');
+    wrap.querySelector('.mw-hist-auto input').addEventListener('change', (e) => { S.histOn = e.target.checked; saveSettings(); });
+    const render = async () => {
+      urls.splice(0).forEach((u) => URL.revokeObjectURL(u));
+      list.innerHTML = '';
+      usage.textContent = '';
+      if (!board) { list.innerHTML = '<div class="mw-hist-empty">보드를 연 상태에서 쓸 수 있어요</div>'; return; }
+      let pts = [];
+      try { pts = (await histPoints(board)).reverse(); usage.textContent = `이 컴퓨터 사용량 ${fmtMB(await histUsage())}`; } catch (e) { list.innerHTML = '<div class="mw-hist-empty">기록을 읽지 못했어요</div>'; return; }
+      if (!pts.length) { list.innerHTML = '<div class="mw-hist-empty">아직 저장된 기록이 없어요. 그림을 그리면 몇 분 안에 저장돼요(지금 저장도 돼요).</div>'; return; }
+      for (const p of pts) {
+        const row = document.createElement('div');
+        row.className = 'mw-hist-row';
+        const img = document.createElement('img');
+        img.className = 'mw-hist-thumb';
+        if (p.thumb) { const u = URL.createObjectURL(p.thumb); urls.push(u); img.src = u; }
+        const info = document.createElement('div');
+        info.className = 'mw-hist-info';
+        info.innerHTML = `<div class="mw-hist-time"></div><div class="mw-hist-meta"></div>`;
+        info.querySelector('.mw-hist-time').textContent = fmtTime(p.t);
+        info.querySelector('.mw-hist-meta').textContent = `레이어 ${p.layers.length}개` + (p.changed ? ` · ${p.changed}개 바뀜` : '');
+        const layersEl = document.createElement('div');
+        layersEl.className = 'mw-hist-layers';
+        row.append(img, info);
+        const toggle = () => {
+          if (layersEl.childElementCount) { layersEl.innerHTML = ''; layersEl.remove(); return; }
+          for (const l of p.layers) {
+            const lr = document.createElement('div');
+            lr.className = 'mw-hist-layer';
+            const name = document.createElement('span');
+            name.className = 'mw-hist-lname';
+            name.textContent = l.name + (l.key ? '' : ' (빈 레이어)');
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'sm btn secondary';
+            btn.textContent = '복사';
+            btn.disabled = !l.key;
+            btn.addEventListener('click', async (e) => {
+              e.stopPropagation();
+              btn.disabled = true; btn.textContent = '복사 중…';
+              try {
+                await histCopyLayer(p, l);
+                btn.textContent = '복사됨';
+                toast(`"${l.name}"(${fmtTime(p.t).split(' · ')[0]})을 복사했어요 → Edit → Paste on new layer로 붙이세요`);
+              } catch (err) {
+                console.warn('[MagmaWand]', err);
+                btn.textContent = '복사';
+                toast('복사하지 못했어요: ' + (err && err.message || err));
+              } finally { btn.disabled = false; }
+            });
+            lr.append(name, btn);
+            layersEl.appendChild(lr);
+          }
+          row.after(layersEl);
+        };
+        row.addEventListener('click', toggle);
+        list.appendChild(row);
+      }
+    };
+    wrap.querySelector('.mw-hist-now').addEventListener('click', async (e) => {
+      const b = e.currentTarget;
+      b.disabled = true; b.textContent = '저장 중…';
+      HS.lastFull = 0;
+      const saved = await histCheck(true);
+      b.disabled = false; b.textContent = '지금 저장';
+      toast(saved ? '지금 상태를 저장했어요' : '마지막 기록과 달라진 게 없어요');
+      render();
+    });
+    let armed = false;
+    wrap.querySelector('.mw-hist-clear').addEventListener('click', async (e) => {
+      const b = e.currentTarget;
+      if (!armed) { armed = true; b.textContent = '한 번 더 누르면 지워요'; setTimeout(() => { armed = false; b.textContent = '이 보드 기록 지우기'; }, 3000); return; }
+      armed = false;
+      try {
+        const pts = await histPoints(board);
+        const st = await hstore('points', 'readwrite');
+        for (const p of pts) st.delete(p.id);
+        await histGc(board);
+        HS.boards.delete(board); HS.orders.delete(board);
+        toast('이 보드의 작업 기록을 지웠어요 (Magma 보드는 그대로예요)');
+      } catch { toast('지우지 못했어요'); }
+      b.textContent = '이 보드 기록 지우기';
+      render();
+    });
+    render();
   }
 
   // ---------- 화면: 도구 막대 버튼 + 오른쪽 설정 칸 ----------
@@ -2185,6 +2492,23 @@
     .mw-dialog-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
     .mw-dialog-input { width: 90px; background: #151515; color: #f4f4f4; border: 1px solid #555; border-radius: 4px; padding: 5px 8px; font: inherit; }
     .mw-dialog-btns { display: flex; justify-content: flex-end; }
+    .mw-hist { width: min(640px, 94vw); }
+    .mw-hist-sub { font-size: 12px; font-weight: 400; color: #9a9a9a; margin-left: 6px; }
+    .mw-hist-help { font-size: 12.5px; color: #c8c8c8; margin: -4px 0 12px; }
+    .mw-hist-list { max-height: 52vh; overflow-y: auto; border: 1px solid #3a3a3a; border-radius: 4px; background: #1b1b1b; }
+    .mw-hist-empty { padding: 18px; color: #9a9a9a; font-size: 13px; }
+    .mw-hist-row { display: flex; align-items: center; gap: 12px; padding: 8px 10px; cursor: pointer; border-bottom: 1px solid #2c2c2c; }
+    .mw-hist-row:hover { background: #2a2a2a; }
+    .mw-hist-thumb { width: 72px; height: 54px; object-fit: contain; background: #0e0e0e; border-radius: 3px; flex: none; }
+    .mw-hist-time { font-size: 13.5px; }
+    .mw-hist-meta { font-size: 12px; color: #9a9a9a; }
+    .mw-hist-layers { background: #151515; border-bottom: 1px solid #2c2c2c; padding: 4px 10px 6px 94px; }
+    .mw-hist-layer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 0; font-size: 13px; }
+    .mw-hist-lname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mw-hist-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 12px; font-size: 12.5px; }
+    .mw-hist-gap { flex: 1; }
+    .mw-hist-usage { color: #9a9a9a; }
+    .mw-hist-auto { display: flex; align-items: center; gap: 5px; cursor: pointer; }
     .mw-slider .slider { cursor: pointer; }
     .mw-slider editable-number button { cursor: text; }
     /* 도구 묶음: 오른쪽 아래 작은 삼각형 = 펼칠 수 있는 묶음 */
@@ -2489,6 +2813,7 @@
   // 새 버전이 들어올 때 이 버전을 깨끗이 걷어낸다
   window.__magmaWand.destroy = () => {
     clearInterval(tick);
+    clearTimeout(stabTimer); // 되돌릴 설정은 localStorage에 남아 있어 새 버전이 이어서 되돌린다
     for (const f of cleanups.splice(0)) { try { f(); } catch { /* 무시 */ } }
     removeSettings();
     document.querySelectorAll('.mw-menu, .mw-toast, .mw-dialog-wrap, .mw-shortcut, .mw-flyout, .mw-overlay, .mw-brush').forEach((e) => e.remove());
@@ -2508,6 +2833,7 @@
     selectTool, currentTool, getStabilizer, setStabilizer, getSelectionMode, setSelectionMode, drawLasso, readScreen,
     getBrushMode, setBrushMode, getAutoErase, setAutoErase, layerRows, personalState, soloCurrentLayer, restoreLayers,
     edtSq, growShrinkMask, maskToSinglePolygon, viewTransform, copyMergedSelection, growShrinkSelection, openGrowDialog,
-    getEditor, ensureEditor, docContext, docImage, exactPath, withSpikes, magmaKeep, rasterPath, straightLoop, getAA, setAA, docToBuffer, selectionExists };
+    getEditor, ensureEditor, docContext, docImage, exactPath, withSpikes, magmaKeep, rasterPath, straightLoop,
+    histCheck, histPoints, histCopyLayer, openHistoryDialog, histUsage, getAA, setAA, docToBuffer, selectionExists };
   window.__magmaWand.ready = true; // 끝까지 시작됨 (실행기는 이 표시가 없으면 다시 넣는다)
 })();
