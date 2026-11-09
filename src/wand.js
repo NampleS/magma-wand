@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.14.0';
+  const VERSION = '0.15.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -38,12 +38,14 @@
   const DEFAULTS = { tol: 10, expand: 1, action: 'select', ref: 'all', keys: ['KeyW'], contig: true, histOn: true,
     tool: 'wand', brush: 20, qtol: 12, qexpand: 1, qref: 'all', qkeys: ['Shift+KeyW'],
     bkeys: ['Shift+KeyB'], akeys: ['KeyC'], advBrushId: null, advOpacity: 100, advSize: 10,
-    blurSize: 40, blurStrength: 6, blurDensity: 50, koAuto: true, koFont: 'Paperlogy', groupLast: {} };
+    blurSize: 40, blurStrength: 6, blurDensity: 50, koAuto: true, koFont: 'Paperlogy', groupLast: {},
+    gap: 0, qmSize: 30, qmMode: 'add' };
   const S = Object.assign({}, DEFAULTS, loadSettings(), { active: false, busy: false, switching: false });
   if (!['select', 'fill'].includes(S.action)) S.action = 'select';
   if (!['all', 'layer'].includes(S.ref)) S.ref = 'all';
   if (!['all', 'layer'].includes(S.qref)) S.qref = 'all';
-  if (!['wand', 'quick', 'brush', 'blur'].includes(S.tool)) S.tool = 'wand';
+  if (!['wand', 'quick', 'brush', 'blur', 'qmask'].includes(S.tool)) S.tool = 'wand';
+  if (!['add', 'sub'].includes(S.qmMode)) S.qmMode = 'add';
   if (!Array.isArray(S.bkeys)) S.bkeys = DEFAULTS.bkeys.slice();
   if (!Array.isArray(S.akeys)) S.akeys = DEFAULTS.akeys.slice();
   S.alpha = false; // 투명색은 켤 때마다 새로 (저장하지 않음)
@@ -59,9 +61,9 @@
   }
   function saveSettings() {
     try {
-      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize } = S;
+      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode } = S;
       localStorage.setItem('magmaWand.settings',
-        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize }));
+        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode }));
     } catch { /* 저장 못 해도 동작에는 지장 없음 */ }
   }
 
@@ -1137,14 +1139,17 @@
     const [fx, fy] = D.toDoc(clientX, clientY);
     const dx = Math.floor(fx), dy = Math.floor(fy);
     if (dx < 0 || dy < 0 || dx >= img.w || dy >= img.h) return { error: '보드 바깥을 눌렀어요' };
-    const { mask, count } = floodFill(img, dx, dy, S.tol, null, true, S.contig);
+    let ff = null;
+    if (S.gap > 0 && S.contig) { ff = gapCloseFill(img, dx, dy, S.tol, Math.round(S.gap)); if (!ff) T.gapSkip = true; }
+    const { mask, count } = ff || floodFill(img, dx, dy, S.tol, null, true, S.contig);
     if (S.expand > 0) dilate(mask, img.w, img.h, S.expand);
     mark('filled');
     const P = exactPath(mask, img.w, img.h, D.spike, { pixelOnly: fill });
     if (!P) return { error: '영역을 만들지 못했어요' };
     T.doc = true; T.loops = P.loops; T.points = P.pts.length; T.pathMode = P.mode;
     if (P.dropped) T.dropped = P.dropped;
-    const note = P.dropped ? ` · 작은 조각 ${P.dropped}개는 점이 너무 많아 뺐어요` : (P.simplified ? ' · 테두리가 복잡해 조금 매끈하게 그었어요' : '');
+    const note = (P.dropped ? ` · 작은 조각 ${P.dropped}개는 점이 너무 많아 뺐어요` : (P.simplified ? ' · 테두리가 복잡해 조금 매끈하게 그었어요' : '')) +
+      (T.gapSkip ? ' · 누른 곳이 선과 너무 가까워 빈틈 닫기 없이 했어요' : '');
     return { poly: P.pts.map(D.toBuf), count, holes: Math.max(0, P.loops - 1), samples: sampleMask(mask, img.w, img.h, 1500, D.toBuf),
       minSeg: D.spike * D.scale * D.kx, note, pieces: P.loops };
   }
@@ -2522,6 +2527,11 @@ void main(){
       if (e.type !== 'mouseup' && e.pointerId === ADV.pid) advStrokeEnd(e.type === 'pointercancel');
       return;
     }
+    if (S.tool === 'qmask' && QM.st && (e.type === 'pointerup' || e.type === 'pointercancel' || e.type === 'mouseup')) {
+      e.stopImmediatePropagation(); e.preventDefault();
+      if (e.type !== 'mouseup' && e.pointerId === QM.st.pid) qmEnd();
+      return;
+    }
     if (S.tool === 'blur' && BLR.st && (e.type === 'pointerup' || e.type === 'pointercancel' || e.type === 'mouseup')) {
       e.stopImmediatePropagation(); e.preventDefault();
       if (e.type !== 'mouseup' && e.pointerId === BLR.st.pid) blurEnd(e.type === 'pointercancel');
@@ -2544,6 +2554,10 @@ void main(){
       if (e.type === 'pointerdown') blurPointerDown(e);
       return;
     }
+    if (S.tool === 'qmask') {
+      if (e.type === 'pointerdown') qmPointerDown(e);
+      return;
+    }
     if (e.type === 'pointerdown') pendingDown = true;
     if (e.type === 'pointerup' && pendingDown) {
       pendingDown = false;
@@ -2559,6 +2573,13 @@ void main(){
       const over = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
       advCursor(e.clientX, e.clientY, (over || ADV.stroke) && !BSZ.on);
       if (ADV.stroke) { e.stopImmediatePropagation(); advPointerMove(e); }
+      return;
+    }
+    if (S.tool === 'qmask' && canvas) {
+      const r = canvas.getBoundingClientRect();
+      const over = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+      qmCursor(e.clientX, e.clientY, (over || QM.st) && !BSZ.on);
+      if (QM.st) { e.stopImmediatePropagation(); qmPointerMove(e); }
       return;
     }
     if (S.tool === 'blur' && canvas) {
@@ -2693,7 +2714,7 @@ void main(){
     .replace(/^Arrow/, '').replace(/^Bracket(Left|Right)$/, (_, s) => (s === 'Left' ? '[' : ']'));
   const comboParts = (c) => c.split('+').map((p, i, a) => (i === a.length - 1 ? keyLabel(p) : p));
   const comboText = (c) => comboParts(c).join('+');
-  const TOOL_LABEL = { wand: '마법봉', quick: '빠른 선택', brush: '고급 브러시', blur: '블러' };
+  const TOOL_LABEL = { wand: '마법봉', quick: '빠른 선택', brush: '고급 브러시', blur: '블러', qmask: '퀵 마스크' };
   const TOOL_KEYS = { wand: 'keys', quick: 'qkeys', brush: 'bkeys' };
 
   on(window, 'keydown', (e) => {
@@ -4289,7 +4310,7 @@ void main(){
   // Magma 도구 버튼은 지우지 않고 숨기기만 한다(단축키·내부 동작 그대로). 폴더 칸을 누르면 마지막에 쓴 도구가 골라지고
   // 오른쪽에 같은 폴더 도구들이 펼쳐진다. '@'로 시작하는 것은 마법봉 쪽 도구.
   const GROUPS = [
-    { id: 'select', members: ['selectRectIcon', 'selectEllipseIcon', 'lassoSelectionIcon'] },
+    { id: 'select', members: ['selectRectIcon', 'selectEllipseIcon', 'lassoSelectionIcon', '@qmask'] },
     { id: 'wand', members: ['@wand', '@quick'] },
     { id: 'brush', members: ['faPaintBrush', '@brush'] },
     { id: 'blend', members: ['blendIcon', '@blur', 'liquifyIcon'] },
@@ -4875,6 +4896,7 @@ void main(){
     if (!E) return;
     const u = E.model.user, act = msActive(E), s = u.surface, tool = currentTool();
     for (const L of [...MS.set]) if (!E.drawing.layers.includes(L) || L === act) MS.set.delete(L);
+    if (!MS.sess && MS.set.size) { msPropTick(E, act); if (MS.busy) return; }
     const ss = MS.sess;
     if (ss) {
       const live = s && s.layer === ss.L && s.toolId === (ss.kind === 'move' ? 4 : 20);
@@ -4946,8 +4968,366 @@ void main(){
       : `레이어 ${results.length + 1}개를 함께 ${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} (되돌리기는 레이어마다 ${ss.sel ? '3칸: 선택 해제·선택·변형' : '한 칸'})`);
   }
   const msTimer = setInterval(() => { try { msTick(); } catch (err) { console.warn('[MagmaWand] 함께 고르기', err); } }, 60);
+  cleanups.push(() => { QM.wrap?.remove();
+  });
   cleanups.push(() => { clearInterval(msTimer); MS.sess?.wrap?.remove(); MS.guard?.remove(); document.querySelectorAll('.mw-msel').forEach((r) => r.classList.remove('mw-msel')); });
   on(window, 'scroll', () => { if (MS.set.size) requestAnimationFrame(msPaint); }, true);
+
+  // ----- 함께 고른 레이어의 속성(불투명도·합성 모드·투명 픽셀 잠금·잠금·클리핑) 같이 바꾸기 -----
+  // 레이어 칸 머리(Lock·합성 모드·Opacity)에서 지금 레이어 속성을 바꾸면, 손을 뗀 뒤 함께 고른 레이어에도
+  // 같은 화면 조작(그 레이어를 고르고 같은 단추·칸)으로 맞춘다. 레이어 하나·속성 하나 = Magma 동작 한 번.
+  const MSP_KEYS = ['opacity', 'mode', 'opacityLocked', 'locked', 'clippingGroup'];
+  const msProps = (L) => { const o = {}; for (const k of MSP_KEYS) o[k] = L[k]; return o; };
+  Object.assign(MS, { ptouch: 0, pL: null, pv: null, pchg: null, pt: 0 });
+  const msHdr = () => document.querySelector('editor-layers .layers-options');
+  on(window, 'pointerdown', (e) => { if (e.isTrusted && e.target.closest && e.target.closest('editor-layers .layers-options, #layer-modes')) MS.ptouch = performance.now(); }, true);
+  on(window, 'keydown', (e) => { if (e.isTrusted && e.target.closest && e.target.closest('editor-layers .layers-options')) MS.ptouch = performance.now(); }, true);
+  function msPropTick(E, act) {
+    if (!act) return;
+    if (MS.pL !== act) { MS.pL = act; MS.pv = msProps(act); MS.pchg = null; return; }
+    const cur = msProps(act), now = performance.now();
+    for (const k of MSP_KEYS) {
+      if (cur[k] === MS.pv[k]) continue;
+      if (now - MS.ptouch < 4000) { MS.pchg = MS.pchg || {}; MS.pchg[k] = cur[k]; MS.pt = now; }
+    }
+    MS.pv = cur;
+    if (MS.pchg && !MS.down && now - MS.pt > 500 && !document.querySelector('editor-layers .layers-options editable-number input:not([hidden])')) {
+      const ch = MS.pchg; MS.pchg = null;
+      msPropsApply(ch).catch((err) => { console.warn('[MagmaWand] 속성 함께 바꾸기', err); toast('속성을 함께 바꾸다 멈췄어요: ' + (err && err.message || err)); });
+    }
+  }
+  async function msSetProp(L, k, v) {
+    const hdr = msHdr();
+    if (!hdr) return '레이어 칸을 찾지 못함';
+    if (L[k] === v) return null;
+    if (k === 'opacity') {
+      const en = hdr.querySelector('editable-number');
+      en?.querySelector('button')?.click();
+      await nextFrame();
+      const inp = en && en.querySelector('input');
+      if (!inp) return '불투명도 칸을 찾지 못함';
+      inp.focus(); inp.value = String(Math.round(v * 1000) / 10); // 칸에는 % 로 넣는다(실측: 0.5를 넣으면 0.5%)
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+      inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+      inp.dispatchEvent(new Event('change', { bubbles: true }));
+      inp.blur();
+      return await waitFor(() => Math.abs(L.opacity - v) < 0.006, 1000) ? null : '불투명도가 바뀌지 않음';
+    }
+    if (k === 'mode') {
+      hdr.querySelector('layer-mode-select button')?.click();
+      await waitFor(() => document.querySelector('#layer-modes'), 800);
+      const it = [...document.querySelectorAll('#layer-modes .dropdown-item')].find((b) => b.textContent.trim() === String(v));
+      if (!it) { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true })); return '합성 모드를 찾지 못함'; }
+      it.click();
+      return await waitFor(() => L.mode === v, 1000) ? null : '합성 모드가 바뀌지 않음';
+    }
+    const btn = k === 'opacityLocked' ? hdr.querySelectorAll('selector')[0]?.querySelector('button')
+      : k === 'locked' ? hdr.querySelector('selector[command=lock-layer] button')
+      : hdr.querySelector('button[command=toggle-layer-clipping-group]');
+    if (!btn) return '단추를 찾지 못함';
+    btn.click();
+    return await waitFor(() => L[k] === v, 1000) ? null : '바뀌지 않음';
+  }
+  async function msPropsApply(ch) {
+    const E = getEditor();
+    if (!E || MS.busy || MS.sess) return;
+    const act = msActive(E);
+    const todo = msOthers(E);
+    if (!act || !todo.length) return;
+    MS.busy = true;
+    const bad = [];
+    msGuard(true, `레이어 ${todo.length}개에 같은 속성을 맞추는 중…`);
+    try {
+      // 잠금은 맨 나중에 (잠긴 레이어는 다른 속성을 못 바꿀 수 있음)
+      const keys = Object.keys(ch).sort((a, b) => (a === 'locked') - (b === 'locked'));
+      for (const L of todo) {
+        if (!await msSelectLayer(L)) { bad.push(`"${L.name}"(고르지 못함)`); continue; }
+        await nextFrame();
+        for (const k of keys) {
+          const err = await msSetProp(L, k, ch[k]);
+          if (err) { bad.push(`"${L.name}"(${err})`); break; }
+        }
+      }
+      await msSelectLayer(act);
+    } finally {
+      msGuard(false);
+      MS.busy = false;
+      MS.pL = msActive(E); MS.pv = MS.pL ? msProps(MS.pL) : null; MS.pchg = null;
+      msPaint();
+    }
+    const names = { opacity: '불투명도', mode: '합성 모드', opacityLocked: '투명 픽셀 잠금', locked: '잠금', clippingGroup: '클리핑' };
+    toast(bad.length ? `일부는 못 바꿨어요: ${bad.join(', ')}` : `레이어 ${todo.length + 1}개에 ${Object.keys(ch).map((k) => names[k]).join('·')} 함께 맞췄어요`);
+  }
+
+  // ---------- 빈틈 닫기 (클립 스튜디오 '틈 닫기') ----------
+  // 선(시작 색과 다른 픽셀)을 r픽셀 두껍게 본 상태로 영역을 찾은 뒤(틈이 막힘), 원래 칠할 수 있는 곳 안에서만
+  // 선 쪽으로 r픽셀 다시 넓힌다(선 밑 구석까지). 반환 null = 빈틈 닫기를 쓸 수 없음(예: 누른 곳이 선과 너무 가까움).
+  function gapCloseFill(img, sx, sy, tolPct, r) {
+    const { w, h } = img, n = w * h;
+    const A = floodFill(img, sx, sy, tolPct, null, true, false).mask; // 시작 색과 비슷한 모든 픽셀(이어짐 무관)
+    const bar = new Uint8Array(n);
+    let any = false;
+    for (let i = 0; i < n; i++) if (!A[i]) { bar[i] = 1; any = true; }
+    if (!any) return null;
+    const d2 = edtSq(bar, w, h), r2 = r * r;
+    const Ar = new Uint8Array(n);
+    for (let i = 0; i < n; i++) if (A[i] && d2[i] > r2) Ar[i] = 1;
+    // 시작점이 선과 가까워 지워졌으면, 가까운 곳에서 남은 픽셀을 찾는다
+    let seed = sy * w + sx;
+    if (!Ar[seed]) {
+      let best = -1, bd = Infinity;
+      for (let y = Math.max(0, sy - r - 2); y <= Math.min(h - 1, sy + r + 2); y++) for (let x = Math.max(0, sx - r - 2); x <= Math.min(w - 1, sx + r + 2); x++) {
+        const p = y * w + x, d = (x - sx) ** 2 + (y - sy) ** 2;
+        if (Ar[p] && d < bd) { bd = d; best = p; }
+      }
+      if (best < 0) return null;
+      seed = best;
+    }
+    // 두꺼워진 선 안에서 이어진 영역
+    const mask = new Uint8Array(n), q = new Int32Array(n);
+    let qh = 0, qt = 0;
+    mask[seed] = 1; q[qt++] = seed;
+    while (qh < qt) {
+      const p = q[qh++], x = p % w;
+      if (x > 0 && Ar[p - 1] && !mask[p - 1]) { mask[p - 1] = 1; q[qt++] = p - 1; }
+      if (x < w - 1 && Ar[p + 1] && !mask[p + 1]) { mask[p + 1] = 1; q[qt++] = p + 1; }
+      if (p >= w && Ar[p - w] && !mask[p - w]) { mask[p - w] = 1; q[qt++] = p - w; }
+      if (p < n - w && Ar[p + w] && !mask[p + w]) { mask[p + w] = 1; q[qt++] = p + w; }
+    }
+    // 원래 칠할 수 있는 곳(A) 안에서만 r단계 넓히기 (8방향, 선을 넘지 않음)
+    let front = q.slice(0, qt), fl = qt;
+    for (let k = 0; k < r && fl; k++) {
+      const next = [];
+      for (let j = 0; j < fl; j++) {
+        const p = front[j], x = p % w;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const xx = x + dx, yy = (p - x) / w + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          const o = yy * w + xx;
+          if (A[o] && !mask[o]) { mask[o] = 1; next.push(o); }
+        }
+      }
+      front = next; fl = next.length;
+    }
+    let count = 0;
+    for (let i = 0; i < n; i++) count += mask[i];
+    return { mask, count };
+  }
+
+  // ---------- 퀵 마스크 (선택 폴더, 클립 스튜디오 '퀵 마스크') ----------
+  // 지금 선택을 빨간 덮개로 보여 주고(내 화면에만), 브러시로 칠해(넣기)·지워(빼기) 다듬는다. Enter나 다른 도구로 가면
+  // 다듬은 모양을 Magma 선택으로 한 번에 긋는다(마법봉과 같은 정밀 올가미, 되돌리기 한 칸). 칠하는 동안은 트래픽 0.
+  const QM = { mask: null, prev: null, W: 0, H: 0, wrap: null, cv: null, g: null, st: null, dirty: false, undo: [], applying: false, key: null };
+  function qmOverlay() {
+    if (!QM.wrap) {
+      QM.wrap = document.createElement('div'); QM.wrap.className = 'mw-blurwrap mw-el mw-qmwrap';
+      QM.cv = document.createElement('canvas'); QM.cv.className = 'mw-blurcv';
+      QM.wrap.appendChild(QM.cv);
+    }
+    if (QM.cv.width !== QM.W || QM.cv.height !== QM.H) { QM.cv.width = QM.W; QM.cv.height = QM.H; QM.g = QM.cv.getContext('2d'); }
+    if (!QM.wrap.isConnected) document.body.appendChild(QM.wrap);
+    QM.wrap.style.display = 'block';
+    qmPlace();
+    // 화면을 옮기거나 확대해도 덮개가 따라가게
+    if (!QM.raf) {
+      const f = () => { if (!QM.wrap || QM.wrap.style.display === 'none') { QM.raf = 0; return; } qmPlace(); QM.raf = requestAnimationFrame(f); };
+      QM.raf = requestAnimationFrame(f);
+    }
+  }
+  function qmPlace() {
+    const E = getEditor(), c = getCanvas();
+    if (!E || !c || !QM.wrap || QM.wrap.style.display === 'none') return;
+    const r = c.getBoundingClientRect(), m = E.computedView.transform;
+    Object.assign(QM.wrap.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+    QM.cv.style.transform = `matrix(${m[0]},${m[1]},${m[2]},${m[3]},${m[4]},${m[5]})`;
+  }
+  function qmDraw(b) {
+    if (!QM.g || !b) return;
+    const img = new ImageData(b.w, b.h);
+    for (let y = 0; y < b.h; y++) for (let x = 0; x < b.w; x++) {
+      const v = QM.mask[(b.y + y) * QM.W + b.x + x];
+      if (!v) continue;
+      const o = (y * b.w + x) * 4;
+      img.data[o] = 255; img.data[o + 1] = 40; img.data[o + 2] = 60; img.data[o + 3] = Math.round(v * 0.5);
+    }
+    QM.g.putImageData(img, b.x, b.y);
+  }
+  // 지금 Magma 선택(외곽선, 보드 좌표) → 마스크
+  function qmFromSelection() {
+    const E = getEditor();
+    if (!E) return false;
+    const W = E.drawing.w, H = E.drawing.h;
+    if (!(W > 0) || W * H > MAX_DOC_PX) { toast('보드가 너무 커서 퀵 마스크를 쓸 수 없어요'); return false; }
+    QM.W = W; QM.H = H; QM.mask = new Uint8Array(W * H); QM.undo = []; QM.dirty = false;
+    const se = E.model.user.selection, b = se && se.bounds;
+    if (b && b.w > 0 && b.h > 0 && se.poly && Array.isArray(se.poly.segments)) {
+      const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+      const g = cv.getContext('2d', { willReadFrequently: true });
+      const path = new Path2D();
+      for (const sg of se.poly.segments) {
+        for (let i = 0; i < sg.size; i++) {
+          const x = se.poly.ox + +sg.items[i * 2], y = se.poly.oy + +sg.items[i * 2 + 1];
+          i ? path.lineTo(x, y) : path.moveTo(x, y);
+        }
+        path.closePath();
+      }
+      g.fillStyle = '#000'; g.fill(path, 'evenodd');
+      const d = g.getImageData(0, 0, W, H).data;
+      for (let i = 0; i < W * H; i++) QM.mask[i] = d[i * 4 + 3];
+    }
+    QM.prev = QM.mask.slice();
+    qmOverlay();
+    QM.g.clearRect(0, 0, W, H);
+    qmDraw({ x: 0, y: 0, w: W, h: H });
+    return true;
+  }
+  function qmEnter() {
+    if (QM.mask && QM.dirty) { qmOverlay(); return; }
+    qmFromSelection();
+    status(hint());
+  }
+  function qmHide() { if (QM.wrap) QM.wrap.style.display = 'none'; }
+  function qmDab(cx, cy, R, add) {
+    const x0 = Math.max(0, Math.floor(cx - R)), y0 = Math.max(0, Math.floor(cy - R));
+    const x1 = Math.min(QM.W - 1, Math.ceil(cx + R)), y1 = Math.min(QM.H - 1, Math.ceil(cy + R));
+    if (x1 < x0 || y1 < y0) return null;
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
+      const a = Math.max(0, Math.min(1, R - d + 0.5)); // 가장자리 1픽셀만 부드럽게
+      if (!a) continue;
+      const p = y * QM.W + x, v = QM.mask[p];
+      QM.mask[p] = add ? Math.max(v, Math.round(255 * a)) : Math.min(v, Math.round(255 * (1 - a)));
+    }
+    return { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+  }
+  function qmAdd(e) {
+    const st = QM.st;
+    if (!st) return;
+    const [x, y] = blurDocPoint(e);
+    const R = Math.max(0.5, S.qmSize / 2), step = Math.max(0.5, R * 0.3);
+    const at = (px, py) => { const b = qmDab(px, py, R, st.add); if (b) { st.box = runion(st.box, b); qmDraw(b); } };
+    if (!st.last) { at(x, y); st.last = [x, y]; return; }
+    const [lx, ly] = st.last, d = Math.hypot(x - lx, y - ly);
+    for (let t = step; t <= d; t += step) at(lx + (x - lx) * t / d, ly + (y - ly) * t / d);
+    if (d >= step || !d) st.last = [x, y];
+  }
+  function qmPointerDown(e) {
+    if (QM.st || QM.applying || S.busy || BSZ.on) return;
+    if (!QM.mask && !qmFromSelection()) return;
+    qmOverlay();
+    QM.st = { pid: e.pointerId, add: S.qmMode === 'sub' ? e.altKey : !e.altKey, last: null, box: null };
+    qmAdd(e);
+  }
+  function qmPointerMove(e) {
+    if (!QM.st || e.pointerId !== QM.st.pid) return;
+    const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+    for (const ce of (evs.length ? evs : [e])) qmAdd(ce);
+  }
+  function qmEnd() {
+    const st = QM.st;
+    if (!st) return;
+    QM.st = null;
+    if (!st.box) return;
+    // 되돌리기용: 이 획이 바꾼 사각형의 '전' 모습만 보관 (최대 30획)
+    const b = st.box, before = new Uint8Array(b.w * b.h);
+    for (let y = 0; y < b.h; y++) before.set(QM.prev.subarray((b.y + y) * QM.W + b.x, (b.y + y) * QM.W + b.x + b.w), y * b.w);
+    QM.undo.push({ b, before });
+    if (QM.undo.length > 30) QM.undo.shift();
+    for (let y = 0; y < b.h; y++) QM.prev.set(QM.mask.subarray((b.y + y) * QM.W + b.x, (b.y + y) * QM.W + b.x + b.w), (b.y + y) * QM.W + b.x);
+    QM.dirty = true;
+    status('칠한 모양: Enter = 선택으로 만들기 · Esc = 처음 선택으로 · Ctrl+Z = 한 획 되돌리기');
+  }
+  function qmUndo() {
+    const u = QM.undo.pop();
+    if (!u) return false;
+    const { b, before } = u;
+    for (let y = 0; y < b.h; y++) {
+      QM.mask.set(before.subarray(y * b.w, (y + 1) * b.w), (b.y + y) * QM.W + b.x);
+      QM.prev.set(before.subarray(y * b.w, (y + 1) * b.w), (b.y + y) * QM.W + b.x);
+    }
+    QM.g.clearRect(b.x, b.y, b.w, b.h); qmDraw(b);
+    QM.dirty = QM.undo.length > 0;
+    return true;
+  }
+  function qmReset() { QM.mask = null; QM.dirty = false; QM.undo = []; if (QM.g) QM.g.clearRect(0, 0, QM.W, QM.H); }
+  // 다듬은 마스크 → Magma 선택 (올가미 한 번). 지금 도구가 올가미 선택이어야 한다.
+  async function qmApply() {
+    if (!QM.mask || QM.applying) return;
+    if (!QM.dirty) { qmReset(); return; }
+    const canvas = getCanvas();
+    const D = canvas && docContext(canvas);
+    if (!D) { toast('화면을 회전·뒤집기 한 상태에서는 퀵 마스크를 선택으로 만들 수 없어요 — 화면을 원래대로 돌리고 Enter'); return; }
+    QM.applying = true; S.busy = true;
+    const prevMode = getSelectionMode();
+    let wantMode = null;
+    try {
+      const bin = new Uint8Array(QM.W * QM.H);
+      let cnt = 0;
+      for (let i = 0; i < bin.length; i++) if (QM.mask[i] >= 128) { bin[i] = 1; cnt++; }
+      if (!cnt) {
+        const des = document.querySelector('.selection-tool button[command=deselect]');
+        if (des && !des.disabled) press(des);
+        qmReset(); toast('선택을 모두 지웠어요'); return;
+      }
+      const P = exactPath(bin, QM.W, QM.H, D.spike, { pixelOnly: false });
+      if (!P) { toast('선택 모양을 만들지 못했어요'); return; }
+      const poly = P.pts.map(D.toBuf);
+      await lassoStabZero();
+      const plan = await planSelectionLasso(canvas, poly, 'select', sampleMask(bin, QM.W, QM.H, 1500, D.toBuf), D.spike * D.scale * D.kx);
+      if (plan.mode !== prevMode) wantMode = plan.mode;
+      await drawSelectionPlan(canvas, plan);
+      qmReset();
+      toast(`퀵 마스크를 선택으로 만들었어요 (${cnt.toLocaleString()}픽셀)` + (P.dropped ? ` · 작은 조각 ${P.dropped}개는 뺐어요` : ''));
+    } catch (err) {
+      console.warn('[MagmaWand] 퀵 마스크', err);
+      toast('선택으로 만들지 못했어요: ' + (err && err.message || err));
+    } finally {
+      try { if (wantMode && prevMode) await setSelectionMode(prevMode); } catch { }
+      scheduleStabRestore();
+      QM.applying = false; S.busy = false;
+    }
+  }
+  // 퀵 마스크에서 나갈 때: 칠한 게 있으면 선택으로 만들고(올가미 선택으로 잠깐 바꿨다가 사용자가 고른 도구로), 덮개를 치운다
+  async function qmLeave() {
+    if (QM.st) qmEnd();
+    if (!QM.mask) { qmHide(); return; }
+    if (!QM.dirty) { qmReset(); qmHide(); return; }
+    const want = currentTool();
+    const sw = S.switching; S.switching = true;
+    try {
+      if (want !== 'lassoSelectionIcon') await selectTool('lassoSelectionIcon');
+      await qmApply();
+      if (want && want !== 'lassoSelectionIcon') await selectTool(want);
+    } finally { S.switching = sw; qmHide(); }
+  }
+  on(window, 'keydown', (e) => {
+    if (!S.active || S.tool !== 'qmask' || !e.isTrusted) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    const stop = () => { e.preventDefault(); e.stopImmediatePropagation(); };
+    if (e.code === 'Enter' || e.code === 'NumpadEnter') { stop(); if (QM.dirty) qmApply(); return; }
+    if (e.code === 'Escape') { stop(); qmReset(); qmFromSelection(); status('처음 선택으로 돌렸어요'); return; }
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ' && !e.shiftKey) {
+      stop(); // 퀵 마스크 안에서는 Magma 되돌리기 대신 칠한 획을 되돌린다
+      if (!qmUndo()) status('되돌릴 획이 없어요 (Magma 되돌리기는 퀵 마스크에서 나간 뒤에)');
+      return;
+    }
+    if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      stop();
+      const v = S.qmSize, step = v < 10 ? 1 : v < 50 ? 5 : v < 200 ? 10 : 50;
+      S.qmSize = Math.min(1000, Math.max(1, Math.round(v + (e.code === 'BracketRight' ? step : -step))));
+      saveSettings(); rowsEl?.__mwSync?.();
+    }
+  }, true);
+  function qmCursor(cx, cy, show) {
+    if (!Q.cursor) { Q.cursor = document.createElement('div'); Q.cursor.className = 'mw-brush mw-el'; document.body.appendChild(Q.cursor); }
+    if (!show) { Q.cursor.style.display = 'none'; return; }
+    const d = Math.max(4, S.qmSize * viewZoom());
+    Object.assign(Q.cursor.style, { display: 'block', width: d + 'px', height: d + 'px', left: (cx - d / 2) + 'px', top: (cy - d / 2) + 'px' });
+  }
+  const QM_SVG = '<rect x="40" y="40" width="432" height="432" rx="60" fill="none" stroke="currentColor" stroke-width="40"/>' +
+    '<circle cx="256" cy="256" r="120" fill="currentColor" opacity=".55"/><circle cx="256" cy="256" r="120" fill="none" stroke="currentColor" stroke-width="28" stroke-dasharray="40 30"/>';
 
   // ---------- 고급 브러시: 기본 끝 모양·텍스처 (PNG 없이 고르기) ----------
   // 검은 그림 + 투명 배경 = 끝 모양(알파를 씀), 회색조 불투명 그림 = 텍스처(어두울수록 진하게)
@@ -5576,7 +5956,7 @@ void main(){
   // 블러: 물방울 + 번지는 물결
   const BLUR_SVG = '<path fill="currentColor" d="M256 30C200 120 120 210 120 300a136 136 0 0 0 272 0c0-90-80-180-136-270z" opacity=".9"/>' +
     '<path fill="none" stroke="currentColor" stroke-width="26" stroke-linecap="round" opacity=".55" d="M40 470c40-24 80-24 120 0s80 24 120 0 80-24 120 0 60 16 72 8"/>';
-  const TOOL_SVG = { wand: WAND_SVG, quick: QUICK_SVG, brush: BRUSH_SVG, blur: BLUR_SVG };
+  const TOOL_SVG = { wand: WAND_SVG, quick: QUICK_SVG, brush: BRUSH_SVG, blur: BLUR_SVG, qmask: QM_SVG };
   const CSS = `
     html.mw-on editor-tools button.tool.on:not(.mw-tool) { background: transparent !important; border-color: transparent !important; }
     html.mw-on .editor-view, html.mw-on .editor-view * { cursor: crosshair !important; }
@@ -5678,6 +6058,7 @@ void main(){
     .mw-blurwrap { position: fixed; z-index: 2147480400; pointer-events: none; overflow: hidden; display: none; }
     .mw-blurcv { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
     html.mw-ctxhide .context-menu, html.mw-ddhide .dropdown-menu { opacity: 0 !important; }
+    .mw-qm-row { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0; }
     .layer.mw-msel { background: rgba(47,128,237,.22) !important; box-shadow: inset 3px 0 0 #2f80ed; }
     .mw-mswrap { position: fixed; z-index: 2147480300; pointer-events: none; overflow: hidden; }
     .mw-mscv { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
@@ -5708,6 +6089,7 @@ void main(){
   }
   const hint = () => S.tool === 'brush' ? '그리기: 손을 떼면 보드에 들어가요 · Ctrl+Alt 끌기: 크기 · [ ]: 크기'
     : S.tool === 'blur' ? '문지르기: 흐리게(손을 떼면 보드에 들어가요, 되돌리기 2칸) · [ ]: 크기'
+    : S.tool === 'qmask' ? '빨간 곳 = 선택 · 칠하기: 넣기 · Alt: 반대로 · Enter: 선택으로 · Esc: 처음으로 · [ ]: 크기'
     : S.tool === 'quick'
     ? '문지르기: 선택(선택이 있으면 추가) · Alt: 빼기 · [ ]: 브러시 크기'
     : S.action === 'fill' ? '클릭한 영역을 지금 색으로 채워요' : '클릭: 선택 · Shift: 추가 · Alt: 빼기';
@@ -5837,6 +6219,18 @@ void main(){
         sliderRow('밀도 (%)', 'blurDensity', 1, 100),
         statusEl,
       );
+    } else if (S.tool === 'qmask') {
+      const br = document.createElement('div'); br.className = 'mw-el mw-qm-row';
+      const mk = (t, fn, tip) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'sm btn secondary'; b.textContent = t; b.title = tip; b.addEventListener('click', (e) => { e.preventDefault(); fn(); }); return b; };
+      br.append(mk('선택으로 만들기', () => { if (QM.dirty) qmApply(); else toast('아직 칠한 게 없어요'); }, 'Enter'),
+        mk('처음으로', () => { qmReset(); qmFromSelection(); status('처음 선택으로 돌렸어요'); }, 'Esc'),
+        mk('모두 지우기', () => { if (!QM.mask && !qmFromSelection()) return; QM.mask.fill(0); QM.prev.fill(0); QM.undo = []; QM.dirty = true; QM.g.clearRect(0, 0, QM.W, QM.H); }, '선택을 비우고 새로 칠하기'));
+      rowsEl.append(
+        sliderRow('브러시 크기', 'qmSize', 1, 1000),
+        segRow('칠하기', 'qmMode', [['add', '선택 넣기'], ['sub', '선택 빼기']]),
+        br,
+        statusEl,
+      );
     } else if (S.tool === 'quick') {
       rowsEl.append(
         segRow('참조', 'qref', [['all', '모든 레이어'], ['layer', '현재 레이어']]),
@@ -5852,6 +6246,7 @@ void main(){
         segRow('범위', 'contig', [[true, '이어진 곳만'], [false, '전체 같은 색']]),
         sliderRow('허용 오차', 'tol', 0, 100),
         sliderRow('영역 확장', 'expand', 0, 10),
+        sliderRow('빈틈 닫기', 'gap', 0, 20),
         statusEl,
       );
     }
@@ -5899,12 +6294,13 @@ void main(){
       if (S.active) { removeSettings(); lastStatus = hint(); }
     }
     document.documentElement.classList.toggle('mw-quick', S.tool === 'quick');
-    document.documentElement.classList.toggle('mw-advmode', S.tool === 'brush' || S.tool === 'blur');
+    document.documentElement.classList.toggle('mw-advmode', S.tool === 'brush' || S.tool === 'blur' || S.tool === 'qmask');
     if (S.tool !== 'blur' && BLR.st) blurEnd(false);
-    if (S.tool !== 'quick' && S.tool !== 'brush' && S.tool !== 'blur') qCursor(0, 0, false);
+    if ((S.tool !== 'qmask' || !onNow) && QM.mask) await qmLeave();
+    if (S.tool !== 'quick' && S.tool !== 'brush' && S.tool !== 'blur' && S.tool !== 'qmask') qCursor(0, 0, false);
     if (S.tool !== 'brush' && ADV.stroke) advStrokeEnd(false);
     if (onNow && S.tool === 'brush' && !ADV.brush) advSelect(S.advBrushId).then(() => rowsEl?.__advRender?.());
-    if (onNow === S.active) { syncToolButton(); if (onNow) ensureSettings(); return; }
+    if (onNow === S.active) { syncToolButton(); if (onNow) { ensureSettings(); if (S.tool === 'qmask' && !QM.mask) qmEnter(); } return; }
     S.active = onNow;
     document.documentElement.classList.toggle('mw-on', onNow);
     syncToolButton();
@@ -5914,6 +6310,7 @@ void main(){
       try { await selectTool('lassoSelectionIcon'); } finally { S.switching = false; }
       lastStatus = upgradedFrom && !lastStatus ? `v${VERSION}으로 업데이트됐어요` : hint();
       ensureSettings();
+      if (S.tool === 'qmask') qmEnter();
     } else {
       pendingDown = false;
       removeSettings();
@@ -5933,7 +6330,7 @@ void main(){
       // 단축키 등으로 Magma가 다른 도구로 바뀌었으면 마법봉 끄기
       if (!S.busy && !S.switching && !switchingTo && currentTool() !== 'lassoSelectionIcon') { setActive(false); return; }
       ensureSettings();
-    } else if (pendingLasso() && !switchingTo && currentTool() === 'lassoSelectionIcon') {
+    } else if (pendingLasso() && !switchingTo && !QM.applying && currentTool() === 'lassoSelectionIcon') {
       // 되돌리지 못한 손떨림 보정(단축키로 도구를 바꿨거나 창을 닫았던 경우)을 올가미 선택이 보일 때 되돌림
       restoreLassoStab();
     }
@@ -5970,6 +6367,6 @@ void main(){
     advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, parseSut, getAA, setAA, docToBuffer, selectionExists,
     setAlpha, advEraseCommit, fillSelection, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt,
     ensureGroups, activateMember, selectLayerContent, advNewBrush, setMagmaFont, currentFontName, systemFonts, openTextImageDialog,
-    blurDab, blurState: () => BLR, msState: () => MS, rowLayer, msPick, msReplay, msDecompose, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons };
+    blurDab, blurState: () => BLR, msState: () => MS, rowLayer, msPick, msReplay, msDecompose, gapCloseFill, qmState: () => QM, qmApply, msPropsApply, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons };
   window.__magmaWand.ready = true; // 끝까지 시작됨 (실행기는 이 표시가 없으면 다시 넣는다)
 })();
