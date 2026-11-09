@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.12.0';
+  const VERSION = '0.13.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -1660,6 +1660,7 @@
   // Ctrl+Shift 클릭 레이어 찾기도 마법봉 입력보다 먼저 (본문은 아래 '레이어 찾기')
   for (const t of ['pointerdown', 'pointerup', 'pointercancel', 'mousedown', 'mouseup', 'click']) on(window, t, (e) => onPick(e), true);
   for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) on(window, t, (e) => onThumb(e), true);
+  for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) on(window, t, (e) => onMsRow(e), true);
   on(window, 'blur', () => { if (BSZ.on) sizeEnd({ clientX: BSZ.ox, clientY: BSZ.oy }, true); });
 
   // ---------- 고급 브러시 ① 클립 스튜디오 브러시(.sut) 읽기 ----------
@@ -4446,7 +4447,7 @@ void main(){
     unCtrl(e);
   }, true);
   for (const t of ['pointermove', 'mousedown', 'mousemove', 'mouseup', 'click', 'pointerup', 'pointercancel']) on(window, t, (e) => {
-    if (TRF.pid === null) return;
+    if (TRF.pid === null || !e.isTrusted) return; // 마법봉이 누르는 가짜 클릭(press)은 끌기와 상관없음
     unCtrl(e);
     if (t !== 'pointerup' && t !== 'pointercancel') return;
     const p = TRF.prev; TRF.prev = null;
@@ -4485,6 +4486,408 @@ void main(){
       if (document.querySelector('.context-menu')) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
     } finally { setTimeout(() => document.documentElement.classList.remove('mw-ctxhide'), 60); }
   }
+
+  // ---------- 여러 레이어 함께 고르기·변형 (클립 스튜디오 방식) ----------
+  // Magma에도 레이어 여러 개 선택이 있지만 '캔버스'에서는 잠겨 있다(기능 스위치 canvas-layer-multi-select, 실측).
+  // 그 스위치는 건드리지 않고, 마법봉이 '함께 고른 레이어' 목록을 따로 들고 있다가
+  // 지금 레이어를 변형(Ctrl+T)·이동(V)한 결과를 사용자와 같은 화면 조작(변형 도구)으로 나머지 레이어에 똑같이 다시 한다.
+  // 변형 결과는 Magma 안의 3×3 행렬(user.surface.transform, 보드 좌표, 행 우선)로 읽는다(읽기만). 레이어마다 변형 한 번 = 되돌리기 한 칸.
+  //  - 크기·회전·이동만 있으면 변형 칸의 X·Y·W·H·R 숫자로 정확히 넣고,
+  //  - 원근·왜곡·뒤집기가 섞이면 'distort' 모드에서 네 모서리를 목표 자리로 끌어서 같은 모양을 만든다.
+  const MS = { set: new Set(), anchor: null, sess: null, busy: false, block: false, skip: null, arm: false, wrap: null, guard: null };
+  const MS_MAX = 12; // 되돌리기 15칸 중 함께 바꿀 레이어 수 (지금 레이어 + 12)
+  const msMine = (E, L) => { const u = E.model.user; return !!L && (L.owner === u || (Array.isArray(u.ownedLayers) && u.ownedLayers.includes(L.id))); };
+  const msActive = (E) => { const a = E.model.user.activeLayers; return a && a.length === 1 ? a[0] : null; };
+  // 레이어 목록의 한 줄이 어느 레이어인지: Angular가 줄에 붙여 둔 정보(LView)에서 레이어 객체를 찾는다(읽기만)
+  function rowLayer(row) {
+    const E = getEditor();
+    if (!E || !row) return null;
+    const set = new Set(E.drawing.layers);
+    const look = (o) => { if (!o || typeof o !== 'object') return null; if (set.has(o)) return o; try { if (set.has(o.layer)) return o.layer; } catch { } return null; };
+    for (const el of [row, row.querySelector('.layer-content')]) {
+      const c = el && el.__ngContext__;
+      if (lviewMap && typeof c === 'number') {
+        const lv = lviewMap.get(c);
+        if (Array.isArray(lv)) for (let i = 0; i < lv.length && i < 200; i++) { const L = look(lv[i]); if (L) return L; }
+      }
+    }
+    // 예비: 이름이 하나뿐이면 이름으로
+    const name = (row.querySelector('.layer-name')?.textContent || '').replace(/ /g, ' ').trim();
+    const same = E.drawing.layers.filter((L) => (L.name || '').trim() === name);
+    return same.length === 1 ? same[0] : null;
+  }
+  function msRowOf(L) { return [...document.querySelectorAll('.layer')].find((r) => rowLayer(r) === L) || null; }
+  async function msRevealRow(L) {
+    const E = getEditor();
+    let row = msRowOf(L);
+    if (row) return row;
+    await revealLayer({ L, index: E.drawing.layers.indexOf(L) });
+    await nextFrame();
+    return msRowOf(L);
+  }
+  function msOthers(E) {
+    const act = msActive(E);
+    return [...MS.set].filter((L) => E.drawing.layers.includes(L) && L !== act && msMine(E, L));
+  }
+  function msPaint() {
+    const E = getEditor();
+    const act = E && msActive(E);
+    for (const row of document.querySelectorAll('.layer')) {
+      const L = MS.set.size ? rowLayer(row) : null;
+      row.classList.toggle('mw-msel', !!L && L !== act && MS.set.has(L));
+    }
+  }
+  function msClear() { if (!MS.set.size) return; MS.set.clear(); MS.anchor = null; msPaint(); }
+
+  // 레이어 줄 Ctrl+클릭 = 함께 고르기 넣기/빼기 · Shift+클릭 = 지금 레이어부터 거기까지 · 그냥 클릭 = 함께 고르기 풀기
+  function onMsRow(e) {
+    if (!e.isTrusted) return;
+    if (MS.block) {
+      e.stopImmediatePropagation(); if (e.cancelable) e.preventDefault();
+      if (e.type === 'click') MS.block = false;
+      return;
+    }
+    if (e.type !== 'pointerdown' || e.button !== 0 || e.altKey) return;
+    const row = e.target.closest && e.target.closest('.layer');
+    if (!row || !row.querySelector('.layer-left-top')) return;
+    const mod = e.ctrlKey || e.metaKey, sh = e.shiftKey;
+    // 눈 버튼: 함께 고른 레이어의 눈을 같이 켜고 끈다
+    if (e.target.closest('.layer-left-top')) { if (!mod && !sh && MS.set.size) msEyeSoon(row); return; }
+    if (e.target.closest('button, input, .layer-left-bottom, .btn-layer-more, .layer-thumb, .layer-thumb-border, .editable-text input')) return;
+    if (MS.busy) { e.stopImmediatePropagation(); e.preventDefault(); return; }
+    if (!mod && !sh) { msClear(); return; }   // 보통 클릭: Magma가 평소처럼 레이어를 고른다
+    if (mod && sh) return;
+    e.stopImmediatePropagation(); e.preventDefault();
+    MS.block = true; setTimeout(() => { MS.block = false; }, 800);
+    msPick(row, sh).catch((err) => console.warn('[MagmaWand] 레이어 함께 고르기', err));
+  }
+  async function msPick(row, range) {
+    const E = getEditor() || await editorKeepTool();
+    if (!E) { toast('Magma 편집기를 찾지 못했어요'); return; }
+    const L = rowLayer(row), act = msActive(E);
+    if (!L) { toast('이 레이어를 알아보지 못했어요'); return; }
+    if (!act) { toast('먼저 레이어 하나를 골라 주세요'); return; }
+    if (!msMine(E, L)) { toast('다른 사람 레이어는 함께 고를 수 없어요'); return; }
+    if (range) {
+      const Ls = E.drawing.layers;
+      const a = Ls.indexOf(act), b = Ls.indexOf(L);
+      MS.set.clear();
+      for (let i = Math.min(a, b); i <= Math.max(a, b); i++) if (Ls[i] !== act && msMine(E, Ls[i])) MS.set.add(Ls[i]);
+    } else {
+      if (L === act) { toast('지금 레이어는 늘 함께 바뀌어요'); return; }
+      if (MS.set.has(L)) MS.set.delete(L); else MS.set.add(L);
+      MS.anchor = L;
+    }
+    if (MS.set.size > MS_MAX) {
+      const keep = [...MS.set].slice(0, MS_MAX); MS.set = new Set(keep);
+      toast(`한 번에 함께 바꿀 수 있는 레이어는 ${MS_MAX + 1}개까지예요 (되돌리기가 15칸이라서)`);
+    }
+    msPaint();
+    const n = msOthers(E).length;
+    toast(n ? `레이어 ${n + 1}개를 함께 골랐어요 — 변형(Ctrl+T)·이동(V)·눈 켜고 끄기를 함께 해요` : '함께 고르기를 풀었어요');
+  }
+
+  // 눈(보이기) 같이 바꾸기: Magma가 지금 줄의 눈을 바꾼 뒤, 함께 고른 다른 레이어도 같은 상태로 맞춘다
+  function msEyeSoon(row) {
+    const E = getEditor();
+    const L = rowLayer(row);
+    if (!E || !L) return;
+    const act = msActive(E);
+    const group = [act, ...msOthers(E)].filter(Boolean);
+    if (!group.includes(L)) return;
+    const before = L.visible;
+    setTimeout(async () => {
+      if (L.visible === before) return; // 바뀌지 않았음
+      for (const M of group) {
+        if (M === L || M.visible === L.visible) continue;
+        const r = await msRevealRow(M);
+        const eye = r && r.querySelector('.layer-left-top');
+        if (eye) { press(eye); await sleep(40); }
+      }
+    }, 120);
+  }
+
+  // ----- 변형·이동 따라 하기 -----
+  const msMat = (s) => { const t = s.transform; return [0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => +t[i]); };
+  const msApply = (H, [x, y]) => { const w = H[6] * x + H[7] * y + H[8]; return [(H[0] * x + H[1] * y + H[2]) / w, (H[3] * x + H[4] * y + H[5]) / w]; };
+  const msIdentity = (H) => [1, 0, 0, 0, 1, 0, 0, 0, 1].every((v, i) => Math.abs(H[i] / H[8] - v) < 1e-6);
+  // 크기·회전·이동만으로 된 변형인지 (뒤집기·기울이기·원근이 없으면 {각도, 가로 배율, 세로 배율})
+  function msDecompose(H) {
+    if (Math.abs(H[6]) > 1e-9 || Math.abs(H[7]) > 1e-9) return null;
+    const k = H[8], a = H[0] / k, b = H[1] / k, c = H[3] / k, d = H[4] / k;
+    if (a * d - b * c <= 1e-9) return null;
+    const sx = Math.hypot(a, c), sy = Math.hypot(b, d);
+    if (Math.abs(a * b + c * d) > 1e-6 * sx * sy) return null;
+    return { deg: Math.atan2(c, a) * 180 / Math.PI, sx, sy };
+  }
+  const msCorners = (B) => [[B.x, B.y], [B.x + B.w, B.y], [B.x + B.w, B.y + B.h], [B.x, B.y + B.h]];
+  function msErr(s, B, H) {
+    const G = msMat(s);
+    return Math.max(...msCorners(B).map((p) => { const [x1, y1] = msApply(G, p), [x2, y2] = msApply(H, p); return Math.hypot(x1 - x2, y1 - y2); }));
+  }
+  function msScreen([x, y]) {
+    const E = getEditor(), c = getCanvas(), r = c.getBoundingClientRect(), m = E.computedView.transform;
+    return [r.left + m[0] * x + m[2] * y + m[4], r.top + m[1] * x + m[3] * y + m[5]];
+  }
+  const trfBtn = (re) => [...document.querySelectorAll('editor-sliders button')].find((b) => re.test(tipOf(b)));
+  const trfReset = () => [...document.querySelectorAll('editor-sliders button')].find((b) => b.textContent.trim() === 'Reset');
+  function trfInputs() { return [...document.querySelectorAll('editor-sliders input[type=number]')].slice(0, 5); }
+  function setNum(inp, v) {
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    inp.focus();
+    set.call(inp, String(Math.round(v * 100) / 100));
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    inp.blur();
+  }
+  // 보드 위 점 from → to 로 손잡이 끌기 (사용자 끌기와 같은 포인터 이벤트)
+  async function msDrag(from, to) {
+    const canvas = getCanvas();
+    const [ax, ay] = msScreen(from), [bx, by] = msScreen(to);
+    const base = { bubbles: true, cancelable: true, composed: true, view: window, pointerId: 1, pointerType: 'mouse', isPrimary: true, width: 1, height: 1 };
+    const fire = (type, x, y, down) => {
+      const ev = new PointerEvent(type, { ...base, clientX: x, clientY: y, screenX: x, screenY: y, button: type === 'pointermove' ? -1 : 0, buttons: down ? 1 : 0, pressure: down ? 0.5 : 0 });
+      ev.__magmaWand = true; canvas.dispatchEvent(ev);
+    };
+    fire('pointermove', ax, ay, false); await nextFrame();
+    fire('pointerdown', ax, ay, true); await nextFrame();
+    const n = Math.max(2, Math.min(12, Math.ceil(Math.hypot(bx - ax, by - ay) / 30)));
+    for (let i = 1; i <= n; i++) { fire('pointermove', ax + (bx - ax) * i / n, ay + (by - ay) * i / n, true); await nextFrame(); }
+    fire('pointerup', bx, by, false); await nextFrame();
+  }
+  async function msSelectLayer(L) {
+    const E = getEditor();
+    if (msActive(E) === L) return true;
+    const row = await msRevealRow(L);
+    if (!row) return false;
+    press(row.querySelector('.layer-content') || row);
+    return waitFor(() => msActive(E) === L, 1200);
+  }
+  // 레이어 하나에 같은 변형 H를 다시 한다
+  async function msReplay(L, H) {
+    const E = getEditor(), u = E.model.user;
+    if (!await msSelectLayer(L)) return '레이어를 고르지 못함';
+    if (currentTool() === 'faVectorSquare') await selectTool('moveIcon');
+    await selectTool('faVectorSquare');
+    // 변형 상자 = 레이어 그림 사각형(L.rect, 실측). Magma는 손잡이를 처음 건드릴 때 이 레이어의 변형을 시작하고,
+    // 그때 앞 레이어의 변형을 확정한다. 그래서 여기서는 변형 칸 숫자가 이 레이어 상자로 바뀌기를 기다린다.
+    if (!L.rect || !(L.rect.w > 0) || !(L.rect.h > 0)) return '빈 레이어';
+    let B = { x: L.rect.x, y: L.rect.y, w: L.rect.w, h: L.rect.h };
+    const shown = () => { const v = trfInputs().map((i) => +i.value); return v.length === 5 && Math.abs(v[2] - B.w) < 1.5 && Math.abs(v[3] - B.h) < 1.5 && Math.abs(v[0] - (B.x + B.w / 2)) < 1.5; };
+    if (!await waitFor(shown, 1500)) return '변형을 시작하지 못함';
+    if (MS.mode0 === null) { const b = trfModeButtons().find(trfIsOn); MS.mode0 = b ? tipOf(b) : ''; } // 사용자가 쓰던 변형 모드 (끝나면 되돌림)
+    await nextFrame();
+    const mine = () => { const s = u.surface; return s && s.toolId === 20 && s.layer === L; };
+    const baseOk = () => { const d = mine() && u.surface.distortionBaseRect; return d && Math.abs(d.x - B.x) < 0.5 && Math.abs(d.y - B.y) < 0.5 && Math.abs(d.w - B.w) < 0.5 && Math.abs(d.h - B.h) < 0.5; };
+    const aff = msDecompose(H);
+    if (aff) {
+      const [X, Y, W, Hh, R] = trfInputs();
+      if (X && Y && W && Hh && R) {
+        const lock = trfBtn(/^Keep proportions/);
+        const locked = lock && trfIsOn(lock);
+        if (locked) press(lock);
+        const [cx, cy] = msApply(H, [B.x + B.w / 2, B.y + B.h / 2]);
+        let deg = aff.deg; if (deg > 180) deg -= 360; if (deg <= -180) deg += 360;
+        setNum(R, deg); await nextFrame();
+        setNum(W, B.w * aff.sx); await nextFrame();
+        setNum(Hh, B.h * aff.sy); await nextFrame();
+        // X·Y 칸은 '보이는 정수 값에서 얼마나 바뀌었나'만큼 옮긴다(실측: 중심 500.5가 501로 보이고, 521을 넣으면 520.5) → 차이로 넣는다
+        setNum(X, Math.round(+X.value + (cx - (B.x + B.w / 2)))); await nextFrame();
+        setNum(Y, Math.round(+Y.value + (cy - (B.y + B.h / 2)))); await nextFrame(); await nextFrame();
+        if (locked && !trfIsOn(lock)) press(lock);
+        await waitFor(mine, 500);
+        if (mine() && baseOk() && msErr(u.surface, B, H) < 1.0) return null;
+        if (mine()) { trfReset()?.click(); await nextFrame(); await nextFrame(); }
+      }
+    }
+    // 원근·왜곡·뒤집기(또는 숫자로 안 맞을 때): 'distort' 모드에서 네 모서리를 하나씩 목표 자리로
+    const dist = trfBtn(/^Use distort mode$/);
+    if (!dist) return '왜곡 모드 단추를 찾지 못함';
+    if (!trfIsOn(dist)) { press(dist); await nextFrame(); }
+    for (let pass = 0; pass < 2; pass++) {
+      const C = msCorners(B);
+      let moved = true;
+      for (let i = 0; i < 4; i++) {
+        const G = mine() ? msMat(u.surface) : [1, 0, 0, 0, 1, 0, 0, 0, 1];
+        await msDrag(msApply(G, C[i]), msApply(H, C[i]));
+        await waitFor(mine, 400);
+        if (!mine()) return '변형이 시작되지 않음';
+        if (!baseOk()) { // 상자가 예상과 다르면 실제 상자로 처음부터 다시
+          const d = u.surface.distortionBaseRect;
+          B = { x: d.x, y: d.y, w: d.w, h: d.h };
+          trfReset()?.click(); await nextFrame(); await nextFrame();
+          moved = false; break;
+        }
+      }
+      if (moved) break;
+    }
+    await nextFrame();
+    if (!mine() || msErr(u.surface, B, H) > 1.5) {
+      if (!mine()) return '모양이 맞지 않음';
+      trfReset()?.click(); await nextFrame(); await nextFrame();
+      return mine() && !msIdentity(msMat(u.surface)) ? '모양이 맞지 않음 — Ctrl+Z로 되돌려 주세요' : '모양이 맞지 않아 그대로 둠';
+    }
+    return null;
+  }
+
+  // 미리보기: 함께 고른 레이어를 내 화면에서만 잠깐 숨기고(개인 보이기), 같은 변형을 씌운 그림을 덧그린다
+  async function msSetPersonal(L, want) {
+    const r0 = await msRevealRow(L);
+    if (!r0) return null;
+    const was = personalState(r0);
+    for (let i = 0; i < 4; i++) {
+      const r = msRowOf(L) || await msRevealRow(L);
+      if (!r) break;
+      const st = personalState(r);
+      if (st === want) break;
+      press(r.querySelector('.layer-left-bottom'));
+      // 아이콘이 실제로 바뀐 걸 본 뒤에 다음 번 누르기 (빨리 연달아 누르면 지나쳐 버림)
+      await waitFor(() => { const q = msRowOf(L); return !q || personalState(q) !== st; }, 600);
+    }
+    return was;
+  }
+  async function msPreviewStart(ss) {
+    const E = getEditor();
+    const wrap = document.createElement('div'); wrap.className = 'mw-mswrap mw-el';
+    document.body.appendChild(wrap);
+    ss.wrap = wrap; ss.items = [];
+    for (const L of ss.others) {
+      const r = L.rect && risect(L.rect, { x: 0, y: 0, w: E.drawing.w, h: E.drawing.h }, E.drawing.w, E.drawing.h);
+      if (!r) continue;
+      let img = null;
+      try { img = E.renderer.getLayerImageData(L, r); } catch { }
+      if (!img) continue;
+      const cv = document.createElement('canvas'); cv.width = r.w; cv.height = r.h; cv.className = 'mw-mscv';
+      cv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(img.data), r.w, r.h), 0, 0);
+      cv.style.opacity = String(Math.max(0, Math.min(1, L.opacity == null ? 1 : L.opacity)));
+      if (L.visible === false) cv.style.display = 'none';
+      wrap.appendChild(cv);
+      ss.items.push({ L, r, cv });
+    }
+    const loop = () => {
+      if (MS.sess !== ss) return;
+      const s = getEditor()?.model.user.surface;
+      if (s && s.layer === ss.L && s.toolId === (ss.kind === 'move' ? 4 : 20)) ss.H = msMat(s);
+      msPreviewDraw(ss);
+      requestAnimationFrame(loop);
+    };
+    loop();
+    // 사용자가 손잡이를 끄는 중에 레이어 줄 단추를 누르면 Magma 끌기가 엉킨다(실측) → 손을 뗀 뒤에 숨긴다
+    await waitFor(() => !MS.down || MS.sess !== ss, 600000);
+    for (const it of ss.items) {
+      if (MS.sess !== ss) break;
+      if (MS.down) await waitFor(() => !MS.down || MS.sess !== ss, 600000);
+      if (MS.sess !== ss) break;
+      it.was = await msSetPersonal(it.L, 'hidden');
+    }
+  }
+  function msPreviewDraw(ss) {
+    const E = getEditor(), c = getCanvas();
+    if (!E || !c || !ss.wrap) return;
+    const r = c.getBoundingClientRect(), V = E.computedView.transform, H = ss.H;
+    Object.assign(ss.wrap.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+    // 화면 = V(보드→화면, 2D) · H(변형) · T(레이어 위치)
+    const V3 = [V[0], V[2], V[4], V[1], V[3], V[5], 0, 0, 1];
+    const mul = (A, B) => [0, 1, 2].flatMap((i) => [0, 1, 2].map((j) => A[i * 3] * B[j] + A[i * 3 + 1] * B[3 + j] + A[i * 3 + 2] * B[6 + j]));
+    const VH = mul(V3, H);
+    for (const it of ss.items) {
+      const M = mul(VH, [1, 0, it.r.x, 0, 1, it.r.y, 0, 0, 1]);
+      it.cv.style.transform = `matrix3d(${M[0]},${M[3]},0,${M[6]},${M[1]},${M[4]},0,${M[7]},0,0,1,0,${M[2]},${M[5]},0,${M[8]})`;
+    }
+  }
+  function msGuard(on, msg) {
+    if (on) {
+      if (!MS.guard) { MS.guard = document.createElement('div'); MS.guard.className = 'mw-msguard mw-el'; }
+      MS.guard.textContent = msg || '';
+      if (!MS.guard.isConnected) document.body.appendChild(MS.guard);
+    } else MS.guard?.remove();
+  }
+  // 함께 바꾸는 동안 사용자의 키 입력은 잠깐 막는다 (중간에 다른 도구가 끼어들지 않게)
+  on(window, 'keydown', (e) => { if (MS.busy && e.isTrusted) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+  on(window, 'pointerdown', (e) => { if (e.isTrusted) MS.down = true; }, true);
+  for (const t of ['pointerup', 'pointercancel']) on(window, t, (e) => { if (e.isTrusted) MS.down = false; }, true);
+  // 이동 도구로 끌기 시작: 이미 떠 있는 붙여넣기 그림을 옮기는 게 아니면 '이동'으로 본다
+  on(window, 'pointerdown', (e) => {
+    if (!e.isTrusted || e.button !== 0 || !MS.set.size || e.target !== getCanvas() || currentTool() !== 'moveIcon') return;
+    const E = getEditor(); if (!E) return;
+    const s = E.model.user.surface, act = msActive(E);
+    MS.arm = !!MS.sess || !(s && s.toolId === 4 && s.layer === act);
+  }, true);
+
+  function msTick() {
+    if (MS.busy || (!MS.set.size && !MS.sess)) return;
+    const E = getEditor();
+    if (!E) return;
+    const u = E.model.user, act = msActive(E), s = u.surface, tool = currentTool();
+    for (const L of [...MS.set]) if (!E.drawing.layers.includes(L) || L === act) MS.set.delete(L);
+    const ss = MS.sess;
+    if (ss) {
+      const live = s && s.layer === ss.L && s.toolId === (ss.kind === 'move' ? 4 : 20);
+      if (live) { ss.H = msMat(s); msPreviewDraw(ss); }
+      if (live && tool === ss.tool && act === ss.L) return;
+      MS.sess = null;
+      msFinish(ss).catch((err) => { console.warn('[MagmaWand] 함께 변형', err); toast('함께 변형하다 멈췄어요: ' + (err && err.message || err)); });
+      return;
+    }
+    if (!MS.set.size || !act || !s || s.layer !== act || !s.transforming) { MS.skip = null; return; }
+    let kind = null;
+    if (tool === 'faVectorSquare' && s.toolId === 20) kind = 'transform';
+    else if (tool === 'moveIcon' && s.toolId === 4 && MS.arm) kind = 'move';
+    if (!kind || MS.skip === act) return;
+    const others = msOthers(E);
+    if (!others.length) return;
+    const sel = u.selection && u.selection.bounds;
+    if (sel && sel.w > 0 && sel.h > 0) { MS.skip = act; toast('선택 영역이 있으면 지금 레이어만 바뀌어요 (여러 레이어 함께 변형은 선택 없이 해 주세요)'); return; }
+    const locked = others.filter((L) => L.locked);
+    if (locked.length) { MS.skip = act; toast(`잠긴 레이어(${locked.map((L) => L.name).join(', ')})가 있어 지금 레이어만 바뀌어요`); return; }
+    MS.arm = false;
+    const nss = { kind, tool, L: act, H: msMat(s), others };
+    MS.sess = nss;
+    nss.hiding = msPreviewStart(nss).catch((err) => console.warn('[MagmaWand] 함께 변형 미리보기', err));
+  }
+  async function msFinish(ss) {
+    MS.busy = true;
+    const results = [];
+    let userTool = currentTool();
+    const E = getEditor();
+    const userAct = msActive(E);
+    try {
+      const H = ss.H;
+      // 미리보기 숨김을 먼저 원래대로 (숨긴 레이어는 변형되지 않을 수 있음)
+      await ss.hiding; // 숨기는 중이었다면 끝날 때까지 (MS.sess가 비었으니 곧 멈춤)
+      for (const it of ss.items || []) if (it.was && it.was !== 'hidden') await msSetPersonal(it.L, it.was);
+      if (msIdentity(H)) return;
+      MS.mode0 = null;
+      const todo = ss.others.filter((L) => E.drawing.layers.includes(L) && msMine(E, L) && !L.locked);
+      msGuard(true, `레이어 ${todo.length}개에 같은 ${ss.kind === 'move' ? '이동' : '변형'}을 하는 중…`);
+      for (const L of todo) {
+        const err = await msReplay(L, H);
+        results.push([L, err]);
+        const it = (ss.items || []).find((x) => x.L === L);
+        if (it) it.cv.remove();
+      }
+      // 마지막 레이어 변형을 끝내고 원래 모드·레이어·도구로
+      if (MS.mode0) { const b = trfModeButtons().find((x) => tipOf(x) === MS.mode0); if (b && !trfIsOn(b)) { press(b); await nextFrame(); } }
+      if (results.length) {
+        await selectTool('moveIcon');
+        const back = userAct && userAct !== ss.L && E.drawing.layers.includes(userAct) ? userAct : ss.L;
+        if (E.drawing.layers.includes(back)) await msSelectLayer(back);
+        if (userTool && currentTool() !== userTool) await selectTool(userTool);
+      }
+    } finally {
+      ss.wrap?.remove();
+      msGuard(false);
+      MS.busy = false;
+      msPaint();
+    }
+    const bad = results.filter(([, e]) => e);
+    if (!results.length) return;
+    toast(bad.length ? `${results.length - bad.length}개는 함께 바꿨지만 ${bad.map(([L, e]) => `"${L.name}"(${e})`).join(', ')}은 못 바꿨어요`
+      : `레이어 ${results.length + 1}개를 함께 ${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} (되돌리기는 레이어마다 한 칸)`);
+  }
+  const msTimer = setInterval(() => { try { msTick(); } catch (err) { console.warn('[MagmaWand] 함께 고르기', err); } }, 60);
+  cleanups.push(() => { clearInterval(msTimer); MS.sess?.wrap?.remove(); MS.guard?.remove(); document.querySelectorAll('.mw-msel').forEach((r) => r.classList.remove('mw-msel')); });
+  on(window, 'scroll', () => { if (MS.set.size) requestAnimationFrame(msPaint); }, true);
 
   // ---------- 고급 브러시: 기본 끝 모양·텍스처 (PNG 없이 고르기) ----------
   // 검은 그림 + 투명 배경 = 끝 모양(알파를 씀), 회색조 불투명 그림 = 텍스처(어두울수록 진하게)
@@ -5215,6 +5618,11 @@ void main(){
     .mw-blurwrap { position: fixed; z-index: 2147480400; pointer-events: none; overflow: hidden; display: none; }
     .mw-blurcv { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
     html.mw-ctxhide .context-menu, html.mw-ddhide .dropdown-menu { opacity: 0 !important; }
+    .layer.mw-msel { background: rgba(47,128,237,.22) !important; box-shadow: inset 3px 0 0 #2f80ed; }
+    .mw-mswrap { position: fixed; z-index: 2147480300; pointer-events: none; overflow: hidden; }
+    .mw-mscv { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+    .mw-msguard { position: fixed; inset: 0; z-index: 2147483000; cursor: progress; display: flex; align-items: flex-end; justify-content: center; }
+    .mw-msguard { color: #fff; font-size: 13px; padding-bottom: 72px; text-shadow: 0 1px 3px #000; }
     .mw-tipgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 4px; padding: 6px; margin: 0 0 6px;
       background: rgba(255,255,255,.04); border-radius: 6px; }
     .mw-tipbtn { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 2px; background: #f4f4f4; color: #222;
@@ -5502,6 +5910,6 @@ void main(){
     advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, parseSut, getAA, setAA, docToBuffer, selectionExists,
     setAlpha, advEraseCommit, fillSelection, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt,
     ensureGroups, activateMember, selectLayerContent, advNewBrush, setMagmaFont, currentFontName, systemFonts, openTextImageDialog,
-    blurDab, blurState: () => BLR, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons };
+    blurDab, blurState: () => BLR, msState: () => MS, rowLayer, msPick, msReplay, msDecompose, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons };
   window.__magmaWand.ready = true; // 끝까지 시작됨 (실행기는 이 표시가 없으면 다시 넣는다)
 })();
