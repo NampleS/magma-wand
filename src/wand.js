@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.17.0';
+  const VERSION = '0.18.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -1141,7 +1141,7 @@
     const dx = Math.floor(fx), dy = Math.floor(fy);
     if (dx < 0 || dy < 0 || dx >= img.w || dy >= img.h) return { error: '보드 바깥을 눌렀어요' };
     let ff = null;
-    if (S.gap > 0 && S.contig) { ff = gapCloseFill(img, dx, dy, S.tol, Math.round(S.gap)); if (!ff) T.gapSkip = true; }
+    if (S.gap > 0 && S.contig) { ff = gapBridgeFill(img, dx, dy, S.tol, 2 * S.gap); if (!ff) T.gapSkip = true; }
     const { mask, count } = ff || floodFill(img, dx, dy, S.tol, null, true, S.contig);
     if (S.expand > 0) dilate(mask, img.w, img.h, S.expand);
     mark('filled');
@@ -1150,7 +1150,7 @@
     T.doc = true; T.loops = P.loops; T.points = P.pts.length; T.pathMode = P.mode;
     if (P.dropped) T.dropped = P.dropped;
     const note = (P.dropped ? ` · 작은 조각 ${P.dropped}개는 점이 너무 많아 뺐어요` : (P.simplified ? ' · 테두리가 복잡해 조금 매끈하게 그었어요' : '')) +
-      (T.gapSkip ? ' · 누른 곳이 선과 너무 가까워 빈틈 닫기 없이 했어요' : '');
+      (T.gapSkip ? ' · 선 위를 눌러 빈틈 닫기 없이 했어요' : '');
     return { poly: P.pts.map(D.toBuf), count, holes: Math.max(0, P.loops - 1), samples: sampleMask(mask, img.w, img.h, 1500, D.toBuf),
       minSeg: D.spike * D.scale * D.kx, note, pieces: P.loops };
   }
@@ -1568,7 +1568,7 @@
   on(window, 'pointermove', (e) => { if (e.isTrusted && !e.altKey && !e.ctrlKey && !BSZ.on) rememberTool(); }, { capture: true, passive: true });
   function sizeGestureTarget() {
     if (S.busy) return null;
-    if (S.active) return S.tool === 'quick' ? 'quick' : S.tool === 'brush' && ADV.brush ? 'adv' : null;
+    if (S.active) return S.tool === 'quick' ? 'quick' : S.tool === 'brush' && ADV.brush ? 'adv' : S.tool === 'blur' ? 'blur' : S.tool === 'qmask' ? 'qmask' : null;
     const t = SIZE_TOOLS.has(currentTool()) ? currentTool() : plainTool;
     return SIZE_TOOLS.has(t) ? 'brush' : null;
   }
@@ -1587,23 +1587,30 @@
     return [1, 0]; // 처음: 원의 오른쪽 가장자리에 마우스
   }
   const roundSize = (v) => Math.min(500, Math.max(1, v < 10 ? Math.round(v * 10) / 10 : Math.round(v)));
+  // 마법봉이 만든 브러시 도구의 크기(지름, 보드 픽셀): 블러·퀵 마스크
+  const OWN_SIZE = {
+    blur: { get: () => S.blurSize, set: (v) => { S.blurSize = v; }, max: 500, cursor: (x, y) => blurCursor(x, y, true) },
+    qmask: { get: () => S.qmSize, set: (v) => { S.qmSize = v; }, max: 1000, cursor: (x, y) => qmCursor(x, y, true) },
+  };
   function sizeRender(mx, my) {
     const r = Math.hypot(mx - BSZ.ox, my - BSZ.oy);
+    const own = OWN_SIZE[BSZ.kind];
     BSZ.size = BSZ.quick ? Math.min(500, Math.max(1, Math.round(r / BSZ.zoom)))
-      : BSZ.adv ? Math.min(3000, Math.max(0.5, Math.round((20 * r) / BSZ.zoom) / 10)) : roundSize((2 * r) / BSZ.zoom);
+      : BSZ.adv ? Math.min(3000, Math.max(0.5, Math.round((20 * r) / BSZ.zoom) / 10))
+      : own ? Math.min(own.max, Math.max(1, Math.round((2 * r) / BSZ.zoom))) : roundSize((2 * r) / BSZ.zoom);
     const rr = BSZ.quick ? BSZ.size * BSZ.zoom : (BSZ.size / 2) * BSZ.zoom;
     Object.assign(BSZ.el.style, { left: (BSZ.ox - rr) + 'px', top: (BSZ.oy - rr) + 'px', width: 2 * rr + 'px', height: 2 * rr + 'px' });
-    BSZ.label.textContent = BSZ.quick || BSZ.adv ? `브러시 크기 ${BSZ.size}` : `Size ${BSZ.size}`;
+    BSZ.label.textContent = BSZ.quick || BSZ.adv || own ? `브러시 크기 ${BSZ.size}` : `Size ${BSZ.size}`;
     Object.assign(BSZ.label.style, { left: mx + 14 + 'px', top: my + 14 + 'px' });
   }
   function sizeStart(e, kind) {
     const zoom = viewZoom();
-    const cur = kind === 'quick' ? S.brush : kind === 'adv' ? ADV.brush.size : (getBrushSize() || BSZ.lastSize);
+    const cur = kind === 'quick' ? S.brush : kind === 'adv' ? ADV.brush.size : OWN_SIZE[kind] ? OWN_SIZE[kind].get() : (getBrushSize() || BSZ.lastSize);
     if (!(cur > 0)) return false;
     const rScreen = kind === 'quick' ? cur * zoom : (cur / 2) * zoom;
     const [dx, dy] = loadSizeDir();
     const L = Math.hypot(dx, dy) || 1;
-    Object.assign(BSZ, { on: true, quick: kind === 'quick', adv: kind === 'adv', zoom, pid: e.pointerId,
+    Object.assign(BSZ, { on: true, kind, quick: kind === 'quick', adv: kind === 'adv', zoom, pid: e.pointerId,
       ox: e.clientX - (dx / L) * rScreen, oy: e.clientY - (dy / L) * rScreen });
     if (!BSZ.el) {
       BSZ.el = document.createElement('div'); BSZ.el.className = 'mw-size-ring mw-el';
@@ -1611,7 +1618,7 @@
     }
     document.body.append(BSZ.el, BSZ.label);
     BSZ.el.style.display = BSZ.label.style.display = 'block';
-    if (kind === 'quick' || kind === 'adv') qCursor(0, 0, false);
+    if (kind !== 'brush') qCursor(0, 0, false);
     sizeRender(e.clientX, e.clientY);
     return true;
   }
@@ -1633,6 +1640,8 @@
       advCursor(e.clientX, e.clientY, true);
       return;
     }
+    const own = OWN_SIZE[BSZ.kind];
+    if (own) { own.set(BSZ.size); saveSettings(); rowsEl?.__mwSync?.(); own.cursor(e.clientX, e.clientY); return; }
     const want = BSZ.size;
     try {
       // Alt를 떼서 원래 도구(크기 칸)가 돌아올 때까지 기다렸다가 한 번만 넣는다
@@ -5072,59 +5081,94 @@ void main(){
   }
 
   // ---------- 빈틈 닫기 (클립 스튜디오 '틈 닫기') ----------
-  // 선(시작 색과 다른 픽셀)을 r픽셀 두껍게 본 상태로 영역을 찾은 뒤(틈이 막힘), 원래 칠할 수 있는 곳 안에서만
-  // 선 쪽으로 r픽셀 다시 넓힌다(선 밑 구석까지). 반환 null = 빈틈 닫기를 쓸 수 없음(예: 누른 곳이 선과 너무 가까움).
-  function gapCloseFill(img, sx, sy, tolPct, r) {
-    const { w, h } = img, n = w * h;
-    const A = floodFill(img, sx, sy, tolPct, null, true, false).mask; // 시작 색과 비슷한 모든 픽셀(이어짐 무관)
-    const bar = new Uint8Array(n);
-    let any = false;
-    for (let i = 0; i < n; i++) if (!A[i]) { bar[i] = 1; any = true; }
-    if (!any) return null;
-    const d2 = edtSq(bar, w, h), r2 = r * r;
-    const Ar = new Uint8Array(n);
-    for (let i = 0; i < n; i++) if (A[i] && d2[i] > r2) Ar[i] = 1;
-    // 시작점이 선과 가까워 지워졌으면, 가까운 곳에서 남은 픽셀을 찾는다
-    let seed = sy * w + sx;
-    if (!Ar[seed]) {
-      let best = -1, bd = Infinity;
-      for (let y = Math.max(0, sy - r - 2); y <= Math.min(h - 1, sy + r + 2); y++) for (let x = Math.max(0, sx - r - 2); x <= Math.min(w - 1, sx + r + 2); x++) {
-        const p = y * w + x, d = (x - sx) ** 2 + (y - sy) ** 2;
-        if (Ar[p] && d < bd) { bd = d; best = p; }
+  // 선(시작 색과 다른 픽셀)을 가늘게 뼈대만 남긴 뒤(Zhang-Suen), 선의 '끝점'마다 G픽셀 안에 있는 다른 선(같은 선의 바로 옆은 제외)을
+  // 찾아 끝점에서 그곳까지 **직선**을 그어 틈을 막는다. 그 다음 막힌 선 안쪽을 그대로 채운다.
+  // → 틈 자리는 곧은 선으로 끊기고, 나머지 모서리·구석은 원래 선을 그대로 따라간다(예전처럼 둥글게 뭉개지지 않음).
+  // 반환 null = 누른 곳이 선 위라 쓸 수 없음.
+  function skeletonize(B, w, h, maxIter = 80) {
+    const sk = B.slice();
+    let list = [];
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) { const p = y * w + x; if (sk[p]) list.push(p); }
+    for (let it = 0; it < maxIter; it++) {
+      let changed = false;
+      for (let step = 0; step < 2; step++) {
+        const del = [];
+        for (const p of list) {
+          if (!sk[p]) continue;
+          const n = sk[p - w], ne = sk[p - w + 1], e = sk[p + 1], se = sk[p + w + 1], s = sk[p + w], sw = sk[p + w - 1], wv = sk[p - 1], nw = sk[p - w - 1];
+          const cnt = n + ne + e + se + s + sw + wv + nw;
+          if (cnt < 2 || cnt > 6) continue;
+          const seq = [n, ne, e, se, s, sw, wv, nw, n];
+          let A = 0; for (let i = 0; i < 8; i++) if (!seq[i] && seq[i + 1]) A++;
+          if (A !== 1) continue;
+          if (step === 0 ? (n && e && s) || (e && s && wv) : (n && e && wv) || (n && s && wv)) continue;
+          del.push(p);
+        }
+        for (const p of del) sk[p] = 0;
+        if (del.length) changed = true;
       }
-      if (best < 0) return null;
-      seed = best;
+      list = list.filter((p) => sk[p]);
+      if (!changed) break;
     }
-    // 두꺼워진 선 안에서 이어진 영역
+    return { sk, list };
+  }
+  function gapBridgeFill(img, sx, sy, tolPct, G) {
+    const { w, h } = img, n = w * h;
+    const A = floodFill(img, sx, sy, tolPct, null, true, false).mask; // 시작 색과 비슷한 모든 픽셀
+    const seed = sy * w + sx;
+    if (!A[seed]) return null;
+    const B = new Uint8Array(n);
+    for (let i = 0; i < n; i++) if (!A[i]) B[i] = 1;
+    const { sk, list } = skeletonize(B, w, h);
+    const nb8 = [-w - 1, -w, -w + 1, -1, 1, w - 1, w, w + 1];
+    const R = Math.max(1, G), D = Math.ceil(2.5 * R) + 6;
+    const bridges = [];
+    for (const p of list) {
+      if (!sk[p]) continue;
+      let c = 0; for (const o of nb8) c += sk[p + o] || 0;
+      if (c !== 1) continue; // 끝점만
+      // 같은 선을 따라 가까운 곳(뼈대 거리)은 '같은 선'으로 보고 제외
+      const dist = new Map([[p, 0]]);
+      let fr = [p];
+      for (let d = 1; d <= D && fr.length; d++) {
+        const nx = [];
+        for (const q of fr) for (const o of nb8) { const r = q + o; if (r >= 0 && r < n && sk[r] && !dist.has(r)) { dist.set(r, d); nx.push(r); } }
+        fr = nx;
+      }
+      const px = p % w, py = (p - px) / w;
+      let best = -1, bd = Infinity;
+      const r0 = Math.ceil(R);
+      for (let y = Math.max(0, py - r0); y <= Math.min(h - 1, py + r0); y++) for (let x = Math.max(0, px - r0); x <= Math.min(w - 1, px + r0); x++) {
+        const q = y * w + x;
+        if (!sk[q]) continue;
+        const dd = Math.hypot(x - px, y - py);
+        if (dd > R || dd < 1.5 || dd >= bd) continue;
+        const sd = dist.get(q);
+        if (sd !== undefined && sd <= 2 * dd + 3) continue;
+        bd = dd; best = q;
+      }
+      if (best >= 0) bridges.push([px, py, best % w, (best - best % w) / w]);
+    }
+    // 다리(곧은 선)를 2픽셀 굵기로 막기
+    for (const [x0, y0, x1, y1] of bridges) {
+      const L = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)) * 2 + 1;
+      for (let i = 0; i <= L; i++) {
+        const x = Math.round(x0 + (x1 - x0) * i / L), y = Math.round(y0 + (y1 - y0) * i / L);
+        for (let dy = 0; dy <= 1; dy++) for (let dx = 0; dx <= 1; dx++) { const xx = x + dx, yy = y + dy; if (xx < w && yy < h) B[yy * w + xx] = 1; }
+      }
+    }
+    if (B[seed]) return null;
     const mask = new Uint8Array(n), q = new Int32Array(n);
-    let qh = 0, qt = 0;
+    let qh = 0, qt = 0, count = 0;
     mask[seed] = 1; q[qt++] = seed;
     while (qh < qt) {
-      const p = q[qh++], x = p % w;
-      if (x > 0 && Ar[p - 1] && !mask[p - 1]) { mask[p - 1] = 1; q[qt++] = p - 1; }
-      if (x < w - 1 && Ar[p + 1] && !mask[p + 1]) { mask[p + 1] = 1; q[qt++] = p + 1; }
-      if (p >= w && Ar[p - w] && !mask[p - w]) { mask[p - w] = 1; q[qt++] = p - w; }
-      if (p < n - w && Ar[p + w] && !mask[p + w]) { mask[p + w] = 1; q[qt++] = p + w; }
+      const p = q[qh++], x = p % w; count++;
+      if (x > 0 && !B[p - 1] && !mask[p - 1]) { mask[p - 1] = 1; q[qt++] = p - 1; }
+      if (x < w - 1 && !B[p + 1] && !mask[p + 1]) { mask[p + 1] = 1; q[qt++] = p + 1; }
+      if (p >= w && !B[p - w] && !mask[p - w]) { mask[p - w] = 1; q[qt++] = p - w; }
+      if (p < n - w && !B[p + w] && !mask[p + w]) { mask[p + w] = 1; q[qt++] = p + w; }
     }
-    // 원래 칠할 수 있는 곳(A) 안에서만 r단계 넓히기 (8방향, 선을 넘지 않음)
-    let front = q.slice(0, qt), fl = qt;
-    for (let k = 0; k < r && fl; k++) {
-      const next = [];
-      for (let j = 0; j < fl; j++) {
-        const p = front[j], x = p % w;
-        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-          if (!dx && !dy) continue;
-          const xx = x + dx, yy = (p - x) / w + dy;
-          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
-          const o = yy * w + xx;
-          if (A[o] && !mask[o]) { mask[o] = 1; next.push(o); }
-        }
-      }
-      front = next; fl = next.length;
-    }
-    let count = 0;
-    for (let i = 0; i < n; i++) count += mask[i];
-    return { mask, count };
+    return { mask, count, bridges: bridges.length };
   }
 
   // ---------- 퀵 마스크 (선택 폴더, 클립 스튜디오 '퀵 마스크') ----------
@@ -5521,6 +5565,15 @@ void main(){
     return out;
   }
   function fgWarnOnce(k, msg) { if (FG.warned[k]) return; FG.warned[k] = true; toast(msg); }
+  // 투명색 + Magma가 칠하는 경우: Fill mode를 이번 한 번만 clear로 (손을 떼고 나면 fill로 되돌림)
+  function fgNativeClear() {
+    const btns = [...(fgRow('Fill mode')?.querySelectorAll('button') || [])];
+    const fillB = btns.find((b) => b.textContent.trim() === 'fill'), clearB = btns.find((b) => b.textContent.trim() === 'clear');
+    if (!fillB || !clearB || clearB.classList.contains('on')) return;
+    clearB.click();
+    const back = () => { window.removeEventListener('pointerup', back, true); setTimeout(() => { const f = [...(fgRow('Fill mode')?.querySelectorAll('button') || [])].find((b) => b.textContent.trim() === 'fill'); if (f && !f.classList.contains('on')) f.click(); }, 300); };
+    window.addEventListener('pointerup', back, true);
+  }
   function onFillClick(e) {
     if (!e.isTrusted) return;
     if (FG.block) {
@@ -5529,20 +5582,36 @@ void main(){
       return;
     }
     if (e.type !== 'pointerdown' || e.button !== 0 || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-    if (S.active || S.busy || !S.fillGrow || currentTool() !== 'faFillDrip') return;
+    if (S.active || S.busy || currentTool() !== 'faFillDrip') return;
     const canvas = getCanvas();
     if (e.target !== canvas) return;
     const cfg = fgConfig();
-    if (cfg.mode !== 'color') { fgWarnOnce('mode', '확장/축소는 Mode가 color일 때만 써요 — 이번엔 Magma 그대로 칠해요'); return; }
-    if (cfg.target !== 'active' && cfg.target !== 'all') { fgWarnOnce('target', '확장/축소는 Target layer가 active·all일 때만 써요 — 이번엔 Magma 그대로 칠해요'); return; }
-    if (!docContext(canvas)) { fgWarnOnce('view', '화면을 회전·뒤집기 한 상태라 확장/축소 없이 Magma 그대로 칠해요'); return; }
+    const gap = cfg.gap > 0 && cfg.contig;
+    if (!S.fillGrow && !gap && !S.alpha) return; // 마법봉이 손댈 게 없으면 Magma 그대로
+    const ours = cfg.mode === 'color' && (cfg.target === 'active' || cfg.target === 'all') && fgDoc(canvas);
+    if (!ours) {
+      // 마법봉이 대신 못 칠하는 설정: 투명색이면 Magma의 clear로 잠깐 바꿔 지우게 하고, 나머지는 Magma 그대로
+      if (S.alpha) fgNativeClear();
+      if (S.fillGrow || gap) fgWarnOnce('mode', 'Mode가 opacity·smart이거나 Target layer가 above·below면 확장/축소·빈틈 닫기 없이 Magma 그대로 칠해요');
+      return;
+    }
     e.stopImmediatePropagation(); e.preventDefault();
     FG.block = true; setTimeout(() => { FG.block = false; }, 1500);
     fillGrowRun(e.clientX, e.clientY, cfg).catch((err) => { console.warn('[MagmaWand] 페인트통 확장/축소', err); toast('칠하지 못했어요: ' + (err && err.message || err)); });
   }
+  function fgDoc(canvas) {
+    const E = getEditor();
+    if (!E || !canvas) return null;
+    const d = E.drawing, cv = E.computedView;
+    if (!d || !(d.w > 0) || !(d.h > 0) || d.w * d.h > MAX_DOC_PX || !cv || !cv.transform || !cv.inverseTransform) return null;
+    const r = canvas.getBoundingClientRect(), k = canvas.width / (r.width || canvas.width), m = cv.transform, mi = cv.inverseTransform;
+    return { E, W: d.w, H: d.h, spike: SPIKE, scale: Math.hypot(m[0], m[1]), kx: k,
+      toDoc: (cx, cy) => { const x = cx - r.left, y = cy - r.top; return [mi[0] * x + mi[2] * y + mi[4], mi[1] * x + mi[3] * y + mi[5]]; },
+      toBuf: ([x, y]) => [(m[0] * x + m[2] * y + m[4]) * k, (m[1] * x + m[3] * y + m[5]) * k] };
+  }
   async function fillGrowRun(cx, cy, cfg) {
     const canvas = getCanvas();
-    const D = docContext(canvas);
+    const D = fgDoc(canvas);
     if (!D) return;
     const E = D.E, L = msActive(E);
     if (!L) { toast('칠할 레이어를 먼저 골라 주세요'); return; }
@@ -5552,7 +5621,7 @@ void main(){
     const dx = Math.floor(fx), dy = Math.floor(fy);
     if (dx < 0 || dy < 0 || dx >= img.w || dy >= img.h) return;
     const pct = Math.max(0, Math.min(100, cfg.tol / 2.55));
-    const ff = cfg.gap > 0 && cfg.contig ? gapCloseFill(img, dx, dy, pct, Math.max(1, Math.ceil(cfg.gap / 2))) : null;
+    const ff = cfg.gap > 0 && cfg.contig ? gapBridgeFill(img, dx, dy, pct, cfg.gap) : null;
     let mask = (ff || floodFill(img, dx, dy, pct, null, true, cfg.contig)).mask;
     if (cfg.invert) for (let i = 0; i < mask.length; i++) mask[i] = mask[i] ? 0 : 1;
     mask = growMaskBy(mask, img.w, img.h, S.fillGrow);
@@ -5579,7 +5648,7 @@ void main(){
       if (prevOp !== null && prevOp !== cfg.opacity) await setRowNumber(opRow, cfg.opacity);
       prevStab = getStabilizer(); if (prevStab) await setStabilizer(0);
       await drawLasso(canvas, poly, {});
-      note(`${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀 (영역 ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)` + (ff === null && cfg.gap > 0 && cfg.contig ? ' · 누른 곳이 선과 너무 가까워 빈틈 닫기 없이' : ''));
+      note(`${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀` + (S.fillGrow ? ` (영역 ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)` : '') + (ff ? ` · 틈 ${ff.bridges}곳 이음` : ''));
     } finally {
       try {
         if (prevStab) await setStabilizer(prevStab);
@@ -6633,6 +6702,6 @@ void main(){
     advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, parseSut, getAA, setAA, docToBuffer, selectionExists,
     setAlpha, advEraseCommit, fillSelection, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt,
     ensureGroups, activateMember, selectLayerContent, advNewBrush, setMagmaFont, currentFontName, systemFonts, openTextImageDialog,
-    blurDab, blurState: () => BLR, msState: () => MS, guState: () => GU, guRef, fgConfig, growMaskBy, ensureFillRow, rowLayer, msPick, msReplay, msDecompose, gapCloseFill, qmState: () => QM, qmApply, msPropsApply, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons };
+    blurDab, blurState: () => BLR, msState: () => MS, guState: () => GU, guRef, fgConfig, growMaskBy, ensureFillRow, rowLayer, msPick, msReplay, msDecompose, gapBridgeFill, qmState: () => QM, qmApply, msPropsApply, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons };
   window.__magmaWand.ready = true; // 끝까지 시작됨 (실행기는 이 표시가 없으면 다시 넣는다)
 })();
