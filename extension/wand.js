@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.18.0';
+  const VERSION = '0.19.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -39,7 +39,7 @@
     tool: 'wand', brush: 20, qtol: 12, qexpand: 1, qref: 'all', qkeys: ['Shift+KeyW'],
     bkeys: ['Shift+KeyB'], akeys: ['KeyC'], advBrushId: null, advOpacity: 100, advSize: 10,
     blurSize: 40, blurStrength: 6, blurDensity: 50, koAuto: true, koFont: 'Paperlogy', groupLast: {},
-    gap: 0, qmSize: 30, qmMode: 'add', fillGrow: 0 };
+    gap: 0, qmSize: 30, qmMode: 'add', fillGrow: 0, lkeys: [], mkeys: ['KeyQ'] };
   const S = Object.assign({}, DEFAULTS, loadSettings(), { active: false, busy: false, switching: false });
   if (!['select', 'fill'].includes(S.action)) S.action = 'select';
   if (!['all', 'layer'].includes(S.ref)) S.ref = 'all';
@@ -47,6 +47,8 @@
   if (!['wand', 'quick', 'brush', 'blur', 'qmask'].includes(S.tool)) S.tool = 'wand';
   if (!['add', 'sub'].includes(S.qmMode)) S.qmMode = 'add';
   if (!Number.isFinite(S.fillGrow)) S.fillGrow = 0;
+  if (!Array.isArray(S.lkeys)) S.lkeys = DEFAULTS.lkeys.slice();
+  if (!Array.isArray(S.mkeys)) S.mkeys = DEFAULTS.mkeys.slice();
   if (!Array.isArray(S.bkeys)) S.bkeys = DEFAULTS.bkeys.slice();
   if (!Array.isArray(S.akeys)) S.akeys = DEFAULTS.akeys.slice();
   S.alpha = false; // 투명색은 켤 때마다 새로 (저장하지 않음)
@@ -62,9 +64,9 @@
   }
   function saveSettings() {
     try {
-      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow } = S;
+      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys } = S;
       localStorage.setItem('magmaWand.settings',
-        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow }));
+        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys }));
     } catch { /* 저장 못 해도 동작에는 지장 없음 */ }
   }
 
@@ -1191,11 +1193,12 @@
         if (!(await selectTool('lassoBrushIcon'))) return status('올가미 채우기 도구로 바꾸지 못했어요');
         await waitPanelChange(oldRow);
         prevBrushMode = getBrushMode();
-        await setBrushMode('draw');          // 지우기 모드로 남아 있으면 칠 대신 지워짐
+        const wantMode = S.alpha ? 'erase' : 'draw'; // 투명색이면 그 영역을 지운다
+        await setBrushMode(wantMode);          // 반대 모드로 남아 있으면 칠 대신 지워짐(또는 그 반대)
         prevAutoErase = getAutoErase();
         if (prevAutoErase) await setAutoErase(false);
-        // 안전 확인: '그리기' 모드이고 자동 지우기가 꺼졌는지 확인되지 않으면 절대 긋지 않는다
-        if (getBrushMode() !== 'draw' || getAutoErase() === true) {
+        // 안전 확인: 원하는 모드이고 자동 지우기가 꺼졌는지 확인되지 않으면 절대 긋지 않는다
+        if (getBrushMode() !== wantMode || getAutoErase() === true) {
           return status('안전을 위해 멈췄어요: 올가미 채우기를 그리기 모드로 바꾸지 못했어요');
         }
         prevStab = getStabilizer();
@@ -1674,10 +1677,13 @@
   }
   // 마법봉 입력 처리보다 먼저 받도록 맨 앞에 등록 (window 캡처 단계, 등록 순서대로 실행)
   for (const t of SIZE_EVENTS) on(window, t, onSizeGesture, true);
+  // 색을 쓰는 마법봉 도구(고급 브러시, 마법봉 '채우기')에서도 Alt를 누른 채 누르면 스포이트 (Magma 브러시와 같게)
+  for (const t of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'mousedown', 'mouseup', 'click']) on(window, t, (e) => onOwnEye(e), true);
   // Ctrl+Shift 클릭 레이어 찾기도 마법봉 입력보다 먼저 (본문은 아래 '레이어 찾기')
   for (const t of ['pointerdown', 'pointerup', 'pointercancel', 'mousedown', 'mouseup', 'click']) on(window, t, (e) => onPick(e), true);
   for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) on(window, t, (e) => onThumb(e), true);
   for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) on(window, t, (e) => onMsRow(e), true);
+  for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) on(window, t, (e) => onClipClick(e), true);
   on(window, 'blur', () => { if (BSZ.on) sizeEnd({ clientX: BSZ.ox, clientY: BSZ.oy }, true); });
 
   // ---------- 고급 브러시 ① 클립 스튜디오 브러시(.sut) 읽기 ----------
@@ -1871,7 +1877,10 @@
       jitter: v.BrushChangePatternColor ? { h: num(v.BrushHueChange, 0), s: num(v.BrushSaturationChange, 0), v: num(v.BrushValueChange, 0) } : null,
       taperIn: v.BrushUseIn ? num(v.BrushInLength, 20) : 0, taperOut: v.BrushUseOut ? num(v.BrushOutLength, 20) : 0,
       erase: num(v.CompositeMode, 0) !== 0,
-      unsupported: [v.BrushUseWaterEdge && '수채 경계', v.UseDualBrush && '2중 브러시', v.BrushUseWaterColor && '색 혼합(물감)', num(v.CompositeMode, 0) !== 0 && '합성 모드'].filter(Boolean),
+      // 색 혼합: BrushWaterColor 1 = 블렌드, 그 밖 = 물감 섞기 · 물감량 BrushMixColor · 물감 농도 BrushMixAlpha · 색 늘이기 BrushMixColorExtension
+      mix: v.BrushUseWaterColor ? { mode: num(v.BrushWaterColor, 0) === 1 ? 'blend' : 'paint', amount: num(v.BrushMixColor, 50) / 100, density: num(v.BrushMixAlpha, 50) / 100,
+        stretch: num(v.BrushMixColorExtension, 10) / 100, amountEff: parseEffector(v.BrushMixColorEffector), densEff: parseEffector(v.BrushMixAlphaEffector), ref: 'layer' } : null,
+      unsupported: [v.BrushUseWaterEdge && '수채 경계', v.UseDualBrush && '2중 브러시', num(v.CompositeMode, 0) !== 0 && '합성 모드'].filter(Boolean),
     };
     brush.baseSize = brush.size;
     return { brush, tips, texture };
@@ -2119,6 +2128,7 @@ void main(){
     if (S.advSize > 0 && S.advSize !== b.size) { b.size = S.advSize; advSaveSoon(); }
     const s = { pts: [], acc: 0, dist: 0, last: null, speed: 0, idx: 0, dir: 1, box: null, color: advColor(), erase: !!S.alpha, v: 0, n: 0 };
     s.hsv = hsv(...s.color);
+    if (b.mix && b.mix.mode !== 'none' && !s.erase) s.mix = advMixStart(b);
     ADV.stroke = s;
     advAddPoint(e);
     return true;
@@ -2135,7 +2145,7 @@ void main(){
     let [x, y] = advDocPoint(e);
     const pr = e.pointerType === 'pen' ? Math.max(0.01, e.pressure || 0) : 1;
     const t = e.timeStamp || performance.now();
-    if (s.last && b.smoothing > 0) { const k = Math.min(0.85, b.smoothing * 0.05); x = s.last.x + (x - s.last.x) * (1 - k); y = s.last.y + (y - s.last.y) * (1 - k); }
+    if (s.last && b.smoothing > 0 && !s.straight) { const k = Math.min(0.85, b.smoothing * 0.05); x = s.last.x + (x - s.last.x) * (1 - k); y = s.last.y + (y - s.last.y) * (1 - k); }
     const cur = { x, y, p: pr, t };
     if (!s.last) { s.last = cur; advStamp(cur.x, cur.y, cur.p, 0); return; }
     const a = s.last, dx = x - a.x, dy = y - a.y, L = Math.hypot(dx, dy);
@@ -2171,7 +2181,8 @@ void main(){
     if (b.rotMask & 0x40) angle += ang;
     if (b.ribbon) angle = ang + Math.PI / 2; // 리본: 띠의 가로가 획을 가로지르게
     if (b.rotMask & 0x80) angle += (rnd() - 0.5) * 2 * Math.PI * b.rotRandom;
-    let col = s.color;
+    let col = s.color, mixA = 1;
+    if (s.mix) { const r = advMixColor(s, b, x, y, size, p, stepLen); col = r.c; mixA = r.a; }
     if (b.jitter && (b.jitter.h || b.jitter.s || b.jitter.v)) {
       const [h, sat, v] = s.hsv;
       col = rgb((h + (rnd() - 0.5) * 2 * b.jitter.h * 1.8 + 360) % 360, Math.max(0, Math.min(1, sat + (rnd() - 0.5) * 2 * b.jitter.s / 100)), Math.max(0, Math.min(1, v + (rnd() - 0.5) * 2 * b.jitter.v / 100)));
@@ -2190,7 +2201,7 @@ void main(){
       let v = [0, 1];
       let sy = sqy * asp[1], sx = sqx * asp[0];
       if (b.ribbon) { const t = ADV.tipTex[ti]; const len = Math.max(0.5, stepLen || sz * 0.1); const rel = t ? (len / sz) * (t.w / t.h) : 0.01; v = [s.v, rel]; s.v = (s.v + rel) % 1; sy = len + 1; }
-      ADV.batch.push({ ti, d: [px, py, sz, a, sx, sy, alpha, col[0], col[1], col[2], fl[0], fl[1], v[0], v[1], 0, 0] });
+      ADV.batch.push({ ti, dist: s.dist, d: [px, py, sz, a, sx, sy, alpha * mixA, col[0], col[1], col[2], fl[0], fl[1], v[0], v[1], 0, 0] });
       const ext = sz * 0.75 * Math.max(sx, b.ribbon ? 1 : sy, 1) + (b.ribbon ? sy : 0) + 3;
       const bx = { x: Math.floor(px - ext), y: Math.floor(py - ext), w: Math.ceil(2 * ext) + 1, h: Math.ceil(2 * ext) + 1 };
       s.box = runion(s.box, bx);
@@ -2234,8 +2245,14 @@ void main(){
     } else { gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, ADV.blank); gl.uniform1i(P.u.uTex, 1); }
     gl.uniform1i(P.u.uTip, 0);
     gl.bindBuffer(gl.ARRAY_BUFFER, ADV.ibuf);
+    // 출(끝 가늘게): 획이 끝날 때 줄일 수 있도록 끝에서 taperOut 길이만큼의 도장은 붙잡아 둔다
+    let todo = ADV.batch;
+    const st = ADV.stroke;
+    if (st && !st.ending && b.taperOut > 0) { const lim = st.dist - b.taperOut; todo = ADV.batch.filter((it) => it.dist <= lim); ADV.batch = ADV.batch.filter((it) => it.dist > lim); }
+    else ADV.batch = [];
+    if (!todo.length) { gl.bindVertexArray(null); gl.bindFramebuffer(gl.FRAMEBUFFER, null); return; }
     const groups = new Map();
-    for (const it of ADV.batch) { const k = round ? 0 : it.ti; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(it.d); }
+    for (const it of todo) { const k = round ? 0 : it.ti; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(it.d); }
     for (const [ti, list] of groups) {
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, round ? ADV.blank : ADV.tipTex[ti].tex);
       const arr = new Float32Array(list.length * INST);
@@ -2243,7 +2260,6 @@ void main(){
       gl.bufferData(gl.ARRAY_BUFFER, arr, gl.STREAM_DRAW);
       gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, list.length);
     }
-    ADV.batch = [];
     gl.bindVertexArray(null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
@@ -2286,8 +2302,12 @@ void main(){
   async function advStrokeEnd(cancel) {
     const s = ADV.stroke;
     if (!s) return;
+    s.ending = true;
+    const bb = ADV.brush;
+    if (bb && bb.taperOut > 0) for (const it of ADV.batch) { const f = Math.max(0.12, Math.min(1, (s.dist - it.dist) / bb.taperOut)); it.d[2] *= f; }
     advFlush();
     ADV.stroke = null;
+    if (s.last) ADV.lastEnd = { x: s.last.x, y: s.last.y, p: s.last.p }; // Shift+클릭 직선용
     const gl = ADV.gl;
     const box = rclip(s.box || { x: 0, y: 0, w: 0, h: 0 }, ADV.W, ADV.H);
     if (cancel || !box) { advClear(ADV.S, box); advKick(); return; }
@@ -2310,6 +2330,7 @@ void main(){
     if (ADV.cBox) advClear(ADV.C, ADV.cBox);
     const t = ADV.C; ADV.C = ADV.S; ADV.S = t; ADV.cBox = box; ADV.cOp = op;
     advKick();
+    advClipToSelection(px, box);
     // 미리곱셈 → 일반 알파
     let any = false;
     for (let i = 0; i < px.length; i += 4) {
@@ -2366,15 +2387,150 @@ void main(){
     if (!E) return;
     const L = E.model.user.activeLayers && E.model.user.activeLayers[0];
     if (!L) { toast('그릴 레이어를 먼저 골라 주세요'); return; }
+    if (L.textData) { toast('글자 레이어에는 그릴 수 없어요 — 그림 레이어를 골라 주세요'); return; }
     if (E.model.settings && E.model.settings.pasteNewLayer) toast('주의: Magma 설정 "붙여넣기를 새 레이어로"가 켜져 있어 획마다 새 레이어가 생겨요');
     advEnsureGL(getCanvas(), E.drawing.w, E.drawing.h);
     ADV.pid = e.pointerId;
+    // Shift+클릭: 지난 획 끝에서 여기까지 곧은 선 (Magma 브러시·클립 스튜디오와 같음)
+    if (e.shiftKey && ADV.lastEnd) { advStrokeStart(advEvAt(ADV.lastEnd, e)); ADV.stroke.straight = true; advAddPoint(e); ADV.stroke.straight = false; return; }
     advStrokeStart(e);
   }
   function advPointerMove(e) {
     if (!ADV.stroke || e.pointerId !== ADV.pid) return;
     const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
     for (const ce of (evs.length ? evs : [e])) advAddPoint(ce);
+  }
+  // ----- 색 혼합 (클립 스튜디오 '색 혼합': 블렌드 / 물감 섞기) -----
+  // 도장마다 그 자리 밑그림 색(현재 레이어, 또는 보이는 그림 전체)을 읽어(읽기 전용) 브러시 색과 섞는다.
+  //  - 블렌드: 도장 색 = 밑색과 메인 색을 물감량만큼 섞은 색 (따라오는 색 없음)
+  //  - 물감 섞기: 붓에 묻은 색(K)을 들고 다닌다. 도장 색 = K와 메인 색을 물감량만큼 섞은 색, 찍은 뒤 K는 밑색을 (1 − 색 늘이기)만큼 묻혀 온다.
+  //  - 물감 농도: 낮을수록 묻혀 온 투명함까지 그대로 옮겨 묽게 칠해진다.
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
+  const lerp4 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] + (b[3] - a[3]) * t];
+  function advMixStart(b) {
+    const E = getEditor();
+    const m = { E, L: E && msActive(E), ref: b.mix.ref || 'layer', tiles: new Map(), K: null, snap: null, W: E ? E.drawing.w : 0, H: E ? E.drawing.h : 0 };
+    if (m.ref === 'all') { try { m.snap = E.renderer.getDrawingSnapshotAsBinary(E.drawing); } catch { m.snap = null; } if (!m.snap) m.ref = 'layer'; }
+    return m;
+  }
+  function advMixPixel(m, x, y) {
+    x = Math.floor(x); y = Math.floor(y);
+    if (x < 0 || y < 0 || x >= m.W || y >= m.H) return null;
+    let d, i;
+    if (m.ref === 'all') { d = m.snap; i = (y * m.W + x) * 4; }
+    else {
+      if (!m.L) return null;
+      const T = 128, tx = Math.floor(x / T), ty = Math.floor(y / T), key = tx + ',' + ty;
+      let t = m.tiles.get(key);
+      if (!t) {
+        const r = { x: tx * T, y: ty * T, w: Math.min(T, m.W - tx * T), h: Math.min(T, m.H - ty * T) };
+        let px = null; try { px = readLayerEff(m.E, m.L, r); } catch { }
+        t = { r, d: px }; m.tiles.set(key, t);
+      }
+      if (!t.d) return null;
+      d = t.d; i = ((y - t.r.y) * t.r.w + (x - t.r.x)) * 4;
+    }
+    const a = d[i + 3] / 255;
+    return [d[i] / 255 * a, d[i + 1] / 255 * a, d[i + 2] / 255 * a, a];
+  }
+  // 도장 안쪽 9곳의 평균 (미리곱셈 RGBA, 0~1)
+  function advMixSample(m, cx, cy, r) {
+    const o = Math.max(0.5, r * 0.4), acc = [0, 0, 0, 0];
+    let k = 0;
+    for (const dy of [-o, 0, o]) for (const dx of [-o, 0, o]) { const c = advMixPixel(m, cx + dx, cy + dy); if (!c) continue; acc[0] += c[0]; acc[1] += c[1]; acc[2] += c[2]; acc[3] += c[3]; k++; }
+    return k ? acc.map((v) => v / k) : [0, 0, 0, 0];
+  }
+  function advMixColor(s, b, x, y, size, p) {
+    const mx = b.mix, m = s.mix;
+    const U = advMixSample(m, x, y, size / 2);
+    const M = [s.color[0], s.color[1], s.color[2], 1];
+    const amt = clamp01(mx.amount * effectorValue(mx.amountEff, p, s.speed, Math.random()));
+    const den = clamp01(mx.density * effectorValue(mx.densEff, p, s.speed, Math.random()));
+    let B;
+    if (mx.mode === 'blend') B = lerp4(U, M, amt);
+    else {
+      if (!m.K) m.K = U; // 처음 닿은 곳의 색을 묻히고 시작
+      B = lerp4(m.K, M, amt);
+      m.K = lerp4(B, U, clamp01(1 - mx.stretch) * 0.6);
+    }
+    const a = B[3];
+    const c = a > 0.004 ? [clamp01(B[0] / a), clamp01(B[1] / a), clamp01(B[2] / a)] : s.color;
+    return { c, a: a + (1 - a) * den };
+  }
+  // 선택 영역이 있으면 획을 그 안으로 잘라낸다 (px = 미리곱셈 RGBA, box 크기, 위에서 아래 줄 순서)
+  function advClipToSelection(px, box) {
+    const E = getEditor();
+    const se = E && E.model.user.selection, sb = se && se.bounds;
+    if (!sb || !(sb.w > 0) || !(sb.h > 0) || !se.poly || !Array.isArray(se.poly.segments)) return;
+    const oc = new OffscreenCanvas(box.w, box.h), g = oc.getContext('2d', { willReadFrequently: true });
+    const path = new Path2D();
+    for (const sg of se.poly.segments) {
+      for (let i = 0; i < sg.size; i++) { const x = se.poly.ox + +sg.items[i * 2] - box.x, y = se.poly.oy + +sg.items[i * 2 + 1] - box.y; i ? path.lineTo(x, y) : path.moveTo(x, y); }
+      path.closePath();
+    }
+    g.fillStyle = '#000'; g.fill(path, 'evenodd');
+    const mk = g.getImageData(0, 0, box.w, box.h).data;
+    for (let i = 0; i < px.length; i += 4) {
+      const k = mk[i + 3];
+      if (k === 255) continue;
+      if (!k) { px[i] = px[i + 1] = px[i + 2] = px[i + 3] = 0; continue; }
+      px[i] = px[i] * k / 255; px[i + 1] = px[i + 1] * k / 255; px[i + 2] = px[i + 2] * k / 255; px[i + 3] = px[i + 3] * k / 255;
+    }
+  }
+  // 보드 좌표의 점을 사용자 입력처럼 (Shift+클릭 직선의 시작점)
+  function advEvAt(pt, e) {
+    const E = getEditor(), c = getCanvas(), r = c.getBoundingClientRect(), m = E.computedView.transform;
+    return { clientX: r.left + m[0] * pt.x + m[2] * pt.y + m[4], clientY: r.top + m[1] * pt.x + m[3] * pt.y + m[5],
+      pressure: pt.p, pointerType: e.pointerType, timeStamp: (e.timeStamp || performance.now()) - 30 };
+  }
+
+  // ----- Alt 스포이트 (고급 브러시·마법봉 '채우기') -----
+  // Magma 브러시처럼 Alt를 누른 채 누르면 색을 고른다. 누르는 동안 스포이트 고리가 보이고, 손을 떼는 곳의 색이 지금 색이 된다.
+  // 색은 Magma 색 칸(오른쪽 위 16진수 칸)에 넣는다 — 사용자가 직접 입력하는 것과 같다. 투명한 곳을 고르면 투명색이 된다.
+  const AEYE = { pid: null, block: false };
+  const ownColorTool = () => S.active && (S.tool === 'brush' || (S.tool === 'wand' && S.action === 'fill'));
+  function setPrimaryHex(hex) {
+    const inp = [...document.querySelectorAll('editor-color input, .container1 input')].find((x) => /^[0-9a-f]{6}$/i.test(x.value));
+    if (!inp) return false;
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    inp.focus(); set.call(inp, hex);
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+    inp.blur();
+    return true;
+  }
+  function eyePick(cx, cy) {
+    const E = getEditor(), canvas = getCanvas();
+    if (!E || !EYE.snap) return null;
+    const m = E.computedView.inverseTransform, r = canvas.getBoundingClientRect();
+    const x = Math.floor(m[0] * (cx - r.left) + m[2] * (cy - r.top) + m[4]), y = Math.floor(m[1] * (cx - r.left) + m[3] * (cy - r.top) + m[5]);
+    if (x < 0 || y < 0 || x >= EYE.W || y >= EYE.H) return null;
+    const i = (y * EYE.W + x) * 4, d = EYE.snap;
+    return [d[i], d[i + 1], d[i + 2], d[i + 3]];
+  }
+  function onOwnEye(e) {
+    if (!e.isTrusted) return;
+    if (AEYE.pid !== null) {
+      e.stopImmediatePropagation(); if (e.cancelable) e.preventDefault();
+      if (e.type === 'pointermove' && e.pointerId === AEYE.pid && EYE.el) eyeRender(e.clientX, e.clientY);
+      if ((e.type === 'pointerup' || e.type === 'pointercancel') && e.pointerId === AEYE.pid) {
+        const c = e.type === 'pointerup' ? eyePick(e.clientX, e.clientY) : null;
+        AEYE.pid = null; AEYE.block = true; eyeEnd();
+        setTimeout(() => { AEYE.block = false; }, 400);
+        if (c) {
+          if (!c[3]) { if (!S.alpha) setAlpha(true); }
+          else { if (S.alpha) setAlpha(false); setPrimaryHex(c.slice(0, 3).map((v) => v.toString(16).padStart(2, '0')).join('')); }
+        }
+      }
+      return;
+    }
+    if (AEYE.block && (e.type === 'mouseup' || e.type === 'click')) { e.stopImmediatePropagation(); if (e.cancelable) e.preventDefault(); if (e.type === 'click') AEYE.block = false; return; }
+    if (e.type !== 'pointerdown' || e.button !== 0 || !e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (!ownColorTool() || S.busy || ADV.stroke || e.target !== getCanvas()) return;
+    e.stopImmediatePropagation(); e.preventDefault();
+    eyeStart(e);
+    AEYE.pid = e.pointerId;
   }
   // 설정 칸: 브러시 목록 + 가져오기 + 끝 모양 PNG 넣기
   function advBuildRows(tplBtn) {
@@ -2389,13 +2545,14 @@ void main(){
     const nb = mkBtn('＋ 기본 브러시');
     nb.title = '클립 스튜디오 파일 없이, 기본 끝 모양으로 새 브러시를 만들어요';
     const png = mkBtn('끝 모양 바꾸기');
+    const gear = mkBtn('⚙ 브러시 설정');
+    gear.title = '크기·잉크·색 혼합(물감 섞기)·끝 모양·획·스프레이·텍스처·색 흔들기를 하나하나 바꿔요';
     const del = mkBtn('지우기');
-    actions.append(imp, nb, png, del, fileIn);
-    nb.addEventListener('click', async (e) => {
-      e.preventDefault();
-      try { const b = await advNewBrush(); await advSelect(b.id); await render(); openAdvPngDialog(ADV.brush || b, render); }
-      catch (err) { toast('브러시를 만들지 못했어요: ' + (err && err.message || err)); }
-    });
+    actions.append(gear, imp, nb, png, del, fileIn);
+    nb.textContent = '＋ 새 브러시 (프리셋)';
+    nb.title = '연필·G펜·수채·유화(물감 섞기)·손끝·에어브러시·스프레이 등 프리셋으로 새 브러시를 만들어요';
+    nb.addEventListener('click', (e) => { e.preventDefault(); openPresetPicker(render); });
+    gear.addEventListener('click', (e) => { e.preventDefault(); openBrushSettings(); });
     box.append(list, actions, info);
     imp.addEventListener('click', (e) => { e.preventDefault(); fileIn.click(); });
     fileIn.addEventListener('change', async () => {
@@ -2425,11 +2582,13 @@ void main(){
         const it = mkBtn(b.name, 'sm btn ' + (ADV.brush && ADV.brush.id === b.id ? 'primary' : 'secondary'));
         it.classList.add('mw-advitem');
         if (b.tips.some((t) => t.needPng) || (b.texture && b.texture.needPng)) it.textContent += ' ⚠';
-        it.addEventListener('click', async (e) => { e.preventDefault(); await advSelect(b.id); render(); });
+        it.addEventListener('click', async (e) => { e.preventDefault(); await advSelect(b.id); render(); if (BSET.el) openBrushSettings(); });
+        it.addEventListener('dblclick', (e) => { e.preventDefault(); openBrushSettings(); });
         list.appendChild(it);
       }
       const cur = ADV.brush;
       png.style.display = cur ? '' : 'none';
+      gear.style.display = cur ? '' : 'none';
       del.style.display = cur ? '' : 'none';
       const need = cur ? cur.tips.filter((t) => t.needPng).length + (cur.texture && cur.texture.needPng ? 1 : 0) : 0;
       info.textContent = !cur ? '' : [
@@ -2520,10 +2679,269 @@ void main(){
     }
   }
 
+  // ---------- 고급 브러시 ④ 브러시 설정 창 (클립 스튜디오 '보조 도구 상세'처럼 항목별) ----------
+  // 떠 있는 작은 창이라 열어 둔 채로 그림판에 그어 보며 바꿀 수 있다. 바꾼 값은 바로 그 브러시에 저장된다(이 컴퓨터).
+  const BSET = { el: null };
+  const EFF_KINDS = [['pressure', '필압', 0.2], ['velocity', '속도', 0.3], ['random', '무작위', 0.5]];
+  function openBrushSettings() {
+    const b = ADV.brush;
+    if (!b) { toast('먼저 브러시를 골라 주세요'); return; }
+    BSET.el?.remove();
+    const el = document.createElement('div');
+    el.className = 'mw-bset mw-el';
+    el.innerHTML = '<div class="mw-bset-head"><span class="mw-bset-title"></span><button type="button" class="mw-bset-x" title="닫기">✕</button></div><div class="mw-bset-tabs"></div><div class="mw-bset-body"></div>';
+    document.body.appendChild(el);
+    BSET.el = el;
+    el.querySelector('.mw-bset-title').textContent = '브러시 설정 — ' + b.name;
+    el.querySelector('.mw-bset-x').addEventListener('click', () => { el.remove(); BSET.el = null; });
+    for (const t of ['keydown', 'keyup']) el.addEventListener(t, (e) => e.stopPropagation()); // 입력 칸의 키가 Magma 단축키로 새지 않게
+    // 제목을 끌어 옮기기
+    const head = el.querySelector('.mw-bset-head');
+    head.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('button')) return;
+      const r = el.getBoundingClientRect(), ox = e.clientX - r.left, oy = e.clientY - r.top;
+      const mv = (ev) => { el.style.left = Math.max(0, ev.clientX - ox) + 'px'; el.style.top = Math.max(0, ev.clientY - oy) + 'px'; el.style.right = 'auto'; };
+      const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); };
+      window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up);
+    });
+    const save = () => { advSaveSoon(); };
+    const body = el.querySelector('.mw-bset-body'), tabs = el.querySelector('.mw-bset-tabs');
+    // ---- 줄 만들기 도구 ----
+    const rowEl = (label) => { const r = document.createElement('div'); r.className = 'mw-bs-row'; const l = document.createElement('span'); l.className = 'mw-bs-lab'; l.textContent = label; r.appendChild(l); return r; };
+    const slider = (label, get, set, min, max, step = 1, unit = '') => {
+      const r = rowEl(label);
+      const rg = document.createElement('input'); rg.type = 'range'; rg.min = min; rg.max = max; rg.step = step; rg.className = 'mw-bs-range';
+      const nb = document.createElement('input'); nb.type = 'number'; nb.min = min; nb.max = max; nb.step = step; nb.className = 'mw-bs-num';
+      const u = document.createElement('span'); u.className = 'mw-bs-unit'; u.textContent = unit;
+      const show = () => { const v = get(); rg.value = v; nb.value = Math.round(v * 100) / 100; };
+      const put = (v) => { v = Math.min(max, Math.max(min, +v)); if (!Number.isFinite(v)) return; set(v); show(); save(); };
+      rg.addEventListener('input', () => put(rg.value)); nb.addEventListener('change', () => put(nb.value));
+      show(); r.append(rg, nb, u); return r;
+    };
+    const seg = (label, opts, get, set) => {
+      const r = rowEl(label), g = document.createElement('div'); g.className = 'mw-bs-seg';
+      const btns = opts.map(([v, t]) => { const x = document.createElement('button'); x.type = 'button'; x.textContent = t; x.addEventListener('click', () => { set(v); paint(); save(); }); g.appendChild(x); return [v, x]; });
+      const paint = () => btns.forEach(([v, x]) => x.classList.toggle('on', get() === v));
+      paint(); r.appendChild(g); return r;
+    };
+    const check = (label, get, set) => {
+      const r = rowEl(label), c = document.createElement('input'); c.type = 'checkbox'; c.checked = !!get();
+      c.addEventListener('change', () => { set(c.checked); save(); }); r.appendChild(c); return r;
+    };
+    // 효과(필압·속도·무작위): 켜면 최솟값(%) 칸이 보인다
+    const effRow = (label, key, holder = b) => {
+      const box = document.createElement('div'); box.className = 'mw-bs-eff';
+      const r = rowEl(label), g = document.createElement('div'); g.className = 'mw-bs-seg';
+      const mins = document.createElement('div'); mins.className = 'mw-bs-effmins';
+      const eff = () => holder[key];
+      const draw = () => {
+        g.innerHTML = ''; mins.innerHTML = '';
+        for (const [k, t, def] of EFF_KINDS) {
+          const x = document.createElement('button'); x.type = 'button'; x.textContent = t;
+          const on = !!(eff() && eff()[k]);
+          x.classList.toggle('on', on);
+          x.addEventListener('click', () => {
+            const e2 = eff() ? { ...eff() } : {};
+            if (e2[k]) delete e2[k]; else e2[k] = k === 'random' ? { min: def } : { min: def, curve: null };
+            holder[key] = Object.keys(e2).length ? e2 : null; save(); draw();
+          });
+          g.appendChild(x);
+          if (on) mins.appendChild(slider(`  ${t} 최소`, () => Math.round(eff()[k].min * 100), (v) => { eff()[k].min = v / 100; }, 0, 100, 1, '%'));
+        }
+      };
+      draw(); r.appendChild(g); box.append(r, mins); return box;
+    };
+    const btn = (text, fn) => { const x = document.createElement('button'); x.type = 'button'; x.className = 'sm btn secondary'; x.textContent = text; x.addEventListener('click', (e) => { e.preventDefault(); fn(); }); return x; };
+    const pct = (k, o = b) => [() => Math.round(o[k] * 100), (v) => { o[k] = v / 100; }];
+    // ---- 항목 ----
+    const pages = {
+      '크기': () => [
+        slider('브러시 크기', () => b.size, (v) => { b.size = v; S.advSize = v; rowsEl?.__mwSync?.(); }, 0.5, 1000, 0.5, 'px'),
+        effRow('크기 효과', 'sizeEff'),
+      ],
+      '잉크': () => [
+        slider('불투명도', ...pct('opacity'), 1, 100, 1, '%'),
+        effRow('불투명도 효과', 'opacityEff'),
+        slider('흐름(밀도)', ...pct('flow'), 1, 100, 1, '%'),
+        effRow('흐름 효과', 'flowEff'),
+        check('안티에일리어스', () => b.aa, (v) => { b.aa = v ? 1 : 0; }),
+      ],
+      '색 혼합': () => {
+        const mx = () => b.mix || (b.mix = { mode: 'none', amount: 0.5, density: 0.8, stretch: 0.3, amountEff: null, densEff: null, ref: 'layer' });
+        mx();
+        return [
+          seg('색 혼합', [['none', '없음'], ['blend', '블렌드'], ['paint', '물감 섞기']], () => b.mix.mode, (v) => { b.mix.mode = v; }),
+          slider('물감량', () => Math.round(b.mix.amount * 100), (v) => { b.mix.amount = v / 100; }, 0, 100, 1, '%'),
+          effRow('물감량 효과', 'amountEff', b.mix),
+          slider('물감 농도', () => Math.round(b.mix.density * 100), (v) => { b.mix.density = v / 100; }, 0, 100, 1, '%'),
+          effRow('물감 농도 효과', 'densEff', b.mix),
+          slider('색 늘이기', () => Math.round(b.mix.stretch * 100), (v) => { b.mix.stretch = v / 100; }, 0, 100, 1, '%'),
+          seg('섞을 밑색', [['layer', '현재 레이어'], ['all', '보이는 그림']], () => b.mix.ref || 'layer', (v) => { b.mix.ref = v; }),
+          Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: '물감량 100 = 메인 색만 · 0 = 밑색만 끌고 다님(손끝). 물감 농도가 낮을수록 묽게, 색 늘이기가 클수록 끌고 온 색이 길게 남아요.' }),
+        ];
+      },
+      '끝 모양': () => [
+        slider('경도(원형일 때)', ...pct('hardness'), 0, 100, 1, '%'),
+        slider('두께', ...pct('thickness'), 1, 100, 1, '%'),
+        seg('두께 방향', [[false, '가로'], [true, '세로']], () => !!b.vertical, (v) => { b.vertical = v; }),
+        effRow('두께 효과', 'thickEff'),
+        slider('각도', () => b.rotation, (v) => { b.rotation = v; }, -180, 180, 1, '°'),
+        check('각도: 필압', () => b.rotMask & 0x10, (v) => { b.rotMask = v ? b.rotMask | 0x10 : b.rotMask & ~0x10; }),
+        check('각도: 진행 방향', () => b.rotMask & 0x40, (v) => { b.rotMask = v ? b.rotMask | 0x40 : b.rotMask & ~0x40; }),
+        check('각도: 무작위', () => b.rotMask & 0x80, (v) => { b.rotMask = v ? b.rotMask | 0x80 : b.rotMask & ~0x80; }),
+        slider('  무작위 정도', ...pct('rotRandom'), 0, 100, 1, '%'),
+        seg('좌우 반전', [[0, '없음'], [1, '반전'], [2, '무작위']], () => b.flipH || 0, (v) => { b.flipH = v; }),
+        seg('상하 반전', [[0, '없음'], [1, '반전'], [2, '무작위']], () => b.flipV || 0, (v) => { b.flipV = v; }),
+        seg('여러 모양 순서', [[0, '차례'], [1, '왕복'], [2, '무작위']], () => b.tipOrder || 0, (v) => { b.tipOrder = v; }),
+      ],
+      '획': () => [
+        slider('간격', () => Math.round(b.interval * 100), (v) => { b.interval = v / 100; }, 1, 300, 1, '%'),
+        effRow('간격 효과', 'intervalEff'),
+        slider('손떨림 보정', () => b.smoothing || 0, (v) => { b.smoothing = v; }, 0, 100, 1),
+        slider('입(시작 가늘게)', () => b.taperIn || 0, (v) => { b.taperIn = v; }, 0, 500, 1, 'px'),
+        slider('출(끝 가늘게)', () => b.taperOut || 0, (v) => { b.taperOut = v; }, 0, 500, 1, 'px'),
+        check('리본(끝 모양을 띠처럼 늘이기)', () => b.ribbon, (v) => { b.ribbon = v; }),
+      ],
+      '스프레이': () => {
+        const sp = () => b.spray;
+        const ensure = () => b.spray || (b.spray = { size: 3, sync: false, density: 10, bias: 0, sizeEff: null, densEff: null });
+        const rows = [check('스프레이 켜기', () => !!b.spray, (v) => { if (v) ensure(); else b.spray = null; render('스프레이'); })];
+        if (sp()) rows.push(
+          slider('입자 크기', () => sp().size, (v) => { sp().size = v; }, 0.5, 200, 0.5, 'px'),
+          check('입자 크기를 브러시 크기에 맞춤', () => sp().sync, (v) => { sp().sync = v; }),
+          effRow('입자 크기 효과', 'sizeEff', sp()),
+          slider('입자 수', () => sp().density, (v) => { sp().density = v; }, 1, 200, 1),
+          effRow('입자 수 효과', 'densEff', sp()),
+          slider('가운데로 모임', () => Math.round(sp().bias * 100), (v) => { sp().bias = v / 100; }, -100, 100, 1, '%'),
+        );
+        return rows;
+      },
+      '텍스처': () => [
+        Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: b.texture && b.texture.key ? '텍스처를 쓰고 있어요' : '텍스처 없음 — 아래 단추로 고르세요' }),
+        slider('농도', ...pct('texDensity'), 0, 100, 1, '%'),
+        slider('배율', () => Math.round((b.texScale || 1) * 100), (v) => { b.texScale = v / 100; }, 10, 500, 1, '%'),
+        check('반전', () => b.texInvert, (v) => { b.texInvert = v; }),
+        check('도장마다 적용(끄면 획 전체에)', () => b.texPerStamp, (v) => { b.texPerStamp = v; }),
+      ],
+      '색 흔들기': () => {
+        const j = () => b.jitter || (b.jitter = { h: 0, s: 0, v: 0 });
+        j();
+        return [
+          slider('색상', () => b.jitter.h, (v) => { b.jitter.h = v; }, 0, 100, 1, '%'),
+          slider('채도', () => b.jitter.s, (v) => { b.jitter.s = v; }, 0, 100, 1, '%'),
+          slider('명도', () => b.jitter.v, (v) => { b.jitter.v = v; }, 0, 100, 1, '%'),
+          Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: '도장마다 색을 이만큼 흔들어요(반짝이·잎 같은 브러시에 좋아요).' }),
+        ];
+      },
+      '이름·관리': () => {
+        const r = rowEl('이름'), inp = document.createElement('input'); inp.type = 'text'; inp.value = b.name; inp.className = 'mw-bs-text';
+        inp.addEventListener('change', () => { b.name = inp.value.trim() || b.name; el.querySelector('.mw-bset-title').textContent = '브러시 설정 — ' + b.name; save(); rowsEl?.__advRender?.(); });
+        r.appendChild(inp);
+        const acts = document.createElement('div'); acts.className = 'mw-bs-acts';
+        acts.append(
+          btn('끝 모양·텍스처 바꾸기…', () => openAdvPngDialog(b, () => rowsEl?.__advRender?.())),
+          btn('이 브러시 복제', async () => {
+            const c = JSON.parse(JSON.stringify(b)); c.id = 'b_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); c.added = Date.now(); c.name = b.name + ' 사본';
+            await advSaveBrush(c); await advSelect(c.id); rowsEl?.__advRender?.(); openBrushSettings();
+          }),
+        );
+        return [r, acts];
+      },
+    };
+    let cur = BSET.page && pages[BSET.page] ? BSET.page : '크기';
+    function render(name) {
+      cur = name || cur; BSET.page = cur;
+      tabs.innerHTML = '';
+      for (const k of Object.keys(pages)) { const t = document.createElement('button'); t.type = 'button'; t.textContent = k; t.classList.toggle('on', k === cur); t.addEventListener('click', () => render(k)); tabs.appendChild(t); }
+      body.innerHTML = '';
+      for (const r of pages[cur]()) body.appendChild(r);
+    }
+    render();
+  }
+
+  // ---------- 고급 브러시 ⑤ 프리셋 (클립 스튜디오 기본 브러시처럼 바로 쓰는 묶음) ----------
+  const effP = (min) => ({ pressure: { min, curve: null } });
+  const ADV_PRESETS = [
+    { name: '연필', tip: 'pencil', tex: 'paper', o: { size: 5, sizeEff: effP(0.4), flow: 0.9, flowEff: effP(0.25), interval: 0.1, texDensity: 0.45, smoothing: 8 } },
+    { name: '진한 연필', tip: 'pencil', tex: 'paper', o: { size: 7, sizeEff: effP(0.5), flow: 1, interval: 0.08, texDensity: 0.25, smoothing: 8 } },
+    { name: 'G펜', tip: 'round-hard', o: { size: 6, sizeEff: effP(0.05), interval: 0.05, smoothing: 25, taperIn: 15, taperOut: 15 } },
+    { name: '붓펜', tip: 'round-hard', o: { size: 14, thickness: 0.8, rotation: 30, sizeEff: effP(0.1), interval: 0.05, smoothing: 20, taperIn: 30, taperOut: 40 } },
+    { name: '마커', tip: 'square', o: { size: 16, thickness: 0.35, rotation: 45, rotMask: 0, flow: 0.55, opacity: 0.9, interval: 0.04, sizeEff: null } },
+    { name: '에어브러시', tip: 'round-soft', o: { size: 120, hardness: 0, flow: 0.08, flowEff: effP(0.1), interval: 0.15, sizeEff: null } },
+    { name: '수채', tip: 'watercolor', tex: 'paper', o: { size: 60, flow: 0.35, interval: 0.12, rotMask: 0x80, rotRandom: 1, texDensity: 0.5, sizeEff: effP(0.5),
+      mix: { mode: 'blend', amount: 0.55, density: 0.4, stretch: 0.2, amountEff: null, densEff: null, ref: 'layer' } } },
+    { name: '유화 (물감 섞기)', tip: 'bristle', tex: 'canvas', o: { size: 40, flow: 0.9, thickness: 0.7, rotMask: 0x40, interval: 0.06, texDensity: 0.35, sizeEff: effP(0.4),
+      mix: { mode: 'paint', amount: 0.55, density: 1, stretch: 0.55, amountEff: effP(0.3), densEff: null, ref: 'layer' } } },
+    { name: '구아슈', tip: 'flat', o: { size: 30, thickness: 0.6, rotMask: 0x40, interval: 0.05, sizeEff: effP(0.3),
+      mix: { mode: 'paint', amount: 0.85, density: 0.9, stretch: 0.3, amountEff: null, densEff: null, ref: 'layer' } } },
+    { name: '색 섞기 붓', tip: 'round-soft', o: { size: 50, hardness: 0.3, flow: 0.8, interval: 0.06, sizeEff: null,
+      mix: { mode: 'paint', amount: 0.2, density: 0.85, stretch: 0.4, amountEff: null, densEff: null, ref: 'layer' } } },
+    { name: '손끝 (문지르기)', tip: 'round-soft', o: { size: 40, hardness: 0.3, flow: 0.7, interval: 0.05, sizeEff: null,
+      mix: { mode: 'paint', amount: 0, density: 1, stretch: 0.85, amountEff: null, densEff: null, ref: 'layer' } } },
+    { name: '분필', tip: 'chalk', tex: 'canvas', o: { size: 24, flow: 0.8, rotMask: 0x80, rotRandom: 1, texDensity: 0.7, texPerStamp: true, interval: 0.1 } },
+    { name: '크레용', tip: 'chalk', tex: 'paper', o: { size: 14, flow: 0.95, rotMask: 0x80, rotRandom: 1, texDensity: 0.8, sizeEff: effP(0.6), interval: 0.08 } },
+    { name: '스프레이', tip: 'round-hard', o: { size: 60, flow: 0.7, interval: 0.15, sizeEff: null, spray: { size: 2, sync: false, density: 40, bias: 0, sizeEff: null, densEff: effP(0.2) } } },
+    { name: '반짝이', tip: 'sparkle', o: { size: 80, interval: 0.5, rotMask: 0x80, rotRandom: 1, sizeEff: null, jitter: { h: 0, s: 0, v: 30 },
+      spray: { size: 10, sync: false, density: 3, bias: 0.3, sizeEff: { random: { min: 0.4 } }, densEff: null } } },
+    { name: '별 뿌리기', tip: 'star', o: { size: 90, interval: 0.6, rotMask: 0x80, rotRandom: 1, sizeEff: null, jitter: { h: 40, s: 10, v: 10 },
+      spray: { size: 14, sync: false, density: 2, bias: 0, sizeEff: { random: { min: 0.4 } }, densEff: null } } },
+    { name: '잎 뿌리기', tip: 'leaf', o: { size: 90, interval: 0.6, rotMask: 0x80, rotRandom: 1, sizeEff: null, jitter: { h: 12, s: 10, v: 20 },
+      spray: { size: 18, sync: false, density: 2, bias: 0, sizeEff: { random: { min: 0.5 } }, densEff: null } } },
+    { name: '구름', tip: 'cloud', o: { size: 120, flow: 0.5, interval: 0.3, rotMask: 0x80, rotRandom: 1, sizeEff: { random: { min: 0.6 } } } },
+    { name: '물감 튀김', tip: 'splatter', o: { size: 60, interval: 0.6, rotMask: 0x80, rotRandom: 1, sizeEff: { random: { min: 0.5 } } } },
+    { name: '눈송이', tip: 'snow', o: { size: 70, interval: 0.7, rotMask: 0x80, rotRandom: 1, sizeEff: null, spray: { size: 10, sync: false, density: 2, bias: 0, sizeEff: { random: { min: 0.4 } }, densEff: null } } },
+    { name: '빗금 칠', tip: 'round-hard', tex: 'hatch', o: { size: 40, flow: 1, interval: 0.05, texDensity: 1, sizeEff: null } },
+    { name: '망점(스크린톤)', tip: 'round-hard', tex: 'dots', o: { size: 60, flow: 1, interval: 0.05, texDensity: 1, sizeEff: null } },
+  ];
+  async function advNewFromPreset(pr) {
+    const b = await advNewBrush(pr.tip);
+    Object.assign(b, JSON.parse(JSON.stringify(pr.o)));
+    b.name = pr.name; b.baseSize = b.size; b.preset = pr.name;
+    if (b.rotMask == null) b.rotMask = 3;
+    if (pr.tex) {
+      const it = BUILTIN_TEX.find((t) => t.id === pr.tex);
+      if (it) b.texture = { key: await advPutImage(await builtinBlob(it)), thumbKey: null, needPng: false, builtinId: it.id };
+    }
+    await advSaveBrush(b);
+    return b;
+  }
+  function openPresetPicker(after) {
+    document.querySelector('.mw-dialog-wrap')?.remove();
+    const wrap = document.createElement('div');
+    wrap.className = 'mw-dialog-wrap mw-el';
+    wrap.innerHTML = '<div class="mw-dialog mw-preset" role="dialog"><div class="mw-dialog-title">새 브러시 — 프리셋 고르기</div><div class="mw-hist-help">고르면 새 브러시가 만들어져요. 만든 뒤 ⚙ 브러시 설정에서 하나하나 바꿀 수 있어요.</div><div class="mw-tipgrid mw-presetgrid"></div><div class="mw-dialog-btns"><button type="button" class="sm btn secondary mw-pr-blank">빈 브러시(끝 모양만 고르기)</button><button type="button" class="sm btn secondary mw-pr-close">닫기</button></div></div>';
+    document.body.appendChild(wrap);
+    const close = () => wrap.remove();
+    wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
+    wrap.querySelector('.mw-pr-close').addEventListener('click', close);
+    wrap.querySelector('.mw-pr-blank').addEventListener('click', async () => {
+      close();
+      try { const b = await advNewBrush(); await advSelect(b.id); after?.(); openAdvPngDialog(ADV.brush || b, after); } catch (err) { toast('브러시를 만들지 못했어요: ' + (err && err.message || err)); }
+    });
+    const grid = wrap.querySelector('.mw-presetgrid');
+    for (const pr of ADV_PRESETS) {
+      const x = document.createElement('button'); x.type = 'button'; x.className = 'mw-tipbtn'; x.title = pr.name;
+      const im = document.createElement('img'); const it = BUILTIN_TIPS.find((t) => t.id === pr.tip); if (it) builtinThumb(it).then((u) => { im.src = u; });
+      const t = document.createElement('span'); t.textContent = pr.name;
+      x.append(im, t);
+      x.addEventListener('click', async () => {
+        close();
+        try { const b = await advNewFromPreset(pr); await advSelect(b.id); after?.(); note(`"${pr.name}" 브러시를 만들었어요`); }
+        catch (err) { toast('브러시를 만들지 못했어요: ' + (err && err.message || err)); }
+      });
+      grid.appendChild(x);
+    }
+  }
+
   // ---------- 입력 가로채기 ----------
   // 도구가 켜져 있으면 그림판 위의 실제 클릭·끌기는 Magma에 넘기지 않고 이 도구가 처리한다.
   const BLOCK = ['pointerdown', 'pointerup', 'pointercancel', 'mousedown', 'mouseup', 'click', 'touchstart', 'touchend'];
   let pendingDown = false;
+  // Space를 누르고 있으면 Magma 화면 이동(손)에 맡긴다 — Magma 도구와 똑같이
+  let spaceDown = false;
+  on(window, 'keydown', (e) => { if (e.code === 'Space' && e.isTrusted) { const t = e.target; if (!(t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)))) spaceDown = true; } }, true);
+  on(window, 'keyup', (e) => { if (e.code === 'Space') spaceDown = false; }, true);
+  on(window, 'blur', () => { spaceDown = false; });
   function onInput(e) {
     if (!S.active || e.__magmaWand || !e.isTrusted) return;
     const canvas = getCanvas();
@@ -2550,6 +2968,7 @@ void main(){
       return;
     }
     if (e.target !== canvas) return;
+    if (spaceDown && !Q.stroking && !ADV.stroke && !BLR.st && !QM.st) return; // Space+끌기 = 화면 이동
     if (e.type.startsWith('touch')) { e.stopImmediatePropagation(); return; }
     if (e.button !== 0) return; // 가운데/오른쪽 버튼(화면 이동 등)은 그대로 통과
     e.stopImmediatePropagation();
@@ -2736,8 +3155,9 @@ void main(){
     if (!getCanvas() || document.querySelector('.modal-dialog')) return;
     const c = comboOf(e);
     if (!c) return;
-    const tool = S.keys.includes(c) ? 'wand' : S.qkeys.includes(c) ? 'quick' : S.bkeys.includes(c) ? 'brush' : null;
+    const tool = S.keys.includes(c) ? 'wand' : S.qkeys.includes(c) ? 'quick' : S.bkeys.includes(c) ? 'brush' : S.lkeys.includes(c) ? 'blur' : S.mkeys.includes(c) ? 'qmask' : null;
     if (!tool) return;
+    if (tool === 'qmask' && S.active && S.tool === 'qmask') { e.preventDefault(); e.stopImmediatePropagation(); activateMember('lassoSelectionIcon'); return; } // 퀵 마스크 단축키를 다시 누르면 나가기(선택으로 반영)
     // 사용자가 고른 키이므로 Magma의 같은 키 동작보다 이 도구를 우선한다
     e.preventDefault(); e.stopImmediatePropagation();
     setActive(true, tool);
@@ -2745,18 +3165,18 @@ void main(){
 
   // 설정 창의 단축키 표(Tools)에 '마법봉'·'빠른 선택' 줄을 Magma 줄과 같은 모양으로 넣는다.
   // 바꾼 내용은 설정 창의 Save를 눌러야 저장되고, Cancel·닫기면 버려진다 (Magma와 같은 방식)
-  const SC_ROWS = [{ key: 'keys', label: '마법봉 (Magic Wand)' }, { key: 'qkeys', label: '빠른 선택 (Quick Selection)' }, { key: 'bkeys', label: '고급 브러시 (CSP Brush)' }, { key: 'akeys', label: '투명색 전환 (Transparent Color)' }];
+  const SC_ROWS = [{ key: 'keys', label: '마법봉 (Magic Wand)' }, { key: 'qkeys', label: '빠른 선택 (Quick Selection)' }, { key: 'bkeys', label: '고급 브러시 (CSP Brush)' }, { key: 'lkeys', label: '블러 (Blur)' }, { key: 'mkeys', label: '퀵 마스크 (Quick Mask)' }, { key: 'akeys', label: '투명색 전환 (Transparent Color)' }];
   let scRows = {}, stagedAll = null, capturingKey = false, hookedModal = null;
   function ensureShortcutRow() {
     const modal = [...document.querySelectorAll('.modal-dialog')].find((m) => /Application settings/.test(m.textContent));
     if (!modal) { scRows = {}; stagedAll = null; capturingKey = false; hookedModal = null; return; }
-    if (stagedAll === null) stagedAll = { keys: S.keys.slice(), qkeys: S.qkeys.slice(), bkeys: S.bkeys.slice(), akeys: S.akeys.slice() };
+    if (stagedAll === null) stagedAll = { keys: S.keys.slice(), qkeys: S.qkeys.slice(), bkeys: S.bkeys.slice(), akeys: S.akeys.slice(), lkeys: S.lkeys.slice(), mkeys: S.mkeys.slice() };
     if (hookedModal !== modal) {
       hookedModal = modal;
       modal.addEventListener('click', (e) => {
         const b = e.target.closest && e.target.closest('button');
         if (b && b.textContent.trim() === 'Save' && stagedAll) {
-          S.keys = stagedAll.keys.slice(); S.qkeys = stagedAll.qkeys.slice(); S.bkeys = stagedAll.bkeys.slice(); S.akeys = stagedAll.akeys.slice(); saveSettings(); syncTooltip();
+          S.keys = stagedAll.keys.slice(); S.qkeys = stagedAll.qkeys.slice(); S.bkeys = stagedAll.bkeys.slice(); S.akeys = stagedAll.akeys.slice(); S.lkeys = stagedAll.lkeys.slice(); S.mkeys = stagedAll.mkeys.slice(); saveSettings(); syncTooltip();
         }
       }, true);
     }
@@ -4988,7 +5408,7 @@ void main(){
   }
   // MS.ref = 지난번(동작 직전) 맨 위 되돌리기 기록 — 묶음 되돌리기의 시작점
   const msTimer = setInterval(() => { try { msTick(); if (!MS.busy && !MS.sess) MS.ref = guRef(); } catch (err) { console.warn('[MagmaWand] 함께 고르기', err); } }, 60);
-  cleanups.push(() => { QM.wrap?.remove(); FG.row?.remove();
+  cleanups.push(() => { QM.wrap?.remove(); FG.row?.remove(); BSET.el?.remove(); CLIP.line?.remove();
   });
   cleanups.push(() => { clearInterval(msTimer); MS.sess?.wrap?.remove(); MS.guard?.remove(); document.querySelectorAll('.mw-msel').forEach((r) => r.classList.remove('mw-msel')); });
   on(window, 'scroll', () => { if (MS.set.size) requestAnimationFrame(msPaint); }, true);
@@ -5388,6 +5808,65 @@ void main(){
   }
   const QM_SVG = '<rect x="40" y="40" width="432" height="432" rx="60" fill="none" stroke="currentColor" stroke-width="40"/>' +
     '<circle cx="256" cy="256" r="120" fill="currentColor" opacity=".55"/><circle cx="256" cy="256" r="120" fill="none" stroke="currentColor" stroke-width="28" stroke-dasharray="40 30"/>';
+
+  // ---------- Alt+레이어 사이 클릭 = 클리핑 마스크 켜고 끄기 (포토샵 방식) ----------
+  // 레이어 목록에서 Alt를 누른 채 두 레이어 줄 사이(경계)에 마우스를 대면 파란 선이 보이고, 누르면 위 레이어의 클리핑을 켜고 끈다.
+  // Magma의 클리핑 단추(지금 레이어에 적용)를 쓰므로 잠깐 위 레이어를 골랐다가 원래 레이어로 돌아온다.
+  const CLIP = { line: null, hit: null, block: false };
+  function clipHitAt(cx, cy) {
+    const rows = [...document.querySelectorAll('.layer')].filter((r) => r.querySelector('.layer-left-top')).map((r) => ({ r, b: r.getBoundingClientRect() })).filter((x) => x.b.height > 0).sort((a, b) => a.b.top - b.b.top);
+    for (let i = 0; i + 1 < rows.length; i++) {
+      const up = rows[i], lo = rows[i + 1], y = (up.b.bottom + lo.b.top) / 2;
+      if (Math.abs(cy - y) <= 7 && cx >= up.b.left && cx <= up.b.right && lo.b.top - up.b.bottom < 4) return { upper: up.r, lower: lo.r, y, left: up.b.left, width: up.b.width };
+    }
+    return null;
+  }
+  function clipShow(hit) {
+    if (!hit) { if (CLIP.line) CLIP.line.style.display = 'none'; document.documentElement.classList.remove('mw-clipcur'); return; }
+    if (!CLIP.line) { CLIP.line = document.createElement('div'); CLIP.line.className = 'mw-clipline mw-el'; document.body.appendChild(CLIP.line); }
+    if (!CLIP.line.isConnected) document.body.appendChild(CLIP.line);
+    Object.assign(CLIP.line.style, { display: 'block', left: hit.left + 'px', top: (hit.y - 1.5) + 'px', width: hit.width + 'px' });
+    document.documentElement.classList.add('mw-clipcur');
+  }
+  on(window, 'pointermove', (e) => {
+    if (!e.isTrusted) return;
+    if (!e.altKey) { if (CLIP.hit) { CLIP.hit = null; clipShow(null); } return; }
+    const h = e.target.closest && e.target.closest('editor-layers') ? clipHitAt(e.clientX, e.clientY) : null;
+    CLIP.hit = h; clipShow(h);
+  }, { capture: true, passive: true });
+  on(window, 'keyup', (e) => { if (e.key === 'Alt' && CLIP.hit) { CLIP.hit = null; clipShow(null); } }, true);
+  on(window, 'blur', () => { CLIP.hit = null; clipShow(null); });
+  function onClipClick(e) {
+    if (!e.isTrusted) return;
+    if (CLIP.block) { e.stopImmediatePropagation(); if (e.cancelable) e.preventDefault(); if (e.type === 'click') CLIP.block = false; return; }
+    if (e.type !== 'pointerdown' || e.button !== 0 || !e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (!(e.target.closest && e.target.closest('editor-layers'))) return;
+    const hit = clipHitAt(e.clientX, e.clientY);
+    if (!hit) return;
+    e.stopImmediatePropagation(); e.preventDefault();
+    CLIP.block = true; setTimeout(() => { CLIP.block = false; }, 800);
+    clipToggle(hit.upper).catch((err) => { console.warn('[MagmaWand] 클리핑', err); toast('클리핑을 바꾸지 못했어요: ' + (err && err.message || err)); });
+  }
+  async function clipToggle(upperRow) {
+    const E = getEditor() || await editorKeepTool();
+    if (!E || MS.busy) return;
+    const L = rowLayer(upperRow);
+    if (!L) { toast('이 레이어를 알아보지 못했어요'); return; }
+    if (!msMine(E, L)) { toast('다른 사람 레이어는 클리핑할 수 없어요'); return; }
+    const act = msActive(E), before = !!L.clippingGroup;
+    MS.busy = true;
+    try {
+      if (act !== L && !await msSelectLayer(L)) { toast('레이어를 고르지 못했어요'); return; }
+      await nextFrame();
+      const b = msHdr()?.querySelector('button[command=toggle-layer-clipping-group]');
+      if (!b) { toast('클리핑 단추를 찾지 못했어요'); return; }
+      b.click();
+      const ok = await waitFor(() => !!L.clippingGroup !== before, 1200);
+      if (act && act !== L && E.drawing.layers.includes(act)) await msSelectLayer(act);
+      if (ok) note(`"${L.name}" 클리핑 ${L.clippingGroup ? '켬 (아래 레이어 모양 안에만 보여요)' : '끔'}`);
+      else toast('클리핑이 바뀌지 않았어요');
+    } finally { MS.busy = false; msPaint(); MS.pL = msActive(E); MS.pv = MS.pL ? msProps(MS.pL) : null; MS.pchg = null; }
+  }
 
   // ---------- 묶음 되돌리기 (마법봉 동작 하나 = Ctrl+Z 한 번) ----------
   // 여러 레이어 함께 변형·속성, 블러·투명색 지우기처럼 마법봉 동작 하나가 Magma 되돌리기 여러 칸을 쓰면, 그 칸들을 기억해 둔다.
@@ -6392,7 +6871,29 @@ void main(){
     .mw-blurwrap { position: fixed; z-index: 2147480400; pointer-events: none; overflow: hidden; display: none; }
     .mw-blurcv { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
     html.mw-ctxhide .context-menu, html.mw-ddhide .dropdown-menu { opacity: 0 !important; }
+    .mw-clipline { position: fixed; z-index: 2147482500; height: 3px; background: #2f80ed; border-radius: 2px; pointer-events: none; box-shadow: 0 0 4px #2f80ed; }
+    html.mw-clipcur editor-layers, html.mw-clipcur editor-layers * { cursor: alias !important; }
     .mw-qm-row { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0; }
+    .mw-bset { position: fixed; z-index: 2147482000; top: 70px; right: 280px; width: 340px; max-height: 78vh; display: flex; flex-direction: column;
+      background: #2b2c31; color: #e6e6ea; border: 1px solid #45464d; border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.45); font-size: 12px; }
+    .mw-bset-head { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; cursor: move; border-bottom: 1px solid #3d3e45; font-weight: 600; }
+    .mw-bset-x { background: none; border: 0; color: #bbb; cursor: pointer; font-size: 13px; }
+    .mw-bset-tabs { display: flex; flex-wrap: wrap; gap: 3px; padding: 6px 8px; border-bottom: 1px solid #3d3e45; }
+    .mw-bset-tabs button, .mw-bs-seg button { background: #3a3b42; color: #d8d8de; border: 1px solid transparent; border-radius: 4px; padding: 2px 7px; font-size: 11px; cursor: pointer; }
+    .mw-bset-tabs button.on, .mw-bs-seg button.on { background: #2f80ed; color: #fff; }
+    .mw-bset-body { overflow: auto; padding: 8px 10px 10px; }
+    .mw-bs-row { display: flex; align-items: center; gap: 6px; min-height: 26px; }
+    .mw-bs-lab { flex: 0 0 104px; color: #b9bac2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mw-bs-range { flex: 1; min-width: 60px; accent-color: #2f80ed; }
+    .mw-bs-num { width: 54px; background: #1e1f23; color: #eee; border: 1px solid #45464d; border-radius: 4px; padding: 1px 4px; }
+    .mw-bs-unit { width: 18px; color: #8e8f97; }
+    .mw-bs-seg { display: flex; flex-wrap: wrap; gap: 3px; }
+    .mw-bs-eff { margin: 2px 0 4px; }
+    .mw-bs-effmins .mw-bs-lab { color: #8e8f97; }
+    .mw-bs-help { color: #9a9ca5; margin: 6px 0; line-height: 1.4; }
+    .mw-bs-text { flex: 1; background: #1e1f23; color: #eee; border: 1px solid #45464d; border-radius: 4px; padding: 2px 6px; }
+    .mw-bs-acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+    .mw-preset { width: 520px; } .mw-presetgrid { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); max-height: 56vh; overflow: auto; }
     .layer.mw-msel { background: rgba(47,128,237,.22) !important; box-shadow: inset 3px 0 0 #2f80ed; }
     .mw-mswrap { position: fixed; z-index: 2147480300; pointer-events: none; overflow: hidden; }
     .mw-mscv { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
@@ -6421,7 +6922,7 @@ void main(){
     if (statusEl) statusEl.textContent = msg;
     console.log('[MagmaWand]', msg);
   }
-  const hint = () => S.tool === 'brush' ? '그리기: 손을 떼면 보드에 들어가요 · Ctrl+Alt 끌기: 크기 · [ ]: 크기'
+  const hint = () => S.tool === 'brush' ? '그리기: 손을 떼면 보드에 들어가요 · Alt: 스포이트 · Shift+클릭: 직선 · Ctrl+Alt 끌기·[ ]: 크기'
     : S.tool === 'blur' ? '문지르기: 흐리게(손을 떼면 보드에 들어가요, 되돌리기 2칸) · [ ]: 크기'
     : S.tool === 'qmask' ? '빨간 곳 = 선택 · 칠하기: 넣기 · Alt: 반대로 · Enter: 선택으로 · Esc: 처음으로 · [ ]: 크기'
     : S.tool === 'quick'
@@ -6663,7 +7164,7 @@ void main(){
     ensureLayerProps();
     if (S.active) {
       // 단축키 등으로 Magma가 다른 도구로 바뀌었으면 마법봉 끄기
-      if (!S.busy && !S.switching && !switchingTo && currentTool() !== 'lassoSelectionIcon') { setActive(false); return; }
+      if (!S.busy && !S.switching && !switchingTo && !spaceDown && currentTool() !== 'lassoSelectionIcon') { setActive(false); return; } // Space(화면 이동) 동안 Magma가 잠깐 손 도구로 바꾸는 건 무시
       ensureSettings();
     } else if (pendingLasso() && !switchingTo && !QM.applying && currentTool() === 'lassoSelectionIcon') {
       // 되돌리지 못한 손떨림 보정(단축키로 도구를 바꿨거나 창을 닫았던 경우)을 올가미 선택이 보일 때 되돌림
@@ -6679,7 +7180,9 @@ void main(){
     BSZ.el?.remove(); BSZ.label?.remove(); BSZ.on = false;
     for (const f of cleanups.splice(0)) { try { f(); } catch { /* 무시 */ } }
     removeSettings();
-    document.querySelectorAll('.mw-menu, .mw-toast, .mw-dialog-wrap, .mw-shortcut, .mw-flyout, .mw-overlay, .mw-brush, .mw-alpha, .mw-eye').forEach((e) => e.remove());
+    cancelAnimationFrame(ADV.raf); ADV.raf = 0; ADV.cv = null;
+    // 덧그림 캔버스·떠 있는 창도 모두 치운다 (예전 버전이 남긴 것까지)
+    document.querySelectorAll('.mw-menu, .mw-toast, .mw-dialog-wrap, .mw-shortcut, .mw-flyout, .mw-overlay, .mw-brush, .mw-alpha, .mw-eye, canvas.mw-adv, canvas.mw-fx, .mw-blurwrap, .mw-mswrap, .mw-msguard, .mw-bset, .mw-clipline, .mw-flashbox, .mw-size-ring, .mw-size-label').forEach((e) => e.remove());
     document.documentElement.classList.remove('mw-quick', 'mw-alpha-on', 'mw-lp');
     styleEl?.remove();
     toolBtn = null; styleEl = null;
@@ -6702,6 +7205,6 @@ void main(){
     advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, parseSut, getAA, setAA, docToBuffer, selectionExists,
     setAlpha, advEraseCommit, fillSelection, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt,
     ensureGroups, activateMember, selectLayerContent, advNewBrush, setMagmaFont, currentFontName, systemFonts, openTextImageDialog,
-    blurDab, blurState: () => BLR, msState: () => MS, guState: () => GU, guRef, fgConfig, growMaskBy, ensureFillRow, rowLayer, msPick, msReplay, msDecompose, gapBridgeFill, qmState: () => QM, qmApply, msPropsApply, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons };
+    blurDab, blurState: () => BLR, msState: () => MS, guState: () => GU, guRef, clipToggle, clipHitAt, openBrushSettings, openPresetPicker, advNewFromPreset, ADV_PRESETS, advMixColor, setPrimaryHex, advState2: () => ADV, fgConfig, growMaskBy, ensureFillRow, rowLayer, msPick, msReplay, msDecompose, gapBridgeFill, qmState: () => QM, qmApply, msPropsApply, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons };
   window.__magmaWand.ready = true; // 끝까지 시작됨 (실행기는 이 표시가 없으면 다시 넣는다)
 })();
