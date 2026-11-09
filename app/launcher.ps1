@@ -309,6 +309,8 @@ function Sync-Target($t) {
   $r = Invoke-Cdp $t.webSocketDebuggerUrl @($check) 4000
   $have = $r[0].result.result.value
   if ($have -eq $WandVer) { return }
+  # 화면에 이미 더 높은 버전이 들어 있으면(시험용 등) 넣지 않는다 — 넣어도 옛 버전은 스스로 물러나서 1.5초마다 헛되이 다시 넣게 됨
+  if ($have -match '^\d+\.\d+\.\d+$') { try { if ([version]$have -gt [version]$WandVer) { return } } catch { } }
   # 아직 없거나 옛 버전이면 넣는다 (wand.js가 옛 버전을 스스로 걷어낸다)
   $inject = @{ method = 'Runtime.evaluate'; params = @{ expression = $WandSrc } }
   Invoke-Cdp $t.webSocketDebuggerUrl @($inject) 8000 | Out-Null
@@ -316,9 +318,16 @@ function Sync-Target($t) {
 }
 
 # ---------------- 창 띄우기 ----------------
+# 확인 창이 다른 창 뒤에 숨지 않게: 화면 밖의 아주 작은 '맨 위' 창을 실제로 띄워 주인으로 삼는다 (안 띄운 주인 창이면 뒤에 숨는 일이 있었음)
+function New-Owner {
+  Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+  $o = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true; ShowInTaskbar = $false; StartPosition = 'Manual'; Location = (New-Object System.Drawing.Point(-3000, -3000)); Size = (New-Object System.Drawing.Size(1, 1)); FormBorderStyle = 'None' }
+  $o.Show(); $o.Activate()
+  return $o
+}
 function Ask-YesNo($text) {
   Add-Type -AssemblyName System.Windows.Forms
-  $owner = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true }
+  $owner = New-Owner
   $r = [System.Windows.Forms.MessageBox]::Show($owner, $text, 'Magma Extension',
     [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
   $owner.Dispose()
@@ -326,12 +335,24 @@ function Ask-YesNo($text) {
 }
 function Show-Info($text) {
   Add-Type -AssemblyName System.Windows.Forms
-  $owner = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true }
+  $owner = New-Owner
   [System.Windows.Forms.MessageBox]::Show($owner, $text, 'Magma Extension') | Out-Null
   $owner.Dispose()
 }
 
 function Test-MagmaRunning { return [bool](Get-Process -Name 'Magma' -ErrorAction SilentlyContinue) }
+# Magma 끄기: 새 Magma는 창을 닫아도 뒤에서 계속 돈다 → 정상 종료를 청한 뒤 안 꺼지면 강제로.
+# taskkill이 내는 경고(stderr)는 PowerShell 5.1에서 오류로 바뀌어 실행기가 멈췄다($ErrorActionPreference Stop) → 경고는 무시.
+function Stop-Magma {
+  $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try {
+    & cmd.exe /c "taskkill /IM Magma.exe >nul 2>&1"
+    for ($i = 0; $i -lt 12 -and (Test-MagmaRunning); $i++) { Start-Sleep -Milliseconds 250 }
+    if (Test-MagmaRunning) { & cmd.exe /c "taskkill /IM Magma.exe /F >nul 2>&1" }
+    for ($i = 0; $i -lt 20 -and (Test-MagmaRunning); $i++) { Start-Sleep -Milliseconds 250 }
+    Start-Sleep -Milliseconds 500
+  } finally { $ErrorActionPreference = $old }
+}
 function Test-Port { return $null -ne (Get-Targets) }
 
 # ================= 실행 =================
@@ -366,11 +387,7 @@ try {
       if (-not (Ask-YesNo "Magma가 이미 켜져 있어요.`nMagma Extension을 쓰려면 Magma를 한 번 다시 열어야 해요. 지금 다시 열까요?")) {
         exit 0
       }
-      & taskkill.exe /IM Magma.exe 2>$null | Out-Null
-      for ($i = 0; $i -lt 12 -and (Test-MagmaRunning); $i++) { Start-Sleep -Milliseconds 250 }
-      if (Test-MagmaRunning) { & taskkill.exe /IM Magma.exe /F 2>$null | Out-Null }
-      for ($i = 0; $i -lt 20 -and (Test-MagmaRunning); $i++) { Start-Sleep -Milliseconds 250 }
-      Start-Sleep -Milliseconds 500
+      Stop-Magma
     }
     Write-Log "Magma 열기: $magma"
     Start-Process -FilePath $magma -ArgumentList $magmaArgs
@@ -387,7 +404,26 @@ try {
     $targets = Get-Targets
     if ($null -eq $targets) {
       if (-not (Test-MagmaRunning)) { $misses++ } else { $misses = 0 }
-      if ($misses -ge 4) { Write-Log 'Magma 종료 → 실행기 종료'; break }
+      if ($misses -ge 4) {
+        # Magma 앱 업데이트는 앱을 껐다가 '스스로' 다시 켠다(실행기를 거치지 않아 원격 연결 포트가 없음).
+        # 2분 동안 지켜보다가 다시 켜지면: 업데이트가 덮어쓴 바로가기를 고치고, 다시 열어 Magma Extension을 켤지 묻는다.
+        Write-Log 'Magma 종료 → 다시 켜지는지 2분 지켜봄'
+        $back = $false
+        for ($w = 0; $w -lt 120 -and -not $back; $w++) { Start-Sleep -Seconds 1; $back = Test-MagmaRunning }
+        if (-not $back) { Write-Log 'Magma 종료 → 실행기 종료'; break }
+        Start-Sleep -Seconds 4
+        if (Test-Port) { $misses = 0; continue }   # 포트가 있으면(실행기를 거쳐 켜짐) 그대로 이어서
+        Write-Log 'Magma가 업데이트 등으로 실행기 없이 다시 켜짐'
+        $magma = Find-Magma
+        try { Repair-Shortcuts $magma } catch { Write-Log "바로가기 고치기 실패: $_" }
+        if (-not (Ask-YesNo "Magma가 업데이트로 다시 켜졌어요.`nMagma Extension을 쓰려면 Magma를 한 번 다시 열어야 해요. 지금 다시 열까요?")) { break }
+        Stop-Magma
+        Write-Log "Magma 다시 열기: $magma"
+        Start-Process -FilePath $magma -ArgumentList $magmaArgs
+        for ($i = 0; $i -lt 60 -and -not (Test-Port); $i++) { Start-Sleep -Milliseconds 500 }
+        if (-not (Test-Port)) { Write-Log 'Magma 원격 연결 실패'; break }
+        $misses = 0; Load-Wand; continue
+      }
     } else {
       $misses = 0
       foreach ($t in $targets) {

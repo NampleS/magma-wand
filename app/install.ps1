@@ -118,9 +118,9 @@ try {
     if (-not $NoSystem) {
       if (Get-Process -Name Magma -ErrorAction SilentlyContinue) {
         if (Ask '지금 켜져 있는 Magma를 다시 열어서 바로 쓸까요?') {
-          & taskkill.exe /IM Magma.exe 2>$null | Out-Null
+          & cmd.exe /c "taskkill /IM Magma.exe >nul 2>&1"
           Start-Sleep -Seconds 2
-          & taskkill.exe /IM Magma.exe /F 2>$null | Out-Null
+          & cmd.exe /c "taskkill /IM Magma.exe /F >nul 2>&1"
           Start-Sleep -Milliseconds 800
           Start-Process $wscript -ArgumentList ('"' + $vbs + '"')
         }
