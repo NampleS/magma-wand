@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.30.0';
+  const VERSION = '0.30.1';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -6229,11 +6229,12 @@ void main(){
     if (!R.pts.length) { symKick(); return; }
     let pts = R.pts, T, stab = null;
     if (R.snap) {
-      // 보정된 도형: 새 시각을 붙인 점들. 펜은 첫 점 필압을 아주 조금 올려 둔다(Magma는 펜 획 첫머리에서 필압이 오르기 전 점을 건너뜀)
-      const pr = R.ptype === 'pen' ? Math.max(0.05, qsPressure(R.pts)) : 0.5, Q = qsPts(R.snap);
+      // 보정된 도형: 원래 획의 같은 자리 필압 + 새 시각. 펜은 맨 앞에 필압을 아주 조금 낮춘 점을 하나 더 둔다
+      // (Magma는 펜 획 첫머리에서 필압이 오르기 전 점들을 건너뜀 → 바로 다음 점부터 그려지게)
+      const Q = qsStroke(R.snap, R.ptype === 'pen');
       const t0 = performance.now() - (Q.length + 2) * 6 - 30;
-      pts = [{ x: Q[0][0], y: Q[0][1], p: pr, tx: 0, ty: 0, w: 1, h: 1, t: t0 }]
-        .concat(Q.map((q, i) => ({ x: q[0], y: q[1], p: pr + 0.002, tx: 0, ty: 0, w: 1, h: 1, t: t0 + (i + 1) * 6 })));
+      pts = [{ x: Q[0].x, y: Q[0].y, p: R.ptype === 'pen' ? Math.max(0.005, Q[0].p - 0.003) : 0.5, tx: 0, ty: 0, w: 1, h: 1, t: t0 }]
+        .concat(Q.map((q, i) => ({ x: q.x, y: q.y, p: q.p, tx: 0, ty: 0, w: 1, h: 1, t: t0 + (i + 1) * 6 })));
       T = symOn() ? symTransforms(true) : [SYM_ID];
     } else {
       if (R.from) pts = [{ ...R.from, t: pts[0].t - 1 }, ...pts];
@@ -6294,14 +6295,15 @@ void main(){
   cleanups.push(() => { cancelAnimationFrame(SYM.raf); SYM.raf = 0; SYM.cv?.remove(); SYM.cv = null; });
 
   // ---------- 도형 보정 (클립 스튜디오 최신판·프로크리에이트 'QuickShape') ----------
-  // 획을 긋다가 펜을 떼지 않고 잠깐(0.5초) 멈추면, 지금까지 그은 선과 가장 비슷한 깔끔한 선으로 바꿔 보여 준다:
-  // 직선 · 꺾은선 · 원호 · 매끈한 곡선 · 원 · 타원 · 다각형(삼각형·사각형 등, 변 길이는 제각각, 거의 직각이면 반듯한 사각형).
+  // 획을 긋다가 펜을 떼지 않고 1초 멈추면, 지금까지 그은 선과 가장 비슷한 깔끔한 선으로 바꿔 보여 준다:
+  // 직선 · 원호 · 베지어 곡선 한 개(아주 복잡한 선이면 흔들림만 거른 곡선) · 원 · 타원 · 다각형(변 길이는 제각각, 거의 직각이면 반듯한 사각형).
+  // 필압은 원래 획에서 같은 위치(획 길이의 같은 비율)의 필압을 그대로 옮긴다.
   // 멈춘 채 펜을 움직이면 그 도형을 돌리고 키운다(직선은 끝점이 따라옴). 손을 떼면 그 모양으로 그린다.
   //  - Magma 브러시: 멈춘 순간 Magma에 '획 취소'(pointercancel, 사용자가 손을 놓친 것과 같은 입력)를 보내 원래 획은 기록 없이 버리고,
   //    손을 떼면 보정된 선을 한 획으로 다시 긋는다(되돌리기 한 칸). 손떨림 보정은 그 획 동안만 0으로 했다가 되돌린다(모서리가 둥글어지지 않게).
   //  - 고급 브러시: 획 버퍼를 비우고 보정된 선으로 다시 찍어 붙여넣기 한 번.
   //  - 대칭 자가 켜져 있으면 보정된 선도 건너편에 함께.
-  const QS_HOLD = 500;
+  const QS_HOLD = 1000; // 펜을 멈추고 기다리는 시간 (ms)
   const QS = { adv: null, hold: { x: 0, y: 0, timer: 0 } };
   const qsOn = () => S.qsOn !== false;
   const qd = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -6457,6 +6459,90 @@ void main(){
     if (closed) P.push(P[0].slice());
     return P;
   }
+  // 3차 베지어 한 개로 맞추기: 양 끝은 고정, 가운데 두 조절점은 최소제곱 + 매개변수 다듬기(뉴턴)
+  function qsBezier(R, D) {
+    const n = R.length, P0 = R[0], P3 = R[n - 1];
+    const cl = [0]; for (let i = 1; i < n; i++) cl.push(cl[i - 1] + qd(R[i - 1], R[i]));
+    if (!(cl[n - 1] > 0)) return null;
+    const t = cl.map((v) => v / cl[n - 1]);
+    const bz = (u, P1, P2) => { const m = 1 - u; return [m * m * m * P0[0] + 3 * m * m * u * P1[0] + 3 * m * u * u * P2[0] + u * u * u * P3[0], m * m * m * P0[1] + 3 * m * m * u * P1[1] + 3 * m * u * u * P2[1] + u * u * u * P3[1]]; };
+    let P1 = null, P2 = null;
+    for (let it = 0; it < 8; it++) {
+      let a11 = 0, a12 = 0, a22 = 0, x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+      for (let i = 0; i < n; i++) {
+        const u = t[i], m = 1 - u, b0 = m * m * m, b1 = 3 * m * m * u, b2 = 3 * m * u * u, b3 = u * u * u;
+        const rx = R[i][0] - b0 * P0[0] - b3 * P3[0], ry = R[i][1] - b0 * P0[1] - b3 * P3[1];
+        a11 += b1 * b1; a12 += b1 * b2; a22 += b2 * b2; x1 += b1 * rx; y1 += b1 * ry; x2 += b2 * rx; y2 += b2 * ry;
+      }
+      const det = a11 * a22 - a12 * a12;
+      if (Math.abs(det) < 1e-9) return null;
+      P1 = [(x1 * a22 - x2 * a12) / det, (y1 * a22 - y2 * a12) / det]; P2 = [(a11 * x2 - a12 * x1) / det, (a11 * y2 - a12 * y1) / det];
+      for (let i = 1; i < n - 1; i++) { // 각 점에 가장 가까운 곡선 위 자리로 매개변수 옮기기
+        const u = t[i], m = 1 - u, B = bz(u, P1, P2);
+        const d1 = [3 * m * m * (P1[0] - P0[0]) + 6 * m * u * (P2[0] - P1[0]) + 3 * u * u * (P3[0] - P2[0]), 3 * m * m * (P1[1] - P0[1]) + 6 * m * u * (P2[1] - P1[1]) + 3 * u * u * (P3[1] - P2[1])];
+        const d2 = [6 * m * (P2[0] - 2 * P1[0] + P0[0]) + 6 * u * (P3[0] - 2 * P2[0] + P1[0]), 6 * m * (P2[1] - 2 * P1[1] + P0[1]) + 6 * u * (P3[1] - 2 * P2[1] + P1[1])];
+        const ex = B[0] - R[i][0], ey = B[1] - R[i][1], f = ex * d1[0] + ey * d1[1], fp = d1[0] * d1[0] + d1[1] * d1[1] + ex * d2[0] + ey * d2[1];
+        if (fp > 1e-9) t[i] = Math.max(0, Math.min(1, u - f / fp));
+      }
+    }
+    let sum = 0, mx = 0;
+    for (let i = 0; i < n; i++) { const e = qd(bz(t[i], P1, P2), R[i]); sum += e; mx = Math.max(mx, e); }
+    const pts = []; for (let i = 0; i <= 96; i++) pts.push(bz(i / 96, P1, P2));
+    return { pts, err: sum / n / D, max: mx / D };
+  }
+  // 얽힌 선인지: 흔들림을 거른 선에서 꺾인 각의 합이 470°를 넘거나, 스스로 2번 넘게 교차
+  function qsTangled(R) {
+    const M = qsResample(qsSmooth(R, false), 64);
+    let turn = 0; for (let i = 1; i < M.length - 1; i++) turn += qsTurn(M[i - 1], M[i], M[i + 1]);
+    if (turn > 2.6 * Math.PI) return true;
+    const cross = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+    let n = 0;
+    for (let i = 0; i < M.length - 1; i++) for (let j = i + 2; j < M.length - 1; j++) {
+      const a = M[i], b = M[i + 1], c = M[j], d = M[j + 1];
+      if (cross(a, b, c) * cross(a, b, d) < 0 && cross(c, d, a) * cross(c, d, b) < 0 && ++n > 2) return true;
+    }
+    return false;
+  }
+  // 획 길이를 따라 점을 촘촘히 (꼭짓점은 그대로 둠) — 필압을 자리마다 옮기기 위해
+  function qsDense(Q, step) {
+    const out = [Q[0]];
+    for (let i = 1; i < Q.length; i++) {
+      const a = Q[i - 1], b = Q[i], k = Math.max(1, Math.ceil(qd(a, b) / step));
+      for (let j = 1; j <= k; j++) out.push([a[0] + (b[0] - a[0]) * j / k, a[1] + (b[1] - a[1]) * j / k]);
+    }
+    return out;
+  }
+  // 원래 획의 필압: 획 길이 비율(0~1) → 필압. 끝에서 멈춰 있던 부분은 뺀다
+  function qsProfile(raw) {
+    let pts = raw.filter((q) => Number.isFinite(q.x));
+    const z = viewZoom() || 1, last = pts[pts.length - 1];
+    let k = pts.length - 1; while (k > 1 && Math.hypot(pts[k - 1].x - last.x, pts[k - 1].y - last.y) < 6 / z) k--;
+    pts = pts.slice(0, k + 1);
+    const cl = [0]; for (let i = 1; i < pts.length; i++) cl.push(cl[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+    const L = cl[cl.length - 1] || 1;
+    return (u) => {
+      const d = u * L; let lo = 0, hi = cl.length - 1;
+      while (hi - lo > 1) { const m = (lo + hi) >> 1; if (cl[m] <= d) lo = m; else hi = m; }
+      const f = cl[hi] > cl[lo] ? (d - cl[lo]) / (cl[hi] - cl[lo]) : 0;
+      return (pts[lo].p || 0) + ((pts[hi].p || 0) - (pts[lo].p || 0)) * Math.max(0, Math.min(1, f));
+    };
+  }
+  // 보정된 선 → 그릴 점들 [{x, y, p}] (펜이면 원래 획의 같은 자리 필압)
+  function qsStroke(Q, pen) {
+    const z = viewZoom() || 1, pts = qsPts(Q), L = qsLen(pts);
+    // 곡선(점이 많음)은 길이를 따라 고르게 다시 찍고, 직선·다각형은 꼭짓점을 살려 촘촘히. Magma 입력 한도(한 번에 200개) 안으로
+    const dense = pts.length > 24 ? qsResample(pts, Math.max(2, Math.min(170, Math.round(L * z / 2)))) : qsDense(pts, Math.max(2 / z, L / 160));
+    if (!pen) return dense.map((q) => ({ x: q[0], y: q[1], p: 0.5 }));
+    const prof = qsProfile(Q.raw);
+    let acc = 0;
+    return dense.map((q, i) => { if (i) acc += qd(dense[i - 1], q); return { x: q[0], y: q[1], p: Math.max(0.01, prof(L ? acc / L : 0)) }; });
+  }
+  // 닫힌 도형을 사용자가 그리기 시작한 자리에서 시작하게 (필압 자리 맞추기)
+  function qsAlignClosed(pts, s0) {
+    const m = pts.length - 1; let k = 0, md = Infinity;
+    for (let i = 0; i < m; i++) { const d = qd(pts[i], s0); if (d < md) { md = d; k = i; } }
+    const out = pts.slice(k, m).concat(pts.slice(0, k)); out.push(out[0]); return out;
+  }
   // 그은 점들 → 가장 비슷한 보정 선 (보드 좌표). 너무 짧거나 모르겠으면 null
   function qsFit(raw) {
     const P0 = [];
@@ -6472,29 +6558,30 @@ void main(){
     if (!closed) {
       let dev = 0; for (const q of R) dev = Math.max(dev, qsSegDist(q, A, B));
       if (gap > 0 && dev < 0.06 * gap) return { kind: 'line', pts: [A, B], closed: false };
-      const poly = qsPoly(R, D, false);
-      if (poly && poly.err < 0.02 && poly.minTurn > 0.45) return { kind: 'polyline', pts: poly.pts, closed: false };
       const arc = qsArc(R, D);
       if (arc && arc.err < 0.018) return { kind: 'arc', pts: arc.pts, closed: false };
+      // 누가 봐도 여러 번 얽힌 복잡한 선(빙빙 돈 정도가 크거나 스스로 두 번 넘게 교차)이 아니면 베지어 곡선 한 개로
+      const bz = qsBezier(R, D);
+      if (bz && !qsTangled(R)) return { kind: 'bezier', pts: bz.pts, closed: false };
       return { kind: 'curve', pts: qsSmooth(R, false), closed: false };
     }
     const loop = R.slice(0, 127);
     const ell = qsEllipse(loop, D), poly = qsPoly(loop, D, true);
     const eErr = ell ? ell.err : 1;
     if (poly && poly.segs <= 6 && poly.minTurn > 0.7 && poly.err < 0.025 && poly.err <= eErr) {
-      const pts = poly.segs === 4 ? qsRect(poly.pts) : poly.pts;
+      const pts = qsAlignClosed(poly.segs === 4 ? qsRect(poly.pts) : poly.pts, A);
       return { kind: poly.segs === 3 ? 'triangle' : poly.segs === 4 ? 'quad' : 'polygon', pts, closed: true };
     }
     if (ell && eErr < 0.05) return { kind: ell.circle ? 'circle' : 'ellipse', pts: ell.pts, closed: true };
-    if (poly && poly.err < 0.02 && poly.minTurn > 0.7) return { kind: 'polygon', pts: poly.pts, closed: true };
+    if (poly && poly.err < 0.02 && poly.minTurn > 0.7) return { kind: 'polygon', pts: qsAlignClosed(poly.pts, A), closed: true };
     return { kind: 'curve', pts: qsSmooth(loop, true), closed: true };
   }
   // 멈춘 뒤 펜을 움직이면: 기준점(닫힌 도형 = 가운데, 열린 선 = 시작점)을 중심으로 돌리고 키운다
-  function qsMake(fit, anchor) {
+  function qsMake(fit, anchor, raw) {
     const P = fit.pts;
     let piv;
     if (fit.closed) { let cx = 0, cy = 0; const m = P.length - 1; for (let i = 0; i < m; i++) { cx += P[i][0]; cy += P[i][1]; } piv = [cx / m, cy / m]; } else piv = P[0];
-    return { fit, piv, anchor, cur: anchor };
+    return { fit, piv, anchor, cur: anchor, raw: raw.map((q) => ({ x: q.x, y: q.y, p: q.p })) };
   }
   function qsPts(Q) {
     const v0 = [Q.anchor[0] - Q.piv[0], Q.anchor[1] - Q.piv[1]], v1 = [Q.cur[0] - Q.piv[0], Q.cur[1] - Q.piv[1]];
@@ -6515,10 +6602,11 @@ void main(){
   // ----- Magma 브러시 -----
   function qsSnapNative(R) {
     if (SYM.rec !== R || R.snap || !qsOn()) return;
-    const fit = qsFit(R.from ? [R.from, ...R.pts] : R.pts);
+    const raw = R.from ? [R.from, ...R.pts] : R.pts;
+    const fit = qsFit(raw);
     if (!fit) return;
     const last = R.pts[R.pts.length - 1];
-    R.snap = qsMake(fit, [last.x, last.y]);
+    R.snap = qsMake(fit, [last.x, last.y], raw);
     // Magma 쪽 원래 획은 '취소'로 버린다 (기록에 안 남음, 실측). 이 획의 남은 입력도 Magma에 넘기지 않는다
     if (!R.blockAll) {
       const canvas = getCanvas(), V = symView();
@@ -6546,7 +6634,7 @@ void main(){
     const fit = qsFit(s.qsPts);
     if (!fit) return;
     const last = s.qsPts[s.qsPts.length - 1];
-    QS.adv = { Q: qsMake(fit, [last.x, last.y]), pid: ADV.pid, ptype, pr: qsPressure(s.qsPts), color: s.erase ? '#ffffff' : '#' + s.color.map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join('') };
+    QS.adv = { Q: qsMake(fit, [last.x, last.y], s.qsPts), pid: ADV.pid, ptype, color: s.erase ? '#ffffff' : '#' + s.color.map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join('') };
     advStrokeEnd(true); // 지금까지 찍은 획은 버리고
     symKick();
   }
@@ -6559,13 +6647,13 @@ void main(){
   function qsAdvCommit(cancel) {
     const A = QS.adv; QS.adv = null; symKick();
     if (!A || cancel || !ADV.brush) return;
-    const pts = qsPts(A.Q), V = symView();
+    const pts = qsStroke(A.Q, A.ptype === 'pen'), V = symView();
     if (!V || pts.length < 2) return;
     const z = viewZoom() || 1; let t = performance.now();
-    const ev = (q) => { const [cx, cy] = V.toClient(q[0], q[1]); return { clientX: cx, clientY: cy, pressure: A.pr, pointerType: A.ptype, timeStamp: t }; };
+    const ev = (q) => { const [cx, cy] = V.toClient(q.x, q.y); return { clientX: cx, clientY: cy, pressure: q.p, pointerType: A.ptype, timeStamp: t }; };
     if (!advStrokeStart(ev(pts[0]))) return;
     ADV.stroke.straight = true; // 보정된 선 그대로 (브러시의 손떨림 보정·튀는 점 거르기 없이)
-    for (let i = 1; i < pts.length; i++) { t += Math.max(4, qd(pts[i - 1], pts[i]) * z / 0.6); advAddPoint(ev(pts[i]), pts[i]); }
+    for (let i = 1; i < pts.length; i++) { t += Math.max(4, Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y) * z / 0.6); advAddPoint(ev(pts[i]), [pts[i].x, pts[i].y]); }
     ADV.stroke.straight = false;
     advStrokeEnd(false);
   }
