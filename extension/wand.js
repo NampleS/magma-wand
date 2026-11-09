@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.19.0';
+  const VERSION = '0.20.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -1562,7 +1562,7 @@
     const t = currentTool();
     if (!t) return;
     plainTool = t;
-    if (SIZE_TOOLS.has(t)) { const v = getBrushSize(); if (v) BSZ.lastSize = v; }
+    if (SIZE_TOOLS.has(t) && BSZ.pending == null && !BSZ.applying) { const v = getBrushSize(); if (v) BSZ.lastSize = v; }
   };
   on(window, 'keydown', (e) => {
     if (!e.isTrusted || e.repeat) return;
@@ -1608,7 +1608,8 @@
   }
   function sizeStart(e, kind) {
     const zoom = viewZoom();
-    const cur = kind === 'quick' ? S.brush : kind === 'adv' ? ADV.brush.size : OWN_SIZE[kind] ? OWN_SIZE[kind].get() : (getBrushSize() || BSZ.lastSize);
+    // Magma 브러시: 아직 크기 칸에 못 넣은 값(BSZ.pending)이 있으면 그 값에서 이어서 (빠르게 반복해도 옛 크기로 안 돌아가게)
+    const cur = kind === 'quick' ? S.brush : kind === 'adv' ? ADV.brush.size : OWN_SIZE[kind] ? OWN_SIZE[kind].get() : (BSZ.pending ?? (SIZE_TOOLS.has(currentTool()) && getBrushSize()) ?? BSZ.lastSize) || BSZ.lastSize;
     if (!(cur > 0)) return false;
     const rScreen = kind === 'quick' ? cur * zoom : (cur / 2) * zoom;
     const [dx, dy] = loadSizeDir();
@@ -1645,15 +1646,22 @@
     }
     const own = OWN_SIZE[BSZ.kind];
     if (own) { own.set(BSZ.size); saveSettings(); rowsEl?.__mwSync?.(); own.cursor(e.clientX, e.clientY); return; }
-    const want = BSZ.size;
-    try {
-      // Alt를 떼서 원래 도구(크기 칸)가 돌아올 때까지 기다렸다가 한 번만 넣는다
-      await waitFor(() => SIZE_TOOLS.has(currentTool()) && sizeRow(), 3000);
-      if (!sizeRow() || !SIZE_TOOLS.has(currentTool())) { toast('브러시 크기 칸을 찾지 못해 바꾸지 못했어요'); return; }
-      if (getBrushSize() === want) return;
-      await setRowNumber(sizeRow(), want);
-      await waitFor(() => getBrushSize() === want, 400);
-    } catch (err) { console.warn('[MagmaWand] 브러시 크기 바꾸기 실패', err); }
+    // 넣을 값을 기억해 두고, Alt를 떼서 원래 도구(크기 칸)가 돌아오면 가장 마지막 값 하나만 넣는다.
+    // Ctrl+Alt를 누른 채 여러 번 끌어도 기다리는 동안 값만 바뀌고, 칸이 돌아오면 그때 한 번 넣는다.
+    BSZ.pending = BSZ.size; BSZ.lastSize = BSZ.size;
+    if (BSZ.applying) return;
+    BSZ.applying = (async () => {
+      try {
+        while (BSZ.pending != null) {
+          await waitFor(() => SIZE_TOOLS.has(currentTool()) && sizeRow() && !BSZ.on, 120000);
+          const want = BSZ.pending;
+          if (want == null || !sizeRow() || !SIZE_TOOLS.has(currentTool())) { BSZ.pending = null; break; } // 다른 도구로 갔음
+          if (getBrushSize() !== want) { await setRowNumber(sizeRow(), want); await waitFor(() => getBrushSize() === want, 600); }
+          if (BSZ.pending === want) BSZ.pending = null;
+        }
+      } catch (err) { console.warn('[MagmaWand] 브러시 크기 바꾸기 실패', err); BSZ.pending = null; }
+      finally { BSZ.applying = null; }
+    })();
   }
   const SIZE_EVENTS = ['pointerdown', 'pointermove', 'pointerrawupdate', 'pointerup', 'pointercancel', 'mousedown', 'mousemove', 'mouseup', 'click', 'contextmenu'];
   function onSizeGesture(e) {
@@ -2941,7 +2949,38 @@ void main(){
   let spaceDown = false;
   on(window, 'keydown', (e) => { if (e.code === 'Space' && e.isTrusted) { const t = e.target; if (!(t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)))) spaceDown = true; } }, true);
   on(window, 'keyup', (e) => { if (e.code === 'Space') spaceDown = false; }, true);
-  on(window, 'blur', () => { spaceDown = false; });
+  on(window, 'blur', () => { spaceDown = false; LSCR.pid = null; document.documentElement.classList.remove('mw-lgrab', 'mw-lgrabbing'); });
+  // Space+끌기를 레이어 목록 위에서 하면 목록을 위아래로만 쓸어 넘긴다 (손 도구처럼, 관성 없음)
+  const LSCR = { pid: null, y0: 0, top0: 0, el: null, block: false };
+  function layerScroller() {
+    const row = document.querySelector('editor-layers .layer');
+    let sc = row;
+    while (sc && !(sc.scrollHeight > sc.clientHeight + 2 && /(auto|scroll)/.test(getComputedStyle(sc).overflowY))) sc = sc.parentElement;
+    return sc || document.querySelector('editor-layers .scroll-scroller');
+  }
+  on(window, 'keydown', (e) => { if (spaceDown && e.code === 'Space' && document.querySelector('editor-layers:hover')) document.documentElement.classList.add('mw-lgrab'); }, true);
+  on(window, 'keyup', (e) => { if (e.code === 'Space') document.documentElement.classList.remove('mw-lgrab'); }, true);
+  function onLayerScroll(e) {
+    if (!e.isTrusted) return;
+    if (LSCR.pid !== null) {
+      e.stopImmediatePropagation(); if (e.cancelable) e.preventDefault();
+      if (e.type === 'pointermove' && e.pointerId === LSCR.pid && LSCR.el) LSCR.el.scrollTop = LSCR.top0 - (e.clientY - LSCR.y0);
+      if ((e.type === 'pointerup' || e.type === 'pointercancel') && e.pointerId === LSCR.pid) {
+        LSCR.pid = null; LSCR.block = true; setTimeout(() => { LSCR.block = false; }, 300);
+        document.documentElement.classList.remove('mw-lgrabbing');
+      }
+      return;
+    }
+    if (LSCR.block && (e.type === 'mouseup' || e.type === 'click')) { e.stopImmediatePropagation(); if (e.cancelable) e.preventDefault(); if (e.type === 'click') LSCR.block = false; return; }
+    if (e.type !== 'pointerdown' || e.button !== 0 || !spaceDown) return;
+    if (!(e.target.closest && e.target.closest('editor-layers layer-list, editor-layers .layers'))) return;
+    const sc = layerScroller();
+    if (!sc) return;
+    e.stopImmediatePropagation(); e.preventDefault();
+    Object.assign(LSCR, { pid: e.pointerId, y0: e.clientY, top0: sc.scrollTop, el: sc });
+    document.documentElement.classList.add('mw-lgrabbing');
+  }
+  for (const t of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'mousedown', 'mousemove', 'mouseup', 'click', 'dragstart']) on(window, t, (e) => { if (e.type === 'dragstart' && LSCR.pid !== null) { e.preventDefault(); e.stopImmediatePropagation(); return; } onLayerScroll(e); }, true);
   function onInput(e) {
     if (!S.active || e.__magmaWand || !e.isTrusted) return;
     const canvas = getCanvas();
@@ -5006,7 +5045,7 @@ void main(){
       if (e.type === 'click') MS.block = false;
       return;
     }
-    if (e.type !== 'pointerdown' || e.button !== 0 || e.altKey) return;
+    if (e.type !== 'pointerdown' || e.button !== 0 || e.altKey || spaceDown) return; // Space+끌기는 목록 넘기기
     const row = e.target.closest && e.target.closest('.layer');
     if (!row || !row.querySelector('.layer-left-top')) return;
     const mod = e.ctrlKey || e.metaKey, sh = e.shiftKey;
@@ -5981,7 +6020,7 @@ void main(){
       target: fgRadio('Target layer'), mode: fgRadio('Mode'),
       clear: fillBtn ? fillBtn.textContent.trim() === 'clear' : false,
       invert: !!fgCheck('Invert'), contig: fgCheck('Contiguous') !== false,
-      tol: fgNum('Tolerance') ?? 0, gap: fgNum('Close gap') ?? 0, opacity: fgNum('Opacity') ?? 100,
+      tol: fgNum('Tolerance') ?? 0, gap: fgNum('Close gap') ?? 0, opacity: fgNum('Opacity') ?? 100, aa: !!fgCheck('Anti-alias'),
     };
   }
   function ensureFillRow() {
@@ -6106,6 +6145,9 @@ void main(){
     mask = growMaskBy(mask, img.w, img.h, S.fillGrow);
     let cnt = 0; for (let i = 0; i < mask.length; i++) cnt += mask[i];
     if (!cnt) { note('칠할 곳이 없어요 (너무 많이 좁혔어요)'); return; }
+    const erase0 = cfg.clear || !!S.alpha;
+    // Anti-alias가 켜져 있으면: 가장자리를 부드럽게 만든 그림을 붙여넣기 한 번으로(지우기는 비우기+붙여넣기)
+    if (cfg.aa) { await fgPaintAA(E, L, mask, img.w, img.h, cfg, erase0, ff); return; }
     const P = exactPath(mask, img.w, img.h, D.spike, { pixelOnly: true });
     if (!P) { toast('칠할 영역을 만들지 못했어요'); return; }
     const poly = P.pts.map(D.toBuf);
@@ -6139,6 +6181,48 @@ void main(){
       S.busy = false;
       document.documentElement.classList.remove('mw-busy');
     }
+  }
+  // 안티에일리어스: 영역 마스크 가장자리 1픽셀을 둘레 평균(3×3)으로 부드럽게
+  function aaMask(mask, w, h, box) {
+    const out = new Uint8Array(box.w * box.h);
+    for (let y = 0; y < box.h; y++) for (let x = 0; x < box.w; x++) {
+      const gx = box.x + x, gy = box.y + y;
+      let s = 0;
+      for (let dy = -1; dy <= 1; dy++) { const yy = gy + dy; if (yy < 0 || yy >= h) continue; for (let dx = -1; dx <= 1; dx++) { const xx = gx + dx; if (xx >= 0 && xx < w && mask[yy * w + xx]) s++; } }
+      out[y * box.w + x] = Math.round(s * 255 / 9);
+    }
+    return out;
+  }
+  async function fgPaintAA(E, L, mask, W, H, cfg, erase, ff) {
+    let x0 = W, y0 = H, x1 = -1, y1 = -1;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (mask[y * W + x]) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    if (x1 < 0) return;
+    const box = rclip({ x: x0 - 1, y: y0 - 1, w: x1 - x0 + 3, h: y1 - y0 + 3 }, W, H);
+    const a = aaMask(mask, W, H, box), op = Math.max(0, Math.min(1, cfg.opacity / 100));
+    S.busy = true; document.documentElement.classList.add('mw-busy');
+    try {
+      if (erase) {
+        const before = readLayerEff(E, L, box), after = new Uint8ClampedArray(before);
+        for (let i = 0; i < a.length; i++) after[i * 4 + 3] = Math.round(before[i * 4 + 3] * (1 - (a[i] / 255) * op));
+        S.busy = false;
+        await replaceLayerRegion(E, L, box, before, after, '지우지');
+      } else {
+        const n = Number.isFinite(E.primaryColor) ? E.primaryColor >>> 8 : 0, r = (n >> 16) & 255, g = (n >> 8) & 255, bl = n & 255;
+        const px = new Uint8Array(box.w * box.h * 4);
+        for (let i = 0; i < a.length; i++) { const k = (a[i] / 255) * op, A = Math.round(255 * k); px[i * 4] = Math.round(r * k); px[i * 4 + 1] = Math.round(g * k); px[i * 4 + 2] = Math.round(bl * k); px[i * 4 + 3] = A; }
+        advClipToSelection(px, box); // 선택 영역 밖은 칠하지 않음 (Magma 페인트통과 같게)
+        const out = new Uint8ClampedArray(px.length);
+        for (let i = 0; i < px.length; i += 4) { const A = px[i + 3]; if (!A) continue; out[i] = Math.min(255, px[i] * 255 / A); out[i + 1] = Math.min(255, px[i + 1] * 255 / A); out[i + 2] = Math.min(255, px[i + 2] * 255 / A); out[i + 3] = A; }
+        const oc = new OffscreenCanvas(W, H);
+        oc.getContext('2d').putImageData(new ImageData(out, box.w, box.h), box.x, box.y);
+        const blob = await oc.convertToBlob({ type: 'image/png' });
+        const dt = new DataTransfer();
+        dt.items.add(new File([blob], 'fill.png', { type: 'image/png' }));
+        document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      }
+      let cnt = 0; for (const v of mask) cnt += v;
+      note(`${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀 · 안티에일리어스` + (S.fillGrow ? ` (영역 ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)` : '') + (ff ? ` · 틈 ${ff.bridges}곳 이음` : ''));
+    } finally { S.busy = false; document.documentElement.classList.remove('mw-busy'); }
   }
   for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) on(window, t, (e) => onFillClick(e), true);
 
@@ -6871,6 +6955,8 @@ void main(){
     .mw-blurwrap { position: fixed; z-index: 2147480400; pointer-events: none; overflow: hidden; display: none; }
     .mw-blurcv { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
     html.mw-ctxhide .context-menu, html.mw-ddhide .dropdown-menu { opacity: 0 !important; }
+    html.mw-lgrab editor-layers, html.mw-lgrab editor-layers * { cursor: grab !important; }
+    html.mw-lgrabbing, html.mw-lgrabbing * { cursor: grabbing !important; }
     .mw-clipline { position: fixed; z-index: 2147482500; height: 3px; background: #2f80ed; border-radius: 2px; pointer-events: none; box-shadow: 0 0 4px #2f80ed; }
     html.mw-clipcur editor-layers, html.mw-clipcur editor-layers * { cursor: alias !important; }
     .mw-qm-row { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0; }
