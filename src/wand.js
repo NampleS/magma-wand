@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.26.5';
+  const VERSION = '0.26.7';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -7670,6 +7670,26 @@ void main(){
   // 맨 위 레이어부터 그 점에 그림(투명하지 않은 픽셀)이 있는 첫 레이어를 찾는다. 내 레이어면 바로 고르고,
   // 다른 사람 레이어면 레이어 목록을 그 줄까지 굴려 반짝 표시만 한다.
   const PICK = { block: false };
+  // 용지 레이어(클립 스튜디오처럼): 맨 아래 3개 안에서 보드 전체를 투명한 곳 없이 꽉 채운 레이어는 배경 종이로 보고
+  // Ctrl+Shift 클릭으로 잡지 않는다 (배경에 실수로 그리지 않게). 화면에 따로 표시하지는 않는다. 읽기 전용, 짧게 기억.
+  const PAPER = new Map();
+  function isPaperLayer(E, L, i) {
+    const layers = E.drawing.layers;
+    if (i < layers.length - 3) return false;
+    const W = E.drawing.w, H = E.drawing.h, lr = L.rect;
+    if (!lr || lr.x > 0 || lr.y > 0 || lr.x + lr.w < W || lr.y + lr.h < H) return false;
+    const c = PAPER.get(L.id);
+    if (c && performance.now() - c.t < 3000) return c.v;
+    let v = true;
+    try {
+      for (let y = 0; y < H && v; y += 256) { // 띠로 나눠 읽고 투명한 픽셀을 찾으면 바로 멈춘다
+        const d = E.renderer.getLayerImageData(L, { x: 0, y, w: W, h: Math.min(256, H - y) }).data;
+        for (let k = 3; k < d.length; k += 4) if (d[k] < 255) { v = false; break; }
+      }
+    } catch { v = false; }
+    PAPER.set(L.id, { t: performance.now(), v });
+    return v;
+  }
   function pickLayerAt(cx, cy) {
     const E = getEditor(), canvas = getCanvas();
     if (!E || !canvas) return null;
@@ -7681,7 +7701,7 @@ void main(){
       if (L.visible === false || L.visibleLocally === false || !L.texture || !lr || !(lr.w > 0)) continue;
       if (L.opacity === 0) continue;
       if (x < lr.x || y < lr.y || x >= lr.x + lr.w || y >= lr.y + lr.h) continue;
-      try { const d = E.renderer.getLayerImageData(L, { x, y, w: 1, h: 1 }).data; if (d[3] > 0) return { L, index: i }; } catch { }
+      try { const d = E.renderer.getLayerImageData(L, { x, y, w: 1, h: 1 }).data; if (d[3] > 0 && !isPaperLayer(E, L, i)) return { L, index: i }; } catch { }
     }
     return null;
   }
