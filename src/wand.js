@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.29.1';
+  const VERSION = '0.29.2';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -8881,7 +8881,11 @@ void main(){
     let c = null; try { c = JSON.parse(localStorage.getItem(DOCK_KEY) || 'null'); } catch { c = null; }
     DK.cfg = c && typeof c === 'object' ? c : { on: true, L: {}, D: {} };
     DK.cfg.L = DK.cfg.L || {}; DK.cfg.D = DK.cfg.D || {};
-    if (DK.cfg.v !== 2) { DK.cfg.L = {}; DK.cfg.D = {}; DK.cfg.v = 2; } // v2: 브러시+브러시 목록 탭 기본 배치
+    if (DK.cfg.v !== 2 && DK.cfg.v !== 3) { DK.cfg.L = {}; DK.cfg.D = {}; DK.cfg.v = 2; } // v2: 브러시+브러시 목록 탭 기본 배치
+    if (DK.cfg.v === 2) { // v3: '브러시 목록이 보이는지'는 모드에서 뺀다 → 예전 '|bl' 배치(브러시 도구로 쓰던 배치)를 그대로 이어받기
+      for (const T of [DK.cfg.L, DK.cfg.D]) for (const k of Object.keys(T)) if (k.includes('|bl')) { T[k.replace('|bl', '')] = T[k]; delete T[k]; }
+      DK.cfg.v = 3;
+    }
     return DK.cfg;
   }
   function dkSave(now) {
@@ -8889,10 +8893,11 @@ void main(){
     const go = () => { try { if (DK.lay && DK.mode && !DK.failed) DK.cfg.L[DK.mode] = DK.lay; localStorage.setItem(DOCK_KEY, JSON.stringify(DK.cfg)); } catch { /* 무시 */ } };
     if (now) go(); else DK.saveT = setTimeout(go, 300);
   }
-  // 화면 모드: Magma 설정(settings-sliders, 읽기만) + 오른쪽 칸 모양(브러시 목록·두 줄)
+  // 화면 모드: Magma 설정(settings-sliders, 읽기만) + 두 줄 배치.
+  // 브러시 목록(has-brush-list)은 넣지 않는다: Magma는 브러시 도구를 고를 때마다 목록을 켜고 끄므로(실측) 모드로 보면
+  // 도구를 바꿀 때마다 배치를 통째로 걷었다 다시 씌워 화면이 깜빡인다. 목록은 같은 배치의 '브러시 목록' 탭에 그대로 둔다.
   function dkModeKey() {
-    const er = document.querySelector('.editor-right');
-    return (localStorage.getItem('settings-sliders') || 'full') + (er && er.classList.contains('has-brush-list') ? '|bl' : '') + (document.querySelector('.has-two-columns') ? '|2c' : '');
+    return (localStorage.getItem('settings-sliders') || 'full') + (document.querySelector('.has-two-columns') ? '|2c' : '');
   }
   // ---- 패널 몸통(옮긴 Magma 요소가 들어가는 상자) ----
   function dkPBody(p) {
