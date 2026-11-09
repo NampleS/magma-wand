@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.15.0';
+  const VERSION = '0.16.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -1214,8 +1214,10 @@
         const mode = mods.alt ? 'subtract' : (mods.shift ? 'add' : prevSelMode || 'select');
         const plan = await planSelectionLasso(canvas, poly, mode, R.samples || [], R.minSeg || 0);
         T.plan = plan.mode + (plan.deselectFirst ? '+deselect' : '');
+        const gref0 = guRef();
         if (plan.mode !== prevSelMode) wantMode = plan.mode; // finally에서 원래 모드로 되돌림
         await drawSelectionPlan(canvas, plan);
+        if (plan.deselectFirst) { await nextFrame(); guAdd(gref0, '마법봉 선택'); }
       }
       mark('drawn');
       if (fill) layerDirty = true; // 현재 레이어가 바뀌었으므로 받아 둔 레이어 그림은 버림
@@ -4088,6 +4090,7 @@ void main(){
       oc.getContext('2d').putImageData(new ImageData(sub, ew, eh), ex, ey);
       blob = await oc.convertToBlob({ type: 'image/png' });
     }
+    const gref0 = guRef();
     S.busy = true;
     document.documentElement.classList.add('mw-busy');
     const back = currentTool();
@@ -4126,8 +4129,11 @@ void main(){
     if (blob) {
       const dt = new DataTransfer();
       dt.items.add(new File([blob], 'layer.png', { type: 'image/png' }));
+      const t1 = guRef();
       document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      await waitFor(() => guRef() !== t1, 3000); // 붙여넣기가 기록에 들어간 뒤
     }
+    guAdd(gref0, what === '지우지' ? '투명색 지우기' : what === '흐리게 하지' ? '블러' : what);
     return true;
   }
   // 투명색 고급 브러시 확정: maskPx = 획 알파(box 크기 RGBA), 결과 = 원래 그림 × (1 − 획 알파)
@@ -4919,7 +4925,7 @@ void main(){
     const locked = others.filter((L) => L.locked);
     if (locked.length) { MS.skip = act; toast(`잠긴 레이어(${locked.map((L) => L.name).join(', ')})가 있어 지금 레이어만 바뀌어요`); return; }
     MS.arm = false;
-    const nss = { kind, tool, L: act, H: msMat(s), others, sel };
+    const nss = { kind, tool, L: act, H: msMat(s), others, sel, ref0: MS.ref };
     MS.sess = nss;
     nss.hiding = msPreviewStart(nss).catch((err) => console.warn('[MagmaWand] 함께 변형 미리보기', err));
   }
@@ -4964,10 +4970,12 @@ void main(){
     }
     const bad = results.filter(([, e]) => e);
     if (!results.length) return;
+    guAdd(ss.ref0, ss.kind === 'move' ? '함께 옮기기' : '함께 변형');
     toast(bad.length ? `${results.length - bad.length}개는 함께 바꿨지만 ${bad.map(([L, e]) => `"${L.name}"(${e})`).join(', ')}은 못 바꿨어요`
       : `레이어 ${results.length + 1}개를 함께 ${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} (되돌리기는 레이어마다 ${ss.sel ? '3칸: 선택 해제·선택·변형' : '한 칸'})`);
   }
-  const msTimer = setInterval(() => { try { msTick(); } catch (err) { console.warn('[MagmaWand] 함께 고르기', err); } }, 60);
+  // MS.ref = 지난번(동작 직전) 맨 위 되돌리기 기록 — 묶음 되돌리기의 시작점
+  const msTimer = setInterval(() => { try { msTick(); if (!MS.busy && !MS.sess) MS.ref = guRef(); } catch (err) { console.warn('[MagmaWand] 함께 고르기', err); } }, 60);
   cleanups.push(() => { QM.wrap?.remove();
   });
   cleanups.push(() => { clearInterval(msTimer); MS.sess?.wrap?.remove(); MS.guard?.remove(); document.querySelectorAll('.mw-msel').forEach((r) => r.classList.remove('mw-msel')); });
@@ -4988,7 +4996,7 @@ void main(){
     const cur = msProps(act), now = performance.now();
     for (const k of MSP_KEYS) {
       if (cur[k] === MS.pv[k]) continue;
-      if (now - MS.ptouch < 4000) { MS.pchg = MS.pchg || {}; MS.pchg[k] = cur[k]; MS.pt = now; }
+      if (now - MS.ptouch < 4000) { if (!MS.pchg) MS.pref0 = MS.ref; MS.pchg = MS.pchg || {}; MS.pchg[k] = cur[k]; MS.pt = now; }
     }
     MS.pv = cur;
     if (MS.pchg && !MS.down && now - MS.pt > 500 && !document.querySelector('editor-layers .layers-options editable-number input:not([hidden])')) {
@@ -5055,6 +5063,7 @@ void main(){
       MS.pL = msActive(E); MS.pv = MS.pL ? msProps(MS.pL) : null; MS.pchg = null;
       msPaint();
     }
+    guAdd(MS.pref0, '속성 함께 바꾸기');
     const names = { opacity: '불투명도', mode: '합성 모드', opacityLocked: '투명 픽셀 잠금', locked: '잠금', clippingGroup: '클리핑' };
     toast(bad.length ? `일부는 못 바꿨어요: ${bad.join(', ')}` : `레이어 ${todo.length + 1}개에 ${Object.keys(ch).map((k) => names[k]).join('·')} 함께 맞췄어요`);
   }
@@ -5276,7 +5285,9 @@ void main(){
       await lassoStabZero();
       const plan = await planSelectionLasso(canvas, poly, 'select', sampleMask(bin, QM.W, QM.H, 1500, D.toBuf), D.spike * D.scale * D.kx);
       if (plan.mode !== prevMode) wantMode = plan.mode;
+      const gref0 = guRef();
       await drawSelectionPlan(canvas, plan);
+      if (plan.deselectFirst) { await nextFrame(); guAdd(gref0, '퀵 마스크 선택'); }
       qmReset();
       toast(`퀵 마스크를 선택으로 만들었어요 (${cnt.toLocaleString()}픽셀)` + (P.dropped ? ` · 작은 조각 ${P.dropped}개는 뺐어요` : ''));
     } catch (err) {
@@ -5328,6 +5339,100 @@ void main(){
   }
   const QM_SVG = '<rect x="40" y="40" width="432" height="432" rx="60" fill="none" stroke="currentColor" stroke-width="40"/>' +
     '<circle cx="256" cy="256" r="120" fill="currentColor" opacity=".55"/><circle cx="256" cy="256" r="120" fill="none" stroke="currentColor" stroke-width="28" stroke-dasharray="40 30"/>';
+
+  // ---------- 묶음 되돌리기 (마법봉 동작 하나 = Ctrl+Z 한 번) ----------
+  // 여러 레이어 함께 변형·속성, 블러·투명색 지우기처럼 마법봉 동작 하나가 Magma 되돌리기 여러 칸을 쓰면, 그 칸들을 기억해 둔다.
+  // 바로 다음에 Ctrl+Z(또는 위쪽 되돌리기 단추)를 누르면 Magma 되돌리기 단추를 그 칸 수만큼 대신 눌러 한 번에 되돌린다.
+  // Magma 자신의 되돌리기를 쓰므로 결과는 손으로 여러 번 누른 것과 똑같다. 다시 하기(Ctrl+Shift+Z·Ctrl+Y)도 같은 묶음으로.
+  // 기록은 user.history.undos/redos를 읽기만 한다(항목이 같은 객체인지로 '그 뒤로 다른 일이 없었는지' 확인).
+  const GU = { list: [], redo: [], busy: false };
+  const guHist = () => { const E = getEditor(); return E && E.model && E.model.user && E.model.user.history; };
+  const guTop = (a) => (a && a.length ? a[a.length - 1] : null);
+  function guRef() { const h = guHist(); return h ? guTop(h.undos) : null; }
+  // ref0 = 동작 직전 맨 위 기록. 지금까지 쌓인 칸 수가 2칸 이상이면 묶음으로 기억
+  function guAdd(ref0, what) {
+    const h = guHist();
+    if (!h) return;
+    const a = h.undos, top = guTop(a);
+    if (!top || top === ref0) return;
+    const i = ref0 ? a.lastIndexOf(ref0) : -1;
+    const n = i >= 0 ? a.length - 1 - i : a.length;
+    if (n < 2) return;
+    GU.list.push({ ref0, top, n, what, lost: i < 0 && !!ref0 });
+    if (GU.list.length > 20) GU.list.shift();
+    GU.redo = [];
+  }
+  async function guPress(cmd, n, h) {
+    let done = 0;
+    for (let k = 0; k < n; k++) {
+      const b = document.querySelector(`button[command=${cmd}]`);
+      if (!b || b.disabled || b.classList.contains('disabled')) break;
+      const u0 = guTop(h.undos), r0 = guTop(h.redos), ul = h.undos.length, rl = h.redos.length;
+      const moved = () => guTop(h.undos) !== u0 || guTop(h.redos) !== r0 || h.undos.length !== ul || h.redos.length !== rl;
+      // 바로 이어 누르면 Magma가 앞 칸을 처리하는 중이라 무시할 때가 있다(실측) → 칸마다 잠깐 쉬고 누른다.
+      // 다시 누르기는 하지 않는다(늦게 처리된 거라면 한 칸 더 되돌려 버릴 수 있음)
+      if (k) await sleep(250);
+      b.click();
+      if (!await waitFor(moved, 2000)) break;
+      done++;
+    }
+    return done;
+  }
+  async function guUndo(g) {
+    const h = guHist();
+    GU.busy = true;
+    msGuard(true, `${g.what} 되돌리는 중… (${g.n}칸)`);
+    let done = 0;
+    try { done = await guPress('undo', g.n, h); } finally { msGuard(false); GU.busy = false; }
+    GU.list.pop();
+    if (done) GU.redo.push({ n: done, redoTop: guTop(h.redos), what: g.what, ref0: g.ref0 });
+    toast(done === g.n ? `${g.what} 되돌렸어요 (Magma 되돌리기 ${done}칸을 한 번에)` + (g.lost ? ' · 더 앞의 칸은 15칸 한도로 지워져 있었어요' : '')
+      : `${g.what} — ${g.n}칸 중 ${done}칸만 되돌렸어요`);
+  }
+  async function guRedo(r) {
+    const h = guHist();
+    GU.busy = true;
+    msGuard(true, `${r.what} 다시 하는 중… (${r.n}칸)`);
+    let done = 0;
+    try { done = await guPress('redo', r.n, h); } finally { msGuard(false); GU.busy = false; }
+    GU.redo.pop();
+    if (done === r.n && r.ref0 !== undefined) {
+      const a = h.undos;
+      if (!r.ref0 || a.lastIndexOf(r.ref0) === a.length - 1 - done) GU.list.push({ ref0: r.ref0, top: guTop(a), n: done, what: r.what, lost: false });
+    }
+    toast(done === r.n ? `${r.what} 다시 했어요 (${done}칸을 한 번에)` : `${r.what} — ${r.n}칸 중 ${done}칸만 다시 했어요`);
+  }
+  // 지금 누르면 묶음으로 처리할 게 있는지
+  function guUndoTarget() { const g = GU.list[GU.list.length - 1]; return g && !GU.busy && guRef() === g.top ? g : null; }
+  function guRedoTarget() { const r = GU.redo[GU.redo.length - 1]; const h = guHist(); return r && !GU.busy && h && guTop(h.redos) === r.redoTop ? r : null; }
+  on(window, 'keydown', (e) => {
+    if (!e.isTrusted || !(e.ctrlKey || e.metaKey) || e.altKey) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (!getCanvas() || document.querySelector('.modal-dialog')) return;
+    const redo = (e.code === 'KeyZ' && e.shiftKey) || (e.code === 'KeyY' && !e.shiftKey);
+    const undo = e.code === 'KeyZ' && !e.shiftKey;
+    if (GU.busy && (undo || redo)) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+    const g = undo ? guUndoTarget() : null, r = redo ? guRedoTarget() : null;
+    if (!g && !r) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    (g ? guUndo(g) : guRedo(r)).catch((err) => console.warn('[MagmaWand] 묶음 되돌리기', err));
+  }, true);
+  // 위쪽 되돌리기·다시 하기 단추도 같은 묶음으로
+  const GU_BLOCK = { on: false };
+  for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) on(window, t, (e) => {
+    if (!e.isTrusted) return;
+    const b = e.target.closest && e.target.closest('button[command=undo], button[command=redo]');
+    if (!b) return;
+    if (GU_BLOCK.on || GU.busy) { e.stopImmediatePropagation(); e.preventDefault(); if (t === 'click') GU_BLOCK.on = false; return; }
+    if (t !== 'pointerdown' && t !== 'mousedown') return;
+    const isUndo = b.getAttribute('command') === 'undo';
+    const g = isUndo ? guUndoTarget() : null, r = isUndo ? null : guRedoTarget();
+    if (!g && !r) return;
+    e.stopImmediatePropagation(); e.preventDefault();
+    GU_BLOCK.on = true; setTimeout(() => { GU_BLOCK.on = false; }, 800);
+    (g ? guUndo(g) : guRedo(r)).catch((err) => console.warn('[MagmaWand] 묶음 되돌리기', err));
+  }, true);
 
   // ---------- 고급 브러시: 기본 끝 모양·텍스처 (PNG 없이 고르기) ----------
   // 검은 그림 + 투명 배경 = 끝 모양(알파를 씀), 회색조 불투명 그림 = 텍스처(어두울수록 진하게)
@@ -6367,6 +6472,6 @@ void main(){
     advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, parseSut, getAA, setAA, docToBuffer, selectionExists,
     setAlpha, advEraseCommit, fillSelection, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt,
     ensureGroups, activateMember, selectLayerContent, advNewBrush, setMagmaFont, currentFontName, systemFonts, openTextImageDialog,
-    blurDab, blurState: () => BLR, msState: () => MS, rowLayer, msPick, msReplay, msDecompose, gapCloseFill, qmState: () => QM, qmApply, msPropsApply, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons };
+    blurDab, blurState: () => BLR, msState: () => MS, guState: () => GU, guRef, rowLayer, msPick, msReplay, msDecompose, gapCloseFill, qmState: () => QM, qmApply, msPropsApply, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons };
   window.__magmaWand.ready = true; // 끝까지 시작됨 (실행기는 이 표시가 없으면 다시 넣는다)
 })();
