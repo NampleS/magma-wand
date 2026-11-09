@@ -1,4 +1,4 @@
-﻿# Magma 마법봉 제거 (Magma 앱은 그대로 둔다)
+﻿# Magma Extension 제거 (Magma 앱은 그대로 둔다)
 $ErrorActionPreference = 'Continue'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 $Root = $PSScriptRoot
@@ -22,17 +22,16 @@ if (Test-Path $backupPath) {
     $s.Save()
   }
 }
-$own = Join-Path ([Environment]::GetFolderPath('Programs')) 'Magma (마법봉).lnk'
-if (Test-Path $own) { Remove-Item $own -Force }
-$startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'Magma 마법봉 (업데이트 확인).lnk'
-if (Test-Path $startup) { Remove-Item $startup -Force }
+# 예전 이름(마법봉)·새 이름(Extension) 바로가기 모두
+foreach ($n in @('Magma (마법봉).lnk', 'Magma (Extension).lnk')) { $own = Join-Path ([Environment]::GetFolderPath('Programs')) $n; if (Test-Path $own) { Remove-Item $own -Force } }
+foreach ($n in @('Magma 마법봉 (업데이트 확인).lnk', 'Magma Extension (업데이트 확인).lnk')) { $startup = Join-Path ([Environment]::GetFolderPath('Startup')) $n; if (Test-Path $startup) { Remove-Item $startup -Force } }
 
 # 3) 앱 목록에서 빼기
 Remove-Item 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\MagmaWand' -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''
-Write-Host 'Magma 마법봉을 지웠어요. Magma 앱은 그대로예요.' -ForegroundColor Green
-Write-Host 'Magma가 켜져 있다면 한 번 다시 열면 마법봉이 사라져요.'
+Write-Host 'Magma Extension을 지웠어요. Magma 앱은 그대로예요.' -ForegroundColor Green
+Write-Host 'Magma가 켜져 있다면 한 번 다시 열면 Magma Extension이 사라져요.'
 Write-Host '크롬 확장을 설치했었다면 chrome://extensions 에서 직접 지워 주세요.'
 Write-Host ''
 Read-Host '엔터를 누르면 창이 닫혀요' | Out-Null

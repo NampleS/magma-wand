@@ -1,4 +1,4 @@
-﻿# Magma 마법봉 - 앱 실행기 (자동 업데이트되는 부분)
+﻿# Magma Extension - 앱 실행기 (자동 업데이트되는 부분)
 # 하는 일:
 #  1) Magma 앱을 "원격 연결 포트"(이 컴퓨터 안에서만 열림)를 켠 채로 연다
 #  2) 앱 안의 magma.com 화면마다 마법봉(wand.js)을 넣는다. 새 버전이 오면 새로고침 없이 바꿔 끼운다
@@ -137,6 +137,23 @@ function Sync-ChromeExtension {
   Move-Item $tmp $ext
   Set-Content -Path $mark -Value $h -Encoding ASCII
   Write-Log "크롬 확장 폴더 갱신"
+}
+
+# 이름 바꾸기(마법봉 → Magma Extension): 예전에 설치한 컴퓨터도 앱 목록·바로가기 이름을 새 이름으로
+function Update-Branding {
+  $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\MagmaWand'
+  if ((Test-Path $key) -and ((Get-ItemProperty $key -ErrorAction SilentlyContinue).DisplayName -ne 'Magma Extension')) {
+    Set-ItemProperty $key DisplayName 'Magma Extension'; Write-Log '앱 목록 이름 → Magma Extension'
+  }
+  foreach ($pair in @(
+      @([Environment]::GetFolderPath('Startup'), 'Magma 마법봉 (업데이트 확인).lnk', 'Magma Extension (업데이트 확인).lnk'),
+      @([Environment]::GetFolderPath('Programs'), 'Magma (마법봉).lnk', 'Magma (Extension).lnk'))) {
+    $old = Join-Path $pair[0] $pair[1]; $new = Join-Path $pair[0] $pair[2]
+    if ((Test-Path -LiteralPath $old) -and -not (Test-Path -LiteralPath $new)) { Rename-Item -LiteralPath $old -NewName $pair[2]; Write-Log "바로가기 이름 → $($pair[2])" }
+  }
+  # 제거 도구도 새 이름을 알게 (예전·새 이름 바로가기 모두 지움)
+  $un = Join-Path $Cache 'uninstall.ps1'; $unRoot = Join-Path $Root 'uninstall.ps1'
+  if ((Test-Path $un) -and (-not (Test-Path $unRoot) -or (Get-FileHash $un).Hash -ne (Get-FileHash $unRoot).Hash)) { Copy-Item $un $unRoot -Force }
 }
 
 function Get-LocalVersion {
@@ -302,7 +319,7 @@ function Sync-Target($t) {
 function Ask-YesNo($text) {
   Add-Type -AssemblyName System.Windows.Forms
   $owner = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true }
-  $r = [System.Windows.Forms.MessageBox]::Show($owner, $text, 'Magma 마법봉',
+  $r = [System.Windows.Forms.MessageBox]::Show($owner, $text, 'Magma Extension',
     [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
   $owner.Dispose()
   return ($r -eq [System.Windows.Forms.DialogResult]::Yes)
@@ -310,7 +327,7 @@ function Ask-YesNo($text) {
 function Show-Info($text) {
   Add-Type -AssemblyName System.Windows.Forms
   $owner = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true }
-  [System.Windows.Forms.MessageBox]::Show($owner, $text, 'Magma 마법봉') | Out-Null
+  [System.Windows.Forms.MessageBox]::Show($owner, $text, 'Magma Extension') | Out-Null
   $owner.Dispose()
 }
 
@@ -324,6 +341,7 @@ if ($Repair) {
   # 로그인할 때 한 번: 업데이트 확인 + Magma 업데이트로 원래대로 돌아간 바로가기 다시 연결
   try { Update-Files | Out-Null } catch { Write-Log "업데이트 확인 실패: $_" }
   try { Sync-ChromeExtension } catch { Write-Log "크롬 확장 갱신 실패: $_" }
+  try { Update-Branding } catch { Write-Log "이름 바꾸기 실패: $_" }
   Repair-Shortcuts $magma
   exit 0
 }
@@ -340,11 +358,12 @@ if (-not $created) {
 }
 
 try {
+  try { Update-Branding } catch { Write-Log "이름 바꾸기 실패: $_" }
   Repair-Shortcuts $magma
   $magmaArgs = @("--remote-debugging-port=$Port", '--remote-debugging-address=127.0.0.1')
   if (-not (Test-Port)) {
     if (Test-MagmaRunning) {
-      if (-not (Ask-YesNo "Magma가 이미 켜져 있어요.`n마법봉을 쓰려면 Magma를 한 번 다시 열어야 해요. 지금 다시 열까요?")) {
+      if (-not (Ask-YesNo "Magma가 이미 켜져 있어요.`nMagma Extension을 쓰려면 Magma를 한 번 다시 열어야 해요. 지금 다시 열까요?")) {
         exit 0
       }
       & taskkill.exe /IM Magma.exe 2>$null | Out-Null

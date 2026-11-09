@@ -1,7 +1,7 @@
 // 릴리스 도구
 //   node tools/release.js <버전> ["변경 내용"]          → dist/ 만들기만
 //   node tools/release.js <버전> ["변경 내용"] --publish → 커밋·태그·푸시 + GitHub 릴리스 올리기
-//   node tools/release.js <버전> "사유" --kill --publish → 비상 정지(모든 설치본의 마법봉을 끔)
+//   node tools/release.js <버전> "사유" --kill --publish → 비상 정지(모든 설치본의 Magma Extension을 끔)
 // 릴리스가 올라가는 즉시 설치된 모든 컴퓨터가 5~10분 안에 새 버전을 받아 간다.
 'use strict';
 const fs = require('fs');
@@ -62,13 +62,14 @@ else fs.copyFileSync(wandPath, path.join(DIST, 'wand.js'));
 for (const f of ['launcher.ps1', 'boot.ps1', 'run.vbs', 'install.ps1', 'uninstall.ps1', 'MagmaWand-Setup.cmd']) {
   fs.copyFileSync(p('app', f), path.join(DIST, f));
 }
+fs.copyFileSync(p('app', 'MagmaWand-Setup.cmd'), path.join(DIST, 'MagmaExtension-Setup.cmd')); // 새 이름 설치 파일 (예전 링크도 계속 동작)
 const zip = path.join(DIST, 'magma-wand-chrome.zip');
 execFileSync('powershell.exe', ['-NoProfile', '-Command',
   `Compress-Archive -Path '${p('extension')}\\*' -DestinationPath '${zip}' -Force`], { stdio: 'inherit' });
 
 // 자동 업데이트 대상 = version.json의 files
 const files = {};
-for (const f of ['wand.js', 'launcher.ps1', 'magma-wand-chrome.zip']) files[f] = sha(path.join(DIST, f));
+for (const f of ['wand.js', 'launcher.ps1', 'magma-wand-chrome.zip', 'uninstall.ps1']) files[f] = sha(path.join(DIST, f));
 fs.writeFileSync(path.join(DIST, 'version.json'),
   JSON.stringify({ version, date: new Date().toISOString(), notes, files }, null, 2));
 console.log(`dist 준비 완료: v${version}`);

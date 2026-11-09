@@ -1,4 +1,4 @@
-' Magma Wand: runs boot.ps1 without showing a console window.
+' Magma Extension: runs boot.ps1 without showing a console window.
 ' Usage: wscript run.vbs         -> open Magma with the wand
 '        wscript run.vbs /repair -> check updates and re-link Magma shortcuts (at logon)
 Set sh = CreateObject("WScript.Shell")

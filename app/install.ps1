@@ -1,6 +1,6 @@
-﻿# Magma 마법봉 설치
+﻿# Magma Extension 설치
 # - 파일을 %LOCALAPPDATA%\MagmaWand 에 넣고
-# - Magma 앱 바로가기가 마법봉을 거쳐 열리도록 연결하고
+# - Magma 앱 바로가기가 Magma Extension을 거쳐 열리도록 연결하고
 # - 로그인할 때마다 업데이트 확인 + 바로가기 재연결을 하도록 등록한다
 param(
   [string]$Source = '',   # 시험용: 이 폴더에서 파일을 복사 (비우면 인터넷에서 받음)
@@ -21,7 +21,7 @@ function Ask($q) { if ($Quiet) { return $false }; $a = Read-Host "$q (Y/N)"; ret
 
 Say ''
 Say '  ┌──────────────────────────────┐' 'Magenta'
-Say '  │   Magma 마법봉 설치          │' 'Magenta'
+Say '  │   Magma Extension 설치       │' 'Magenta'
 Say '  └──────────────────────────────┘' 'Magenta'
 Say ''
 
@@ -32,7 +32,7 @@ function Get-File($name, $dest) {
 }
 
 try {
-  # 실행 중인 마법봉 실행기는 잠시 멈춤 (파일 교체를 위해)
+  # 실행 중인 실행기는 잠시 멈춤 (파일 교체를 위해)
   Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -match 'MagmaWand' -and $_.CommandLine -match 'boot\.ps1|launcher\.ps1' } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
@@ -73,7 +73,9 @@ try {
   if (-not $NoSystem) {
     $shell = New-Object -ComObject WScript.Shell
     # 로그인할 때마다: 업데이트 확인 + Magma 바로가기 다시 연결
-    $startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'Magma 마법봉 (업데이트 확인).lnk'
+    $oldStartup = Join-Path ([Environment]::GetFolderPath('Startup')) 'Magma 마법봉 (업데이트 확인).lnk' # 예전 이름
+    if (Test-Path $oldStartup) { Remove-Item $oldStartup -Force }
+    $startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'Magma Extension (업데이트 확인).lnk'
     $s = $shell.CreateShortcut($startup)
     $s.TargetPath = $wscript; $s.Arguments = '"' + $vbs + '" /repair'; $s.WorkingDirectory = $Root
     $s.Save()
@@ -82,7 +84,7 @@ try {
     $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\MagmaWand'
     New-Item -Path $key -Force | Out-Null
     $un = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $Root 'uninstall.ps1') + '"'
-    Set-ItemProperty $key DisplayName 'Magma 마법봉'
+    Set-ItemProperty $key DisplayName 'Magma Extension'
     Set-ItemProperty $key DisplayVersion ([string]$ver.version)
     Set-ItemProperty $key Publisher 'NampleS'
     Set-ItemProperty $key UninstallString $un
@@ -92,14 +94,14 @@ try {
     if ($magma) { Set-ItemProperty $key DisplayIcon "$magma,0" }
 
     if ($magma) {
-      # Magma 바로가기(바탕화면·시작 메뉴·작업 표시줄)를 마법봉 경유로 연결
+      # Magma 바로가기(바탕화면·시작 메뉴·작업 표시줄)를 Magma Extension 경유로 연결
       & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Cache 'launcher.ps1') -Repair
       # 바로가기가 하나도 없으면 시작 메뉴에 하나 만든다
       $progs = [Environment]::GetFolderPath('Programs')
       $linked = Get-ChildItem $progs, ([Environment]::GetFolderPath('Desktop')) -Filter '*.lnk' -Recurse -Depth 2 -ErrorAction SilentlyContinue |
         Where-Object { $shell.CreateShortcut($_.FullName).Arguments -like "*$vbs*" }
       if (-not $linked) {
-        $s = $shell.CreateShortcut((Join-Path $progs 'Magma (마법봉).lnk'))
+        $s = $shell.CreateShortcut((Join-Path $progs 'Magma (Extension).lnk'))
         $s.TargetPath = $wscript; $s.Arguments = '"' + $vbs + '"'; $s.IconLocation = "$magma,0"
         $s.WorkingDirectory = Split-Path $magma -Parent
         $s.Save()
@@ -111,7 +113,7 @@ try {
   Say "설치 완료! (v$($ver.version))" 'Green'
   Say ''
   if ($magma) {
-    Say '이제 평소처럼 Magma를 열면 마법봉이 함께 켜져요.' 'White'
+    Say '이제 평소처럼 Magma를 열면 Magma Extension이 함께 켜져요.' 'White'
     Say '새 버전이 나오면 자동으로 받아요. 따로 할 일은 없어요.'
     if (-not $NoSystem) {
       if (Get-Process -Name Magma -ErrorAction SilentlyContinue) {
@@ -138,7 +140,7 @@ try {
   Say "     $ext"
   if (-not $NoSystem -and (Ask '그 폴더를 지금 열어 둘까요?')) { Start-Process explorer.exe $ext }
   Say ''
-  Say '지우고 싶으면: 설정 > 앱 > 설치된 앱 > "Magma 마법봉" > 제거'
+  Say '지우고 싶으면: 설정 > 앱 > 설치된 앱 > "Magma Extension" > 제거'
 } catch {
   Say ''
   Say "설치 중 문제가 생겼어요: $_" 'Red'

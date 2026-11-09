@@ -1,4 +1,4 @@
-﻿# Magma 마법봉 - 시작 도우미 (설치 때만 바뀌는 고정 부분)
+﻿# Magma Extension - 시작 도우미 (설치 때만 바뀌는 고정 부분)
 # 새 버전이 있으면 먼저 받아 두고, 받아 둔 실행기(cache\launcher.ps1)를 실행한다.
 param([switch]$Repair)
 
@@ -42,5 +42,5 @@ if (Test-Path $launcher) {
   & $launcher -Repair:$Repair
 } elseif (-not $Repair) {
   Add-Type -AssemblyName System.Windows.Forms
-  [System.Windows.Forms.MessageBox]::Show('마법봉 파일이 없어요. 설치 파일을 다시 실행해 주세요.', 'Magma 마법봉') | Out-Null
+  [System.Windows.Forms.MessageBox]::Show('Magma Extension 파일이 없어요. 설치 파일을 다시 실행해 주세요.', 'Magma Extension') | Out-Null
 }
