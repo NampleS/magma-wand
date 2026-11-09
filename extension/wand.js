@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.28.0';
+  const VERSION = '0.28.2';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -8209,9 +8209,10 @@ void main(){
     .mx-dock { position: absolute; left: 0; right: 0; bottom: 0; top: 43px; pointer-events: none; z-index: 4; }
     .mx-hold { display: none !important; }
     .mx-frame { position: absolute; pointer-events: auto; display: flex; flex-direction: column; box-sizing: border-box; isolation: isolate;
-      background: var(--mx-bg, rgb(35,35,35)); outline: 1px solid var(--mx-bd, rgb(53,53,53)); outline-offset: -1px; }
-    .mx-frame.mx-float { box-shadow: 0 6px 22px rgba(0,0,0,.55); outline-color: rgba(255,255,255,.14); }
-    .mx-rs { position: absolute; z-index: 4; display: none; background: transparent; }
+      background: var(--mx-bg, rgb(35,35,35)); }
+    .mx-frame.mx-float { box-shadow: 0 6px 22px rgba(0,0,0,.55); outline: 1px solid rgba(255,255,255,.1); outline-offset: -1px; }
+    .mx-rs { position: absolute; z-index: 4; display: none; background: transparent; transition: background .12s; }
+    .mx-rs:hover { background: rgba(77,140,255,.6); }
     .mx-float > .mx-rs { display: block; }
     .mx-rs-n, .mx-rs-s { left: 6px; right: 6px; height: 5px; cursor: ns-resize; } .mx-rs-n { top: -2px; } .mx-rs-s { bottom: -2px; }
     .mx-rs-e, .mx-rs-w { top: 6px; bottom: 6px; width: 5px; cursor: ew-resize; } .mx-rs-e { right: -2px; } .mx-rs-w { left: -2px; }
@@ -8244,9 +8245,14 @@ void main(){
     .mx-pbody.mx-tools.mx-wide { flex-direction: row; align-items: stretch; }
     .mx-pbody.mx-tools.mx-wide > .editor-left-scroll { overflow: auto hidden !important; height: 100%; }
     .mx-pbody.mx-tools.mx-wide editor-tools { grid-template-columns: none; grid-auto-flow: column; grid-template-rows: repeat(auto-fill, 32px); grid-auto-columns: 32px; height: 100% !important; width: max-content !important; align-content: center; }
+    /* 경계선: 평소엔 1px 가는 선, 잡는 자리는 양쪽 3px씩 넓게(보이지 않음), 마우스를 대면 파랗게 굵어짐 */
     .mx-split { position: absolute; pointer-events: auto; z-index: 3; background: var(--mx-bd, rgb(53,53,53)); }
+    .mx-split::after { content: ''; position: absolute; background: transparent; transition: background .12s; }
+    .mx-split.mx-h::after { top: 0; bottom: 0; left: -3px; right: -3px; } .mx-split.mx-v::after { left: 0; right: 0; top: -3px; bottom: -3px; }
     .mx-split.mx-h { cursor: col-resize; } .mx-split.mx-v { cursor: row-resize; }
-    .mx-split:hover, .mx-split.mx-act { background: rgba(77,140,255,.55); }
+    .mx-split:hover::after, .mx-split.mx-act::after { background: rgba(77,140,255,.75); }
+    .mx-split.mx-h:hover::after, .mx-split.mx-h.mx-act::after { left: -1px; right: -1px; }
+    .mx-split.mx-v:hover::after, .mx-split.mx-v.mx-act::after { top: -1px; bottom: -1px; }
     .mx-hl { position: absolute; pointer-events: none; z-index: 60; background: rgba(77,140,255,.22); border: 2px solid rgba(77,140,255,.9); box-sizing: border-box; border-radius: 3px; transition: left .06s, top .06s, width .06s, height .06s; }
     .mx-hl.mx-tabhl { background: rgba(77,140,255,.12); border-style: dashed; }
     .mx-ghost { position: absolute; pointer-events: none; z-index: 61; height: 18px; padding: 0 8px; box-sizing: border-box; overflow: hidden; white-space: nowrap;
@@ -8502,7 +8508,7 @@ void main(){
   //  - 끄기(Window 메뉴) = 옮긴 요소를 원래 자리로 되돌리고 덧붙인 것을 모두 걷어낸다. 문제가 생기면 저절로 꺼진다.
   // 새 패널을 더할 때: DOCK_PANELS에 한 줄(id·제목·Magma 요소 선택자·원래 칸) 넣으면 같은 방식으로 붙이고 묶을 수 있다.
   const DOCK_KEY = 'magmaWand.dock';
-  const DOCK_HEAD = 14, DOCK_SPL = 4, DOCK_MIN = 48;
+  const DOCK_HEAD = 14, DOCK_SPL = 1, DOCK_MIN = 48; // 경계선은 1px (잡는 폭은 CSS로 넓게)
   const DOCK_PANELS = [
     { id: 'tools', title: '도구', en: 'Tools', sel: ['.editor-left > .editor-left-scroll', '.editor-left > .btn-sequence-wrapper'], kind: 'tools', origin: '.editor-left' },
     { id: 'color', title: '색상환', en: 'Color', sel: ['.editor-right editor-color'], kind: 'flow', origin: '.container1' },
