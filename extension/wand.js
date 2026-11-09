@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.26.0';
+  const VERSION = '0.26.5';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -1810,16 +1810,20 @@
       for (let i = 0; i < n && off + 12 + i * st + 16 <= b.length; i++) pts.push([dv.getFloat64(off + 12 + i * st), dv.getFloat64(off + 20 + i * st)]);
       return pts.length >= 2 ? pts.sort((a, c) => a[0] - c[0]) : null;
     };
-    // 곡선 묶음은 44바이트부터 차례로: 첫째 = 필압 곡선(길이 w(8)), 둘째 = 속도 곡선(길이 w(9))
-    const c1 = w(8) ? curve(44) : null, c2 = w(9) ? curve(44 + w(8)) : null;
+    // 곡선 묶음은 머리 길이(w(0)) 바로 뒤부터 차례로: 첫째 = 필압 곡선(길이 w(8)), 둘째 = 속도 곡선(길이 w(9)).
+    // 머리 길이는 예전 파일 44, 새 클립 스튜디오 파일 48 — 44로 고정해 읽으면 4바이트 어긋나 곡선이 엉망이 된다(실측)
+    const base = w(0) >= 40 && w(0) <= 256 && w(0) % 4 === 0 ? w(0) : 44;
+    const c1 = w(8) ? curve(base) : null, c2 = w(9) ? curve(base + w(8)) : null;
     const e = {};
     if (mask & 0x10) e.pressure = { min: w(3) / 100, curve: c1 };
     if (mask & 0x40) e.velocity = { min: w(5) / 100, curve: c2 };
     if (mask & 0x80) e.random = { min: w(6) / 100 };
     return Object.keys(e).length ? e : null;
   }
+  // 곡선이 0~1 밖이거나 이상한 수(예전 버전이 잘못 읽은 곡선)면 쓰지 않고 곧은 곡선으로
+  const curveOk = (pts) => Array.isArray(pts) && pts.length >= 2 && pts.every((p) => Array.isArray(p) && p.every((v) => Number.isFinite(v) && v >= -0.001 && v <= 1.001 && (v === 0 || Math.abs(v) > 1e-200)));
   const evalCurve = (pts, x) => {
-    if (!pts) return x;
+    if (!pts || !curveOk(pts)) return x;
     if (x <= pts[0][0]) return pts[0][1];
     for (let i = 1; i < pts.length; i++) if (x <= pts[i][0]) { const [x0, y0] = pts[i - 1], [x1, y1] = pts[i]; return y0 + ((y1 - y0) * (x - x0)) / (x1 - x0 || 1); }
     return pts[pts.length - 1][1];
@@ -2250,6 +2254,11 @@ void main(){
     return info;
   }
   // 지금 브러시의 끝 모양·텍스처를 GPU에 올려 둔다
+  function advHasBadCurve(o, d = 0) {
+    if (!o || typeof o !== 'object' || d > 4) return false;
+    if (Array.isArray(o.curve) && !curveOk(o.curve)) return true;
+    return Object.entries(o).some(([k, v]) => k !== 'tips' && k !== 'texture' && v && typeof v === 'object' && !Array.isArray(v) && advHasBadCurve(v, d + 1));
+  }
   async function advPrepare(brush) {
     const canvas = getCanvas(), E = getEditor();
     if (!canvas || !E || !brush) return false;
@@ -2262,6 +2271,8 @@ void main(){
       if (!item) continue;
       t.key = await advPutImage(await builtinBlob(item, item.size || 256)); t.bver = BUILTIN_VER; changed = true;
     }
+    // 예전 버전이 잘못 읽은 효과 곡선(새 클립 스튜디오 .sut): 그리기는 곧은 곡선으로 하고, 다시 가져오라고 한 번 알린다
+    if (!brush.preset && !brush.badCurveWarned && advHasBadCurve(brush)) { brush.badCurveWarned = true; changed = true; toast(`'${brush.name}'의 필압·속도 곡선을 예전 버전이 잘못 읽었어요 — 지금은 곧은 곡선으로 그려요. .sut를 다시 가져오면 원래 곡선대로 돼요`); }
     // 수채 프리셋으로 만든 예전 브러시: 곱하기 → 물감 겹치기(감산 혼합)로 한 번만 바꿔 준다
     if (brush.cat === '수채' && brush.preset && brush.blend === 'multiply' && !brush.kmMig) { brush.blend = 'glaze'; brush.kmMig = true; changed = true; }
     if (changed) { ADV.tips.clear(); await advSaveBrush(brush); }
@@ -3671,7 +3682,7 @@ void main(){
     try {
       const b = JSON.parse(JSON.stringify(brush));
       const sz = Math.max(2.5, Math.min(brush.size, o.maxSize || (brush.spray ? H * 0.95 : H * 0.4))), k = sz / brush.size;
-      b.size = sz; b.baseSize = (brush.baseSize || brush.size) * k; b.smoothing = 0;
+      b.size = sz; b.baseSize = (brush.baseSize || brush.size) * k; b.smoothing = o.pts ? (brush.smoothing || 0) : 0;
       b.taperIn = (b.taperIn || 0) * k; b.taperOut = (b.taperOut || 0) * k;
       if (b.dryOut && b.dryOut.len > 0) b.dryOut.len = Math.min(b.dryOut.len * k, W * 1.1); // 미리보기 획 길이(약 1.3W) 안에서 마르는 모습이 보이게
       if (b.spray && !b.spray.sync) b.spray.size *= Math.max(k, 0.8);
@@ -3684,7 +3695,9 @@ void main(){
       if (o.bg && b.mix && b.mix.mode !== 'none' && W === SMP_W && H === SMP_H) s.mix = { E: null, L: null, ref: 'all', tiles: new Map(), K: null, snap: o.bg, W, H };
       ADV.stroke = s;
       const pad = Math.max(sz * 0.6, 4) + 6, amp = Math.max(0, H / 2 - sz * 0.55 - 3) * 0.85, N = 80;
-      for (let i = 0; i <= N; i++) {
+      if (o.pts) { s.zoom = o.zoom || 1; for (const [x, y, p, t] of o.pts) advAddPoint({ pressure: p, pointerType: 'pen', timeStamp: t }, [x, y]);
+        if (s.rawLast && s.last && b.smoothing > 0 && Math.hypot(s.rawLast.x - s.last.x, s.rawLast.y - s.last.y) > 0.5) { s.straight = true; advAddPoint({ pressure: s.rawLast.p, pointerType: 'pen', timeStamp: s.rawLast.t + 16 }, [s.rawLast.x, s.rawLast.y]); s.straight = false; } } // 시험: 기록한 실제 펜 입력 다시 넣기
+      else for (let i = 0; i <= N; i++) {
         const f = i / N, p = 0.1 + 0.9 * Math.pow(Math.sin(Math.PI * f), 0.6);
         advAddPoint({ pressure: o.pr == null ? p : o.pr, pointerType: 'pen', timeStamp: i * (o.dt || 14) }, [pad + (W - 2 * pad) * f, H / 2 - Math.sin(f * Math.PI * 2) * amp]);
       }
@@ -8438,7 +8451,7 @@ void main(){
     getEditor, ensureEditor, docContext, docImage, exactPath, withSpikes, magmaKeep, rasterPath, straightLoop,
     histCheck, histPoints, histCopyLayer, openHistoryDialog, histUsage, getBrushSize, sizeRow,
     openStrokeDialog, fxSet, fxGet, fxKick, fxState: () => FX,
-    advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, parseSut, getAA, setAA, docToBuffer, selectionExists,
+    advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, parseSut, sqliteTables, parseEffector, getAA, setAA, docToBuffer, selectionExists,
     setAlpha, advEraseCommit, fillSelection, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt,
     ensureGroups, activateMember, selectLayerContent, advNewBrush, setMagmaFont, currentFontName, systemFonts, openTextImageDialog,
     blurDab, blurState: () => BLR, msState: () => MS, guState: () => GU, guRef, clipToggle, clipHitAt, advPutImage, builtinBlob, advSaveBrush, advPrepare, openBrushSettings, openPresetPicker, advNewFromPreset, ADV_PRESETS, advMixColor, setPrimaryHex, advState2: () => ADV, fgConfig, growMaskBy, ensureFillRow, rowLayer, msPick, msReplay, msDecompose, gapBridgeFill, qmState: () => QM, qmApply, msPropsApply, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons, smpRequest, smpState: () => SMP, smpRender, smpRes, smpCanvas, hexRgb, presetBrushObj, advCatOf, ADV_CATS };
