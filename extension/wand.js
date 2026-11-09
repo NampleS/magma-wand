@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.24.0';
+  const VERSION = '0.25.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -1972,9 +1972,9 @@
   const ADV = { gl: null, cv: null, P: {}, vao: null, ibuf: null, fb: null, W: 0, H: 0, S: null, C: null, cTimer: 0,
     tips: new Map(), tex: null, brush: null, tipTex: [], texInfo: null, stroke: null, batch: [], dbatch: [], raf: 0, lost: false, commitQ: Promise.resolve() };
   const ADV_VS = `#version 300 es
-in vec2 aPos; in float aSize; in float aAngle; in vec2 aSq; in float aAlpha; in vec3 aColor; in vec2 aFlip; in vec2 aV;
+in vec2 aPos; in float aSize; in float aAngle; in vec2 aSq; in float aAlpha; in vec3 aColor; in vec2 aFlip; in vec2 aV; in vec2 aX;
 uniform vec2 uDoc; uniform float uRibbon;
-out vec2 vUV; out float vA; out vec3 vC; out vec2 vDoc; out vec2 vVSpan;
+out vec2 vUV; out float vA; out vec3 vC; out vec2 vDoc; out vec2 vVSpan; out vec2 vX;
 void main(){
   int k = gl_VertexID; vec2 c = vec2((k == 1 || k == 2 || k == 4) ? 1.0 : -1.0, (k == 2 || k == 4 || k == 5) ? 1.0 : -1.0);
   vUV = c * 0.5 + 0.5; if (aFlip.x < 0.0) vUV.x = 1.0 - vUV.x; if (aFlip.y < 0.0) vUV.y = 1.0 - vUV.y;
@@ -1982,18 +1982,48 @@ void main(){
   if (uRibbon > 0.5) hs = vec2(aSize * 0.5 * aSq.x, aSq.y * 0.5);
   vec2 l = c * hs; float cs = cos(aAngle), sn = sin(aAngle);
   vec2 p = aPos + vec2(l.x * cs - l.y * sn, l.x * sn + l.y * cs);
-  vDoc = p; vA = aAlpha; vC = aColor; vVSpan = aV;
+  vDoc = p; vA = aAlpha; vC = aColor; vVSpan = aV; vX = aX;
   gl_Position = vec4(p / uDoc * 2.0 - 1.0, 0.0, 1.0);
 }`;
   const ADV_FS = `#version 300 es
 precision highp float;
-in vec2 vUV; in float vA; in vec3 vC; in vec2 vDoc; in vec2 vVSpan;
+in vec2 vUV; in float vA; in vec3 vC; in vec2 vDoc; in vec2 vVSpan; in vec2 vX;
 uniform sampler2D uTip; uniform sampler2D uTex; uniform float uRound; uniform float uHard; uniform float uAA;
 uniform float uUseTex; uniform float uTexDen; uniform vec2 uTexScale; uniform float uTexInv; uniform float uRibbon; uniform float uTexCon;
+uniform float uBN; uniform float uBStr; uniform float uBShape; uniform float uBVar; uniform float uBSeed; uniform float uPass; uniform float uRidge;
 out vec4 o;
+float h11(float n){ return fract(sin(n * 12.9898 + uBSeed * 78.233) * 43758.5453); }
+float vn1(float x, float k){ float i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f); return mix(h11(i * 1.31 + k), h11((i + 1.0) * 1.31 + k), f); }
 void main(){
   float m;
-  if (uRound > 0.5) {
+  vec3 col = vC;
+  float hgt = -1.0;
+  if (uBN > 0.5) {
+    // 붓털: 털마다 굵기·자리·물감 양이 다르고, 물감 양은 획을 따라 천천히 바뀐다(털이 하나씩 마르며 갈라짐).
+    // 도장이 진행 방향에 맞춰 돌아가므로 같은 털은 같은 자리를 지나 → 끊김 없는 결이 남는다.
+    vec2 q = vUV * 2.0 - 1.0; // x: 붓 폭(획을 가로지름), y: 진행 방향
+    float fp = uBShape > 0.5 ? (1.0 - smoothstep(0.86, 1.0, abs(q.x))) * (1.0 - smoothstep(0.3, 1.0, abs(q.y)))
+                             : 1.0 - smoothstep(0.72, 1.0, length(q));
+    float t = vX.x, load = vX.y, thr = 1.0 - load, bri = 0.0, tint = 0.0;
+    for (int L = 0; L < 2; L++) {
+      float n = L == 0 ? uBN : floor(uBN * 1.618);
+      float x = vUV.x * n + float(L) * 0.37, i = floor(x), f = fract(x), k = i + float(L) * 517.0;
+      float w = 0.4 + 0.5 * h11(k * 1.7), c = 0.5 + (h11(k * 2.3) - 0.5) * (1.0 - w);
+      float aw = max(fwidth(x) * 0.75, 0.04);
+      float prof = 1.0 - smoothstep(w * 0.5 - aw, w * 0.5 + aw, abs(f - c));
+      float ld = vn1(t * (0.25 + 0.55 * h11(k * 3.1)) + h11(k * 4.7) * 40.0, k * 0.71) * 0.85 + 0.15 * h11(k * 6.1);
+      float on = smoothstep(thr - 0.04, thr + 0.04, ld); // 털은 묻었거나 말랐거나 — 어중간한 값이 겹쳐 뿌옇게 되지 않게
+      float v = prof * on * (L == 0 ? 1.0 : 0.8);
+      if (v > bri) { bri = v; tint = h11(k * 5.9) - 0.5; }
+    }
+    float body = smoothstep(0.35, 0.75, load); // 물감이 줄면 몸통부터 빠지고 털 자국만 남는다
+    float edge = smoothstep(0.5, 0.95, abs(q.x)); // 붓 가장자리는 털이 삐져나와 들쭉날쭉
+    m = fp * mix(body, bri, clamp(uBStr + edge * 0.7, 0.0, 1.0));
+    if (uRidge > 0.0) m = fp * mix(body, max(bri, body * 0.85), uBStr); // 나이프: 털 대신 가는 긁힘
+    col = clamp(vC * (1.0 + tint * uBVar * 2.0), 0.0, 1.0);
+    hgt = smoothstep(0.0, 0.6, fp) * (0.62 + 0.38 * mix(1.0, bri, 0.85)); // 윗면은 평평하게, 털 자국만 굴곡
+    if (uRidge > 0.0) hgt = fp * (0.3 + 0.7 * mix(bri, 1.0, 0.6) * (0.55 + 0.45 * smoothstep(0.45, 0.95, abs(q.x))) + 0.25 * smoothstep(0.2, -0.9, q.y));
+  } else if (uRound > 0.5) {
     float r = length(vUV * 2.0 - 1.0);
     float edge = max(fwidth(r), 0.0001);
     m = uHard >= 0.999 ? 1.0 - smoothstep(1.0 - edge, 1.0, r) : 1.0 - smoothstep(uHard, 1.0, r);
@@ -2004,9 +2034,15 @@ void main(){
   }
   if (uAA < 0.5) m = m >= 0.5 ? 1.0 : 0.0;
   if (uUseTex > 0.5) { float t = texture(uTex, vDoc / uTexScale).r; if (uTexInv > 0.5) t = 1.0 - t; t = clamp((t - 0.5) * (1.0 + uTexCon * 4.0) + 0.5, 0.0, 1.0); m *= mix(1.0, t, uTexDen); }
+  if (uPass > 0.5) { // 두께(높이) 버퍼: 맨 위 물감 면의 높낮이. 묽은 물감일수록 얇게 덮는다
+    float h = hgt >= 0.0 ? hgt : m;
+    float ah = clamp(m * min(1.0, vA * 2.5), 0.0, 1.0) * 0.55;
+    if (ah <= 0.0005) discard;
+    o = vec4(h * ah, 0.0, 0.0, ah); return;
+  }
   float a = clamp(m * vA, 0.0, 1.0);
   if (a <= 0.0005) discard;
-  o = vec4(vC * a, a);
+  o = vec4(col * a, a);
 }`;
   const ADV_SHOW_VS = `#version 300 es
 void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2)); gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }`;
@@ -2019,7 +2055,17 @@ uniform sampler2D uD; uniform float uUseD; uniform float uTexCon;
 uniform float uTexMode;
 uniform float uCtx; uniform sampler2D uK; uniform float uUseK; uniform sampler2D uA; uniform float uUseA;
 uniform float uErase; uniform float uMul; uniform float uLock; uniform float uLop;
+uniform float uImp; uniform float uShine; uniform sampler2D uHb;
+uniform float uWet; uniform float uWob; uniform float uGran; uniform float uSoft; uniform sampler2D uNz; uniform float uNzS; uniform vec3 uEdge;
 out vec4 o;
+float aAt(vec2 q){ q = clamp(q, vec2(0.0), uDoc - 1.0); return uMode > 0.5 ? texelFetch(uS, ivec2(q), 0).a : textureLod(uS, q / uDoc, 0.0).a; }
+// 젖은 물감: 쌓인 물감 양의 등고선 하나를 물 가장자리로 삼아 또렷하게, 낮은 주파수 노이즈로 가장자리가 구불구불
+float wshape(vec2 q, float a){
+  if (uWet < 0.5) return a;
+  float n = textureLod(uNz, q / uNzS, 0.0).r - 0.5;
+  return smoothstep(0.17 - uSoft * 0.15, 0.27 + uSoft * 0.3, a + n * uWob);
+}
+float hAt(ivec2 q){ return texelFetch(uHb, clamp(q, ivec2(0), ivec2(uDoc) - 1), 0).r; }
 void main(){
   vec2 p;
   if (uMode > 0.5) p = uOff + gl_FragCoord.xy;
@@ -2028,7 +2074,49 @@ void main(){
   vec4 c = uMode > 0.5 ? texelFetch(uS, ivec2(p), 0) : texture(uS, p / uDoc);
   if (uUseD > 0.5) c *= uMode > 0.5 ? texelFetch(uD, ivec2(p), 0).a : texture(uD, p / uDoc).a; // 2중 브러시 무늬로 깎기
   float k = uOp;
-  if (uUseTex > 0.5) {
+  // 수채: 물 가장자리(또렷·구불) + 가장자리에 고인 물감(수채 경계) + 종이 골에 가라앉은 안료 알갱이 — 그리는 중에도 확정과 똑같이
+  if ((uWet > 0.5 || uEdge.x > 0.5) && c.a > 0.0) {
+    float a0 = c.a, sh = wshape(p, a0);
+    vec3 cc = c.rgb / a0;
+    float na = uWet > 0.5 ? sh * (0.72 + 0.28 * clamp(a0 * 1.3, 0.0, 1.0)) : a0;
+    if (uEdge.x > 0.5 && sh > 0.003) {
+      float r = uEdge.x, B = sh;
+      for (int i = 0; i < 12; i++) {
+        vec2 d = vec2(cos(float(i) * 0.5236), sin(float(i) * 0.5236));
+        vec2 q1 = p + d * r, q2 = p + d * r * 0.5;
+        B += wshape(q1, aAt(q1)) + wshape(q2, aAt(q2));
+      }
+      B /= 25.0;
+      float e = clamp((sh - B) * 2.5, 0.0, 1.0);
+      na = min(1.0, na + (1.0 - na) * uEdge.y * e + na * uEdge.y * e * 0.6);
+      cc *= 1.0 - uEdge.z * e * 0.55;
+    }
+    if (uGran > 0.0) {
+      // 안료 알갱이: 종이 결 + 아주 잔 노이즈 (큰 얼룩이 되지 않게)
+      float hn = fract(sin(dot(floor(p), vec2(12.9898, 78.233))) * 43758.5453); // 픽셀마다 다른 잔 알갱이
+      float t = mix(textureLod(uNz, p / 64.0, 0.0).r, hn, 0.4);
+      if (uUseTex > 0.5) { float pt = textureLod(uTex, p / uTexScale, 0.0).r; if (uTexInv > 0.5) pt = 1.0 - pt; t = mix(pt, hn, 0.3); }
+      na = clamp(na * (1.0 + uGran * ((1.0 - t) - 0.5) * 1.6), 0.0, 1.0);
+    }
+    c = vec4(cc * na, na);
+  }
+  // 두께감(임파스토): 물감 높이 버퍼의 기울기로 왼쪽 위 빛을 받은 음영·광택 — 붓 자국이 도드라져 보인다
+  if (uImp > 0.0 && c.a > 0.0001) {
+    ivec2 ip = ivec2(p);
+    // 2픽셀 간격 소벨: 털 하나하나의 날카로운 굴곡 대신 물감 덩어리의 완만한 굴곡을 본다
+    float tl = hAt(ip + ivec2(-2, -2)), tc = hAt(ip + ivec2(0, -2)), tr = hAt(ip + ivec2(2, -2));
+    float ml = hAt(ip + ivec2(-2, 0)), mr = hAt(ip + ivec2(2, 0));
+    float bl = hAt(ip + ivec2(-2, 2)), bc = hAt(ip + ivec2(0, 2)), br = hAt(ip + ivec2(2, 2));
+    float gx = ((tr + 2.0 * mr + br) - (tl + 2.0 * ml + bl)) * 0.25, gy = ((bl + 2.0 * bc + br) - (tl + 2.0 * tc + tr)) * 0.25;
+    float kk = uImp * 2.2;
+    vec3 n = normalize(vec3(-gx * kk, -gy * kk, 1.0)), L = normalize(vec3(-0.55, -0.65, 0.8)), Hh = normalize(L + vec3(0.0, 0.0, 1.0));
+    float dif = dot(n, L) - L.z;
+    float sp = max(0.0, pow(max(dot(n, Hh), 0.0), 18.0) - pow(Hh.z, 18.0));
+    vec3 cc = c.rgb / c.a;
+    cc = cc * (1.0 + (dif > 0.0 ? dif * 0.7 : dif * 0.55)) + sp * uShine * 0.3;
+    c.rgb = clamp(cc, 0.0, 1.0) * c.a;
+  }
+  if (uUseTex > 0.5 && uWet < 0.5) {
     float t = texture(uTex, p / uTexScale).r; if (uTexInv > 0.5) t = 1.0 - t; t = clamp((t - 0.5) * (1.0 + uTexCon * 4.0) + 0.5, 0.0, 1.0);
     if (uTexMode > 0.5) { // 깊이: 살살 칠하면 종이 높은 곳에만, 겹치고 세게 칠할수록 골까지 채워짐 (연필·목탄·파스텔)
       float th = uTexDen * (1.0 - t), a0 = c.a, a1 = max(clamp((a0 - th) / max(0.04, 1.0 - th), 0.0, 1.0), a0 * 0.12); // 골에도 옅은 가루막
@@ -2055,7 +2143,7 @@ void main(){
     for (let i = 0; i < n; i++) { const nm = gl.getActiveUniform(p, i).name; u[nm] = gl.getUniformLocation(p, nm); }
     return { p, u };
   };
-  const INST = 16; // aPos2 aSize aAngle aSq2 aAlpha aColor3 aFlip2 aV2 + 여분
+  const INST = 16; // aPos2 aSize aAngle aSq2 aAlpha aColor3 aFlip2 aV2 aX2(획 길이·남은 물감)
   function advEnsureGL(canvas, W, H) {
     if (!ADV.cv || !ADV.cv.isConnected || ADV.cv.parentElement !== canvas.parentElement) {
       ADV.cv?.remove();
@@ -2063,8 +2151,8 @@ void main(){
       ADV.gl = ADV.cv.getContext('webgl2', { premultipliedAlpha: true, alpha: true, antialias: false });
       if (!ADV.gl) throw new Error('WebGL2를 쓸 수 없어요');
       ADV.cv.addEventListener('webglcontextlost', (e) => { e.preventDefault(); ADV.lost = true; });
-      ADV.cv.addEventListener('webglcontextrestored', () => { ADV.lost = false; ADV.P = {}; ADV.S = ADV.C = ADV.K = ADV.A = null; ADV.tips.clear(); ADV.tex = null; ADV.W = 0; });
-      ADV.P = {}; ADV.S = ADV.C = ADV.K = ADV.A = null; ADV.tips.clear(); ADV.tex = null; ADV.W = 0;
+      ADV.cv.addEventListener('webglcontextrestored', () => { ADV.lost = false; ADV.P = {}; ADV.S = ADV.C = ADV.K = ADV.A = ADV.Hb = ADV.nz = null; ADV.tips.clear(); ADV.tex = null; ADV.W = 0; });
+      ADV.P = {}; ADV.S = ADV.C = ADV.K = ADV.A = ADV.Hb = ADV.nz = null; ADV.tips.clear(); ADV.tex = null; ADV.W = 0;
       canvas.after(ADV.cv);
     }
     Object.assign(ADV.cv.style, { position: 'absolute', left: canvas.offsetLeft + 'px', top: canvas.offsetTop + 'px',
@@ -2077,12 +2165,20 @@ void main(){
       ADV.ibuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, ADV.ibuf);
       const p = ADV.P.stamp.p, stride = INST * 4;
       const attr = (name, n, off) => { const loc = gl.getAttribLocation(p, name); if (loc < 0) return; gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, n, gl.FLOAT, false, stride, off * 4); gl.vertexAttribDivisor(loc, 1); };
-      attr('aPos', 2, 0); attr('aSize', 1, 2); attr('aAngle', 1, 3); attr('aSq', 2, 4); attr('aAlpha', 1, 6); attr('aColor', 3, 7); attr('aFlip', 2, 10); attr('aV', 2, 12);
+      attr('aPos', 2, 0); attr('aSize', 1, 2); attr('aAngle', 1, 3); attr('aSq', 2, 4); attr('aAlpha', 1, 6); attr('aColor', 3, 7); attr('aFlip', 2, 10); attr('aV', 2, 12); attr('aX', 2, 14);
       gl.bindVertexArray(null);
       ADV.fb = gl.createFramebuffer();
       const blank = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, blank);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 1, 1, 0, gl.RED, gl.UNSIGNED_BYTE, new Uint8Array([255]));
       ADV.blank = blank;
+      // 수채 가장자리 흔들림·알갱이용 이음매 없는 노이즈 (한 번만 만든다)
+      const NZ = 256, f = fbm(NZ, 4, 3, 77, 0.45), nb = new Uint8Array(NZ * NZ);
+      for (let i = 0; i < nb.length; i++) nb[i] = Math.round(f[i] * 255);
+      ADV.nz = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, ADV.nz);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, NZ, NZ, 0, gl.RED, gl.UNSIGNED_BYTE, nb);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
     }
     if (ADV.W !== W || ADV.H !== H || !ADV.S) {
       for (const t of [ADV.S, ADV.C]) if (t) gl.deleteTexture(t);
@@ -2096,7 +2192,9 @@ void main(){
       ADV.D = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, ADV.D); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, W, H); // 2중 브러시 무늬
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      advClear(ADV.S, null); advClear(ADV.C, null); advClear(ADV.D, null);
+      if (ADV.Hb) gl.deleteTexture(ADV.Hb);
+      ADV.Hb = mk(); // 두께(높이) 버퍼
+      advClear(ADV.S, null); advClear(ADV.C, null); advClear(ADV.D, null); advClear(ADV.Hb, null);
       for (const t of [ADV.K, ADV.A]) if (t) gl.deleteTexture(t);
       ADV.K = ADV.A = null;
     }
@@ -2251,7 +2349,11 @@ void main(){
     let size = b.size * effectorValue(b.sizeEff, p, s.speed, rnd()) * taper;
     let flow = b.flow * effectorValue(b.flowEff, p, s.speed, rnd()) * effectorValue(b.opacityEff, p, s.speed, rnd());
     // 물감 마름: 획 길이를 따라 붓의 물감이 줄어든다 (갈필·마른 붓). 깊이 결과 같이 쓰면 끝으로 갈수록 종이 결만 남는다
-    if (b.dryOut && b.dryOut.len > 0) flow *= 1 - (1 - (b.dryOut.min || 0)) * sstep(0, b.dryOut.len, s.dist);
+    const dryF = b.dryOut && b.dryOut.len > 0 ? 1 - (1 - (b.dryOut.min || 0)) * sstep(0, b.dryOut.len, s.dist) : 1;
+    const br = advBristle(b);
+    // 붓털 브러시는 물감이 마르면 털이 하나씩 갈라지고(남은 물감), 흐름은 조금만 준다. 살살 누르면 닿는 털도 적다
+    let load = 1;
+    if (br) { flow *= 0.6 + 0.4 * dryF; load = dryF * (0.55 + 0.45 * Math.min(1, p)); } else flow *= dryF;
     let th = b.thickness * effectorValue(b.thickEff, p, s.speed, rnd());
     let sq = [1, 1];
     if (th < 1) sq = b.vertical ? [th, 1] : [1, th]; else if (th > 1) sq = b.vertical ? [1, 1 / th] : [1 / th, 1];
@@ -2259,6 +2361,7 @@ void main(){
     if (b.rotMask & 0x10) angle *= p;
     if (b.rotMask & 0x40) angle += ang;
     if (b.ribbon) angle = ang + Math.PI / 2; // 리본: 띠의 가로가 획을 가로지르게
+    if (br) { angle = ang + Math.PI / 2 + (rnd() - 0.5) * 0.03; sq = [1, Math.max(0.08, Math.min(1, th))]; } // 붓털: 폭이 획을 가로지르게
     if (b.rotMask & 0x80) angle += (rnd() - 0.5) * 2 * Math.PI * b.rotRandom;
     let col = s.color, mixA = 1;
     if (s.mix) { const r = advMixColor(s, b, x, y, size, p, stepLen); col = r.c; mixA = r.a; }
@@ -2276,11 +2379,11 @@ void main(){
     };
     const tipAspect = (ti) => { const t = ADV.tipTex[ti]; if (!t) return [1, 1]; const mx = Math.max(t.w, t.h); return [t.w / mx, t.h / mx]; };
     const push = (px, py, sz, a, sqx, sqy, alpha, ti) => {
-      const fl = flip(), asp = b.ribbon ? [1, 1] : tipAspect(ti);
+      const fl = br ? [1, 1] : flip(), asp = b.ribbon || br ? [1, 1] : tipAspect(ti);
       let v = [0, 1];
       let sy = sqy * asp[1], sx = sqx * asp[0];
       if (b.ribbon) { const t = ADV.tipTex[ti]; const len = Math.max(0.5, stepLen || sz * 0.1); const rel = t ? (len / sz) * (t.w / t.h) : 0.01; v = [s.v, rel]; s.v = (s.v + rel) % 1; sy = len + 1; }
-      ADV.batch.push({ ti, dist: s.dist, d: [px, py, sz, a, sx, sy, alpha * mixA, col[0], col[1], col[2], fl[0], fl[1], v[0], v[1], 0, 0] });
+      ADV.batch.push({ ti, dist: s.dist, d: [px, py, sz, a, sx, sy, alpha * mixA, col[0], col[1], col[2], fl[0], fl[1], v[0], v[1], s.dist / Math.max(1, b.size), load] });
       const ext = sz * 0.75 * Math.max(sx, b.ribbon ? 1 : sy, 1) + (b.ribbon ? sy : 0) + 3;
       const bx = { x: Math.floor(px - ext), y: Math.floor(py - ext), w: Math.ceil(2 * ext) + 1, h: Math.ceil(2 * ext) + 1 };
       s.box = runion(s.box, bx);
@@ -2297,7 +2400,7 @@ void main(){
       }
     } else {
       // 흩어짐: 도장 자리를 크기에 비례해 조금씩 흔든다 (목탄·파스텔 가장자리가 매끈하게 반복되지 않게)
-      if (b.scatter > 0) { const a = rnd() * Math.PI * 2, r = size * b.scatter * Math.sqrt(rnd()); x += Math.cos(a) * r; y += Math.sin(a) * r; }
+      if (b.scatter > 0 && !br) { const a = rnd() * Math.PI * 2, r = size * b.scatter * Math.sqrt(rnd()); x += Math.cos(a) * r; y += Math.sin(a) * r; }
       push(x, y, Math.max(0.5, size), angle, sq[0], sq[1], flow, pickTip());
     }
     // 2중 브러시: 자기 간격마다 두 번째 끝 모양을 D 버퍼용으로 찍는다
@@ -2341,6 +2444,15 @@ void main(){
       gl.uniform1i(P.u.uTex, 1); gl.uniform1f(P.u.uTexDen, b.texDensity); gl.uniform2f(P.u.uTexScale, ADV.texInfo.w * b.texScale, ADV.texInfo.h * b.texScale); gl.uniform1f(P.u.uTexInv, b.texInvert ? 1 : 0); gl.uniform1f(P.u.uTexCon, b.texContrast || 0);
     } else { gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, ADV.blank); gl.uniform1i(P.u.uTex, 1); }
     gl.uniform1i(P.u.uTip, 0);
+    const br = advBristle(b);
+    // 털 수는 브러시 크기에 맞춰 줄인다 (털 하나가 2픽셀보다 가늘면 지글거림)
+    gl.uniform1f(P.u.uBN, br ? Math.max(3, Math.min(br.count || 24, Math.floor(b.size / 2.2))) : 0);
+    gl.uniform1f(P.u.uBStr, br ? (br.streak == null ? 0.5 : br.streak) : 0); gl.uniform1f(P.u.uBShape, br && br.shape === 'flat' ? 1 : 0);
+    gl.uniform1f(P.u.uBVar, br ? (br.var || 0) : 0); gl.uniform1f(P.u.uRidge, br && br.knife ? 1 : 0);
+    if (ADV.stroke && ADV.stroke.seed == null) ADV.stroke.seed = Math.random() * 50;
+    gl.uniform1f(P.u.uBSeed, ADV.stroke ? ADV.stroke.seed : 0);
+    gl.uniform1f(P.u.uPass, 0);
+    const imp = advImp(b) && ADV.Hb;
     gl.bindBuffer(gl.ARRAY_BUFFER, ADV.ibuf);
     // 출(끝 가늘게): 획이 끝날 때 줄일 수 있도록 끝에서 taperOut 길이만큼의 도장은 붙잡아 둔다
     let todo = ADV.batch;
@@ -2356,9 +2468,30 @@ void main(){
       list.forEach((d, i) => arr.set(d, i * INST));
       gl.bufferData(gl.ARRAY_BUFFER, arr, gl.STREAM_DRAW);
       gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, list.length);
+      if (imp) { // 같은 도장을 두께 버퍼에도
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ADV.Hb, 0);
+        gl.uniform1f(P.u.uPass, 1); gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, list.length); gl.uniform1f(P.u.uPass, 0);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ADV.S, 0);
+      }
     }
     gl.bindVertexArray(null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+  // 붓털·두께감·수채 물기 설정 (꺼져 있으면 null)
+  const advBristle = (b) => (b && b.bristle && b.bristle.on ? b.bristle : null);
+  const advImp = (b) => (b && b.impasto && b.impasto.depth > 0 ? b.impasto : null);
+  const advWet = (b) => (b && b.wet && b.wet.on ? b.wet : null);
+  // 화면·확정 셰이더의 물감 효과 (on=false: 이미 구운 그림이라 다시 적용하지 않음)
+  function advFxUniforms(P, on, erase) {
+    const gl = ADV.gl, b = ADV.brush, im = on && !erase && advImp(b) && ADV.Hb ? advImp(b) : null, w = on && !erase ? advWet(b) : null;
+    const we = on && !erase && b && b.wedge && b.wedge.on ? b.wedge : null;
+    gl.uniform1f(P.u.uImp, im ? im.depth : 0); gl.uniform1f(P.u.uShine, im ? (im.shine || 0) : 0);
+    gl.uniform1f(P.u.uWet, w ? 1 : 0); gl.uniform1f(P.u.uWob, w ? (w.wobble == null ? 0.3 : w.wobble) : 0); gl.uniform1f(P.u.uGran, w ? (w.gran || 0) : 0); gl.uniform1f(P.u.uSoft, w ? (w.soft || 0) : 0);
+    gl.uniform1f(P.u.uNzS, Math.max(24, (b ? b.size : 40) * 2.2));
+    gl.uniform3f(P.u.uEdge, we ? Math.max(1, we.radius || 4) : 0, we ? (we.alpha == null ? 0.6 : we.alpha) : 0, we ? (we.value == null ? 0.3 : we.value) : 0);
+    gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, im ? ADV.Hb : ADV.blank); gl.uniform1i(P.u.uHb, 5);
+    gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, ADV.nz || ADV.blank); gl.uniform1i(P.u.uNz, 6);
+    gl.activeTexture(gl.TEXTURE0);
   }
   function advFlushDual(P) {
     const gl = ADV.gl, du = advDual(ADV.brush);
@@ -2370,6 +2503,7 @@ void main(){
     gl.uniform2f(P.u.uDoc, ADV.W, ADV.H);
     const round = !ADV.dualTex;
     gl.uniform1f(P.u.uRound, round ? 1 : 0); gl.uniform1f(P.u.uHard, du ? du.hardness : 1); gl.uniform1f(P.u.uAA, 1); gl.uniform1f(P.u.uRibbon, 0); gl.uniform1f(P.u.uUseTex, 0);
+    gl.uniform1f(P.u.uBN, 0); gl.uniform1f(P.u.uPass, 0);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, ADV.blank); gl.uniform1i(P.u.uTex, 1);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, round ? ADV.blank : ADV.dualTex.tex); gl.uniform1i(P.u.uTip, 0);
     gl.bindBuffer(gl.ARRAY_BUFFER, ADV.ibuf);
@@ -2398,6 +2532,7 @@ void main(){
       if (tex === ADV.S && !ADV.stroke) continue;
       if (tex === ADV.C && ADV.cBaked) gl.uniform1f(P.u.uUseTex, 0); else advTexUniforms(P);
       advDualUniforms(P, tex === ADV.S && !!(advDual(b) && ADV.stroke));
+      advFxUniforms(P, tex === ADV.S || !ADV.cBaked, tex === ADV.S ? ADV.stroke.erase : false);
       advCtxUniforms(P, tex === ADV.S ? ADV.stroke.ctx : ADV.cCtx);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(P.u.uS, 0);
       gl.uniform1f(P.u.uOp, op);
@@ -2580,7 +2715,7 @@ void main(){
     if (s.last) ADV.lastEnd = { x: s.last.x, y: s.last.y, p: s.last.p }; // Shift+클릭 직선용
     const gl = ADV.gl;
     const box = rclip(s.box || { x: 0, y: 0, w: 0, h: 0 }, ADV.W, ADV.H);
-    if (cancel || !box) { advClear(ADV.S, box); if (ADV.D && box) advClear(ADV.D, box); advKick(); return; }
+    if (cancel || !box) { advClear(ADV.S, box); if (ADV.D && box) advClear(ADV.D, box); if (ADV.Hb && box) advClear(ADV.Hb, box); advKick(); return; }
     // 확정용: 획 버퍼 × 불투명도 × 획 단위 텍스처를 box 크기로 잘라 읽는다
     const op = advOpacity();
     const out = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, out); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, box.w, box.h);
@@ -2593,19 +2728,20 @@ void main(){
     advCtxUniforms(P, null);
     advTexUniforms(P);
     advDualUniforms(P, !!advDual(ADV.brush));
+    advFxUniforms(P, true, s.erase);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ADV.S); gl.uniform1i(P.u.uS, 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const px = new Uint8Array(box.w * box.h * 4);
     gl.readPixels(0, 0, box.w, box.h, gl.RGBA, gl.UNSIGNED_BYTE, px);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.bindVertexArray(null); gl.deleteTexture(out);
     if (ADV.D) advClear(ADV.D, box);
+    if (ADV.Hb) advClear(ADV.Hb, box);
     // 화면에는 확정될 때까지 남겨 둔다 (S ↔ C 바꾸고 새 S는 비움)
     if (ADV.cBox) advClear(ADV.C, ADV.cBox);
     const t = ADV.C; ADV.C = ADV.S; ADV.S = t; ADV.cBox = box; ADV.cOp = op; ADV.cBaked = false; ADV.cCtx = s.ctx || null;
     if (ADV.cCtx) advCtxLoad(ADV.cCtx, box);
-    // px = 일반 알파(GPU에서 미리곱셈을 풀어 줌) — 선택 밖 잘라내기, 수채 경계
+    // px = 일반 알파(GPU에서 미리곱셈을 풀어 줌; 수채 경계·두께감은 셰이더에서 이미 들어감) — 선택 밖 잘라내기
     advClipToSelection(px, box, false);
-    if (!s.erase && bb && bb.wedge && bb.wedge.on) advWaterEdge(px, box.w, box.h, bb.wedge);
     let any = false;
     for (let i = 3; i < px.length; i += 4) if (px[i]) { any = true; break; }
     advBake(px, box); // 화면에는 실제로 들어갈 모습 그대로
@@ -2649,33 +2785,6 @@ void main(){
       gl.texSubImage2D(gl.TEXTURE_2D, 0, box.x, box.y, box.w, box.h, gl.RGBA, gl.UNSIGNED_BYTE, u);
     }
     ADV.cBaked = true;
-  }
-  // 수채 경계 (클립 스튜디오 '수채 경계'): 물이 마르며 가장자리에 물감이 고인 것처럼 테두리 안쪽 띠를 진하게
-  //  범위(px) 안에서 '획 알파 − 흐린 알파'가 큰 곳 = 가장자리. 투명도 영향만큼 알파를, 명도 영향만큼 색을 진하게.
-  function advWaterEdge(px, w, h, we) {
-    const r = Math.max(1, Math.round(we.radius || 4));
-    const A = new Float32Array(w * h);
-    for (let i = 0; i < A.length; i++) A[i] = px[i * 4 + 3] / 255;
-    // 상자 흐림 두 번(가로·세로) × 2
-    const tmp = new Float32Array(A.length);
-    let B = A.slice();
-    for (let pass = 0; pass < 2; pass++) {
-      for (let y = 0; y < h; y++) { let s = 0, n = 0; const row = y * w;
-        for (let x = -r; x < w; x++) { const ax = x + r; if (ax < w) { s += B[row + ax]; n++; } const rx = x - r - 1; if (rx >= 0) { s -= B[row + rx]; n--; } if (x >= 0) tmp[row + x] = s / Math.max(1, n); } }
-      for (let x = 0; x < w; x++) { let s = 0, n = 0;
-        for (let y = -r; y < h; y++) { const ay = y + r; if (ay < h) { s += tmp[ay * w + x]; n++; } const ry = y - r - 1; if (ry >= 0) { s -= tmp[ry * w + x]; n--; } if (y >= 0) B[y * w + x] = s / Math.max(1, n); } }
-    }
-    const ap = we.alpha == null ? 0.6 : we.alpha, vp = we.value == null ? 0.3 : we.value;
-    for (let i = 0; i < A.length; i++) {
-      const a = A[i];
-      if (a <= 0.003) continue;
-      const e = Math.max(0, Math.min(1, (a - B[i]) * 2.5)); // 가장자리 정도
-      if (e <= 0) continue;
-      const na = Math.min(1, a + (1 - a) * ap * e + a * ap * e * 0.6);
-      px[i * 4 + 3] = Math.round(na * 255);
-      const dk = 1 - vp * e * 0.55;
-      px[i * 4] *= dk; px[i * 4 + 1] *= dk; px[i * 4 + 2] *= dk;
-    }
   }
   // 곱하기 합성 획: 레이어 그림 × 획 색 (투명한 곳은 그냥 칠함) → 비우기 + 붙여넣기 (되돌리기 2칸, 묶음 되돌리기로 한 번에)
   // 곱하기 합성 획을 붙여넣기 한 번으로: 붙여넣기(보통 겹치기)의 결과가 곱하기와 같아지는 색 X를 픽셀마다 계산해 넣는다.
@@ -3159,7 +3268,30 @@ void main(){
           slider('범위', () => b.wedge.radius, (v) => { b.wedge.radius = v; }, 1, 40, 1, 'px'),
           slider('투명도 영향', () => Math.round(b.wedge.alpha * 100), (v) => { b.wedge.alpha = v / 100; }, 0, 100, 1, '%'),
           slider('명도 영향', () => Math.round(b.wedge.value * 100), (v) => { b.wedge.value = v / 100; }, 0, 100, 1, '%'),
-          Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: '물이 마르면서 가장자리에 물감이 고인 것처럼 획 테두리 안쪽을 진하게 해요. 손을 떼는 순간 적용돼요.' }),
+          Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: '물이 마르면서 가장자리에 물감이 고인 것처럼 획 테두리 안쪽을 진하게 해요. 그리는 동안에도 결과와 똑같이 보여요.' }),
+        ];
+      },
+      '물감': () => {
+        const br = () => b.bristle || (b.bristle = { on: false, shape: 'round', count: 22, streak: 0.5, var: 0.06 });
+        const im = () => b.impasto || (b.impasto = { depth: 0, shine: 0.4 });
+        const wt = () => b.wet || (b.wet = { on: false, wobble: 0.4, gran: 0.2, soft: 0 });
+        br(); im(); wt();
+        const head = (t) => Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: t });
+        return [
+          check('붓털 켜기', () => b.bristle.on, (v) => { b.bristle.on = v; }),
+          seg('붓 모양', [['round', '둥근 붓'], ['flat', '평붓']], () => b.bristle.shape || 'round', (v) => { b.bristle.shape = v; }),
+          slider('털 수', () => b.bristle.count, (v) => { b.bristle.count = v; }, 4, 64, 1),
+          slider('털 결 세기', () => Math.round(b.bristle.streak * 100), (v) => { b.bristle.streak = v / 100; }, 0, 100, 1, '%'),
+          slider('털마다 색 차이', () => Math.round(b.bristle.var * 100), (v) => { b.bristle.var = v / 100; }, 0, 30, 1, '%'),
+          head('붓털: 털마다 물감을 따로 묻혀 끊김 없는 결이 남아요. 획 탭의 \'물감 마름\'을 같이 쓰면 길게 그을수록 털이 하나씩 말라 갈라져요. 끝 모양·각도 설정 대신 쓰여요.'),
+          slider('두께감', () => Math.round(b.impasto.depth * 100), (v) => { b.impasto.depth = v / 100; }, 0, 100, 1, '%'),
+          slider('광택', () => Math.round((b.impasto.shine || 0) * 100), (v) => { b.impasto.shine = v / 100; }, 0, 100, 1, '%'),
+          head('두께감: 물감이 두껍게 올라온 것처럼 붓 자국 굴곡에 왼쪽 위 빛과 그림자를 넣어요(0 = 끔). 광택이 높을수록 유화처럼 반짝여요.'),
+          check('젖은 물감(수채)', () => b.wet.on, (v) => { b.wet.on = v; }),
+          slider('가장자리 흔들림', () => Math.round(b.wet.wobble * 100), (v) => { b.wet.wobble = v / 100; }, 0, 100, 1, '%'),
+          slider('가장자리 풀림', () => Math.round((b.wet.soft || 0) * 100), (v) => { b.wet.soft = v / 100; }, 0, 100, 1, '%'),
+          slider('안료 알갱이', () => Math.round(b.wet.gran * 100), (v) => { b.wet.gran = v / 100; }, 0, 100, 1, '%'),
+          head('젖은 물감: 물이 닿은 경계가 또렷하고 구불구불해져요. 풀림을 올리면 젖은 종이처럼 번지고, 알갱이는 종이 골에 안료가 가라앉은 오돌토돌함이에요. 수채 경계와 함께 쓰면 좋아요.'),
         ];
       },
       '색 혼합': () => {
@@ -3287,6 +3419,8 @@ void main(){
   const effP = (min) => ({ pressure: { min, curve: null } });
   const effPC = (min, curve) => ({ pressure: { min, curve } }); // 곡선: [[입력,출력]…] 0~1
   const HP = (o) => Object.assign({ texMode: 'height', interval: 0.05 }, o); // 깊이 결 기본
+  const BR = (shape, count, streak, v) => ({ on: true, shape, count, streak, var: v }); // 붓털
+  const WET = (wobble, gran, soft = 0) => ({ on: true, wobble, gran, soft }); // 젖은 물감(수채)
   const ADV_PRESETS = [
     // 연필·스케치
     { cat: '연필·스케치', name: 'HB 연필', tip: 'graphite', tex: 'tooth', desc: '단단하고 옅은 선. 살살 그으면 종이 이에만 걸려요', o: HP({ size: 4, sizeEff: effP(0.7), flow: 0.15, flowEff: effP(0.15), texDensity: 0.95, texScale: 0.55, smoothing: 8 }) },
@@ -3322,30 +3456,55 @@ void main(){
     { cat: '드라이 (목탄·파스텔)', name: '갈필 (마른 붓)', tip: 'drybrush', tex: 'coldpress', desc: '물감이 마르며 털 자국이 갈라지는 붓 — 길게 그어 보세요', o: HP({ size: 40, rotMask: 0x40, sizeEff: effP(0.75), flow: 0.25, flowEff: effP(0.3), interval: 0.025, texDensity: 0.55, texScale: 0.9, dryOut: { len: 650, min: 0.12 }, smoothing: 10 }) },
     { cat: '드라이 (목탄·파스텔)', name: '스펀지', tip: 'sponge', tex: 'grit', desc: '스펀지로 두드린 구멍 숭숭한 자국', o: { size: 50, rotMask: 0x80, rotRandom: 1, interval: 0.3, flow: 0.7, sizeEff: effP(0.7), scatter: 0.1, texDensity: 0.3 } },
     { cat: '드라이 (목탄·파스텔)', name: '점묘', tip: 'stipple', desc: '펜 끝으로 콕콕 찍은 점 음영', o: { size: 40, interval: 0.45, rotMask: 0x80, rotRandom: 1, flow: 1, sizeEff: effP(0.5) } },
-    // 수채
-    { cat: '수채', name: '수채 둥근 붓', tip: 'round-soft', tex: 'wcpaper', pv: '#2f6db5', desc: '획마다 곱해지고 가장자리에 물감이 고여요', o: { size: 50, hardness: 0.55, flow: 0.4, opacity: 0.75, interval: 0.05, texDensity: 0.15, texContrast: 0.3, sizeEff: effP(0.5),
-      blend: 'multiply', wedge: { on: true, radius: 4, alpha: 0.85, value: 0.5 },
-      mix: { mode: 'blend', amount: 0.75, density: 0.6, stretch: 0.2, amountEff: null, densEff: null, ref: 'layer' } } },
-    { cat: '수채', name: '수채 번짐', tip: 'round-soft', tex: 'wcpaper', pv: '#3a8f7a', desc: '넓고 묽게 번지는 물 많은 수채', o: { size: 90, hardness: 0.2, flow: 0.25, opacity: 0.7, interval: 0.08, texDensity: 0.15, sizeEff: effP(0.6),
-      blend: 'multiply', wedge: { on: true, radius: 10, alpha: 0.6, value: 0.3 } } },
+    // 수채 — '젖은 물감': 쌓인 물의 등고선이 또렷하고 구불한 가장자리가 되고, 가장자리에 물감이 고이며(수채 경계),
+    // 종이 골에 안료 알갱이가 가라앉는다. 그리는 동안에도 확정과 똑같이 보인다. 곱하기라 겹칠수록 투명하게 진해진다.
+    { cat: '수채', name: '수채 둥근 붓', tip: 'round-soft', tex: 'wcpaper', pv: '#2f6db5', desc: '가장자리에 물감이 고이는 맑은 수채', o: { size: 50, hardness: 0.1, flow: 0.4, opacity: 0.75, interval: 0.05, texDensity: 0.5, sizeEff: effP(0.5),
+      blend: 'multiply', wet: WET(0.5, 0.2), wedge: { on: true, radius: 5, alpha: 0.6, value: 0.5 } } },
+    { cat: '수채', name: '수채 세필', tip: 'round-soft', tex: 'wcpaper', pv: '#7a3b6e', desc: '작은 붓으로 그리는 가는 수채 선', o: { size: 9, hardness: 0.2, flow: 0.45, opacity: 0.8, interval: 0.04, texDensity: 0.4, sizeEff: effP(0.2), smoothing: 15, taperIn: 12, taperOut: 18,
+      blend: 'multiply', wet: WET(0.25, 0.15), wedge: { on: true, radius: 2, alpha: 0.5, value: 0.45 } } },
+    { cat: '수채', name: '수채 번짐', tip: 'round-soft', tex: 'wcpaper', pv: '#3a8f7a', desc: '젖은 종이에 떨어뜨린 듯 가장자리가 풀리는 수채', o: { size: 90, hardness: 0.2, flow: 0.25, opacity: 0.7, interval: 0.08, texDensity: 0.4, sizeEff: effP(0.6),
+      blend: 'multiply', wet: WET(0.4, 0.15, 0.6), wedge: { on: true, radius: 8, alpha: 0.3, value: 0.2 } } },
+    { cat: '수채', name: '수채 글레이즈', tip: 'round-soft', tex: 'wcpaper', pv: '#c9a227', desc: '넓고 고르게 까는 투명한 막 — 덧칠할수록 한 겹씩 진해져요', o: { size: 80, hardness: 0.2, flow: 0.3, opacity: 0.5, interval: 0.05, texDensity: 0.4, sizeEff: effP(0.7),
+      blend: 'multiply', wet: WET(0.3, 0.1), wedge: { on: true, radius: 6, alpha: 0.7, value: 0.55 } } },
+    { cat: '수채', name: '수채 알갱이', tip: 'round-soft', tex: 'wcpaper', pv: '#3b4fa8', desc: '울트라마린처럼 안료가 종이 골에 가라앉아 오돌토돌', o: { size: 60, hardness: 0.15, flow: 0.35, opacity: 0.75, interval: 0.05, texDensity: 0.6, texScale: 0.8, sizeEff: effP(0.6),
+      blend: 'multiply', wet: WET(0.45, 0.85), wedge: { on: true, radius: 4, alpha: 0.4, value: 0.3 } } },
     { cat: '수채', name: '마른 수채', tip: 'watercolor', tex: 'coldpress', pv: '#b5452f', desc: '물기 적은 붓이 종이 결 위로 스치는 거친 수채', o: HP({ size: 40, sizeEff: effP(0.6), flow: 0.16, flowEff: effP(0.2), opacity: 0.85, interval: 0.04, texDensity: 0.6, texScale: 1, dryOut: { len: 900, min: 0.35 }, blend: 'multiply', wedge: { on: true, radius: 3, alpha: 0.5, value: 0.4 } }) },
-    { cat: '수채', name: '수채 평붓', tip: 'flat', tex: 'wcpaper', pv: '#6b4fb3', desc: '넓은 면을 고르게 바르는 납작 수채 붓', o: { size: 44, thickness: 0.35, rotation: 90, rotMask: 0x40, flow: 0.35, opacity: 0.75, interval: 0.03, texDensity: 0.25, sizeEff: effP(0.7), blend: 'multiply', wedge: { on: true, radius: 4, alpha: 0.7, value: 0.45 } } },
+    { cat: '수채', name: '수채 평붓', tip: 'flat', tex: 'wcpaper', pv: '#6b4fb3', desc: '넓은 면을 고르게 바르는 납작 수채 붓, 옅은 털 결', o: { size: 44, thickness: 0.3, flow: 0.35, opacity: 0.75, interval: 0.03, texDensity: 0.4, sizeEff: effP(0.7), blend: 'multiply',
+      bristle: BR('flat', 20, 0.2, 0.03), wet: WET(0.5, 0.25), wedge: { on: true, radius: 4, alpha: 0.6, value: 0.45 } } },
     { cat: '수채', name: '수채 물 번지기', tip: 'round-soft', tex: 'wcpaper', pv: '#2f6db5', desc: '밑색을 끌어와 물로 풀어 주는 붓', o: { size: 70, hardness: 0.1, flow: 0.18, opacity: 0.6, interval: 0.06, texDensity: 0.2, sizeEff: effP(0.6), blend: 'multiply',
       mix: { mode: 'paint', amount: 0.25, density: 0.5, stretch: 0.6, amountEff: null, densEff: null, ref: 'layer' } } },
-    // 물감
-    { cat: '물감 (유화·구아슈)', name: '유화 둥근 붓', tip: 'bristle', tex: 'canvas', pv: '#a8432f', desc: '붓털 결이 남고 밑색과 섞이는 유화', o: { size: 40, flow: 0.9, thickness: 0.7, rotMask: 0x40, interval: 0.04, texDensity: 0.25, texScale: 0.5, sizeEff: effP(0.4),
+    // 물감 — 붓털 하나하나가 물감을 따로 묻히고 따로 마른다(끊김 없는 결 → 마르면 털 자국만). 두께감은 물감 높이에
+    // 왼쪽 위 빛을 비춰 붓 자국 굴곡을 살린다. 밑색과 섞이는 물감 섞기를 함께 쓴다.
+    { cat: '물감 (유화·구아슈)', name: '유화 둥근 붓', tip: 'bristle', pv: '#a8432f', desc: '털 결이 남고 밑색과 섞이는 유화, 길게 그으면 갈라져요', o: { size: 40, flow: 0.9, thickness: 0.7, interval: 0.04, sizeEff: effP(0.4), dryOut: { len: 1600, min: 0.3 },
+      bristle: BR('round', 22, 0.55, 0.1), impasto: { depth: 0.55, shine: 0.45 },
       mix: { mode: 'paint', amount: 0.55, density: 1, stretch: 0.55, amountEff: effP(0.3), densEff: null, ref: 'layer' } } },
-    { cat: '물감 (유화·구아슈)', name: '유화 평붓', tip: 'flatbristle', tex: 'canvas', pv: '#3f6e9e', desc: '넓은 평붓으로 물감을 밀어 바르기', o: { size: 44, flow: 0.95, rotMask: 0x40, interval: 0.025, texDensity: 0.2, texScale: 0.5, sizeEff: effP(0.6),
+    { cat: '물감 (유화·구아슈)', name: '유화 평붓', tip: 'flatbristle', pv: '#3f6e9e', desc: '넓은 평붓으로 물감을 밀어 바르기', o: { size: 44, flow: 0.95, thickness: 0.3, interval: 0.03, sizeEff: effP(0.6), dryOut: { len: 1600, min: 0.3 },
+      bristle: BR('flat', 26, 0.5, 0.08), impasto: { depth: 0.5, shine: 0.4 },
       mix: { mode: 'paint', amount: 0.6, density: 1, stretch: 0.5, amountEff: effP(0.3), densEff: null, ref: 'layer' } } },
-    { cat: '물감 (유화·구아슈)', name: '구아슈', tip: 'flat', pv: '#d28a2d', desc: '불투명하고 납작하게 덮이는 물감', o: { size: 30, thickness: 0.6, rotation: 90, rotMask: 0x40, interval: 0.05, sizeEff: effP(0.3),
+    { cat: '물감 (유화·구아슈)', name: '유화 임파스토', tip: 'bristle', pv: '#d9a23a', desc: '물감을 두껍게 올려 붓 자국이 도드라지는 유화', o: { size: 50, flow: 1, thickness: 0.6, interval: 0.03, sizeEff: effP(0.5), dryOut: { len: 2600, min: 0.5 },
+      bristle: BR('round', 20, 0.45, 0.07), impasto: { depth: 1, shine: 0.6 },
+      mix: { mode: 'paint', amount: 0.8, density: 1, stretch: 0.4, amountEff: effP(0.5), densEff: null, ref: 'layer' } } },
+    { cat: '물감 (유화·구아슈)', name: '마른 붓 (스컴블)', tip: 'flatbristle', pv: '#5b7f4a', desc: '물감 적은 붓을 문질러 털 자국만 거칠게 남기기', o: { size: 40, flow: 0.9, thickness: 0.3, interval: 0.03, sizeEff: effP(0.7), dryOut: { len: 500, min: 0.05 },
+      bristle: BR('flat', 26, 0.8, 0.08), impasto: { depth: 0.3, shine: 0.15 },
+      mix: { mode: 'paint', amount: 0.85, density: 1, stretch: 0.3, amountEff: null, densEff: null, ref: 'layer' } } },
+    { cat: '물감 (유화·구아슈)', name: '구아슈', tip: 'flat', pv: '#d28a2d', desc: '불투명하고 무광으로 고르게 덮이는 물감', o: { size: 30, flow: 1, thickness: 0.35, interval: 0.04, sizeEff: effP(0.4), dryOut: { len: 1800, min: 0.7 },
+      bristle: BR('flat', 18, 0.25, 0.04), impasto: { depth: 0.15, shine: 0 },
       mix: { mode: 'paint', amount: 0.85, density: 0.9, stretch: 0.3, amountEff: null, densEff: null, ref: 'layer' } } },
-    { cat: '물감 (유화·구아슈)', name: '아크릴', tip: 'flatbristle', tex: 'canvas', pv: '#2e7d5b', desc: '빨리 마르는 진한 물감, 끝으로 갈수록 털 자국', o: { size: 34, flow: 1, rotMask: 0x40, interval: 0.025, texDensity: 0.2, sizeEff: effP(0.6), dryOut: { len: 1400, min: 0.45 },
+    { cat: '물감 (유화·구아슈)', name: '구아슈 둥근 붓', tip: 'round-hard', pv: '#c0392b', desc: '작은 면과 디테일을 납작하게 메우는 구아슈', o: { size: 18, flow: 1, thickness: 0.8, interval: 0.04, sizeEff: effP(0.3), smoothing: 12, dryOut: { len: 1500, min: 0.7 },
+      bristle: BR('round', 14, 0.2, 0.04), impasto: { depth: 0.12, shine: 0 },
+      mix: { mode: 'paint', amount: 0.9, density: 0.9, stretch: 0.25, amountEff: null, densEff: null, ref: 'layer' } } },
+    { cat: '물감 (유화·구아슈)', name: '아크릴', tip: 'flatbristle', pv: '#2e7d5b', desc: '빨리 마르는 진한 물감, 끝으로 갈수록 털 자국', o: { size: 34, flow: 1, thickness: 0.32, interval: 0.03, sizeEff: effP(0.6), dryOut: { len: 1400, min: 0.35 },
+      bristle: BR('flat', 24, 0.45, 0.06), impasto: { depth: 0.3, shine: 0.25 },
       mix: { mode: 'paint', amount: 0.9, density: 1, stretch: 0.2, amountEff: null, densEff: null, ref: 'layer' } } },
-    { cat: '물감 (유화·구아슈)', name: '팔레트 나이프', tip: 'square', pv: '#c9a227', desc: '물감을 칼날로 펴 바르고 긁기', o: { size: 40, thickness: 0.14, rotation: 90, rotMask: 0x40, flow: 1, interval: 0.02, sizeEff: effP(0.7),
+    { cat: '물감 (유화·구아슈)', name: '팔레트 나이프', tip: 'square', pv: '#c9a227', desc: '칼날로 물감을 펴 바르면 가장자리에 물감 둑이 생겨요', o: { size: 40, flow: 1, thickness: 0.2, interval: 0.02, sizeEff: effP(0.7), dryOut: { len: 1200, min: 0.55 },
+      bristle: Object.assign(BR('flat', 40, 0.1, 0.03), { knife: true }), impasto: { depth: 0.7, shine: 0.4 },
       mix: { mode: 'paint', amount: 0.7, density: 1, stretch: 0.75, amountEff: effP(0.4), densEff: null, ref: 'layer' } } },
     // 섞기·문지르기
     { cat: '섞기·문지르기', name: '색 섞기 붓', tip: 'round-soft', desc: '밑색을 끌며 부드럽게 섞기', o: { size: 50, hardness: 0.3, flow: 0.8, interval: 0.06, sizeEff: null,
       mix: { mode: 'paint', amount: 0.2, density: 0.85, stretch: 0.4, amountEff: null, densEff: null, ref: 'layer' } } },
+    { cat: '섞기·문지르기', name: '유화 블렌더', tip: 'bristle', desc: '마른 붓으로 물감 경계를 털 결 따라 풀어 주기', o: { size: 50, flow: 0.85, thickness: 0.6, interval: 0.04, sizeEff: effP(0.5),
+      bristle: BR('round', 22, 0.4, 0.03), impasto: { depth: 0.25, shine: 0.2 },
+      mix: { mode: 'paint', amount: 0, density: 1, stretch: 0.7, amountEff: null, densEff: null, ref: 'layer' } } },
     { cat: '섞기·문지르기', name: '손끝 (문지르기)', tip: 'round-soft', desc: '색 없이 손가락으로 문지르기', o: { size: 40, hardness: 0.3, flow: 0.7, interval: 0.05, sizeEff: null,
       mix: { mode: 'paint', amount: 0, density: 1, stretch: 0.85, amountEff: null, densEff: null, ref: 'layer' } } },
     { cat: '섞기·문지르기', name: '거친 문지르기', tip: 'chalk', tex: 'rough', desc: '결이 남게 문질러 펴기 (목탄·파스텔 문지르기)', o: { size: 40, rotMask: 0x80, rotRandom: 1, flow: 0.8, interval: 0.05, texDensity: 0.5, sizeEff: null,
@@ -3414,7 +3573,7 @@ void main(){
 
   // ----- 획 미리보기: 실제 그리기 엔진으로 작은 S자 획을 그려 본다 (프리셋 고르기·내 브러시 목록) -----
   // 지금 브러시 상태를 잠깐 바꿔 끼우고, 작은 버퍼에 필압 0.1→1→0.1 획을 그린 뒤 원래대로 돌려놓는다(그리는 중에는 하지 않음).
-  const SMP = { cache: new Map(), q: [], busy: false, tex: null, dtex: null, float: null, bg: null, warned: false };
+  const SMP = { cache: new Map(), q: [], busy: false, tex: null, dtex: null, htex: null, float: null, bg: null, warned: false };
   const SMP_W = 300, SMP_H = 64;
   const smpHash = (s) => { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return (h >>> 0).toString(36); };
   const hexRgb = (h) => { const n = parseInt(String(h || '#2b2b30').slice(1), 16); return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; };
@@ -3456,13 +3615,13 @@ void main(){
     if (!gl || ADV.stroke || ADV.lost || !ADV.P.show) return null;
     if (!SMP.tex || SMP.float !== ADV.float || !gl.isTexture(SMP.tex) || SMP.tw !== W || SMP.th !== H) {
       SMP.tw = W; SMP.th = H;
-      for (const t of [SMP.tex, SMP.dtex]) if (t && gl.isTexture(t)) gl.deleteTexture(t);
+      for (const t of [SMP.tex, SMP.dtex, SMP.htex]) if (t && gl.isTexture(t)) gl.deleteTexture(t);
       const mk = (f) => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texStorage2D(gl.TEXTURE_2D, 1, f, W, H);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; };
-      SMP.tex = mk(ADV.float ? gl.RGBA16F : gl.RGBA8); SMP.dtex = mk(gl.RGBA8); SMP.float = ADV.float;
+      SMP.tex = mk(ADV.float ? gl.RGBA16F : gl.RGBA8); SMP.dtex = mk(gl.RGBA8); SMP.htex = mk(ADV.float ? gl.RGBA16F : gl.RGBA8); SMP.float = ADV.float;
     }
-    const KEYS = ['stroke', 'brush', 'tipTex', 'texInfo', 'proc', 'dualTex', 'batch', 'dbatch', 'S', 'D', 'W', 'H'];
+    const KEYS = ['stroke', 'brush', 'tipTex', 'texInfo', 'proc', 'dualTex', 'batch', 'dbatch', 'S', 'D', 'Hb', 'W', 'H'];
     const keep = {};
     for (const k of KEYS) keep[k] = ADV[k];
     let px = null;
@@ -3471,12 +3630,12 @@ void main(){
       const sz = Math.max(2.5, Math.min(brush.size, o.maxSize || (brush.spray ? H * 0.95 : H * 0.4))), k = sz / brush.size;
       b.size = sz; b.baseSize = (brush.baseSize || brush.size) * k; b.smoothing = 0;
       b.taperIn = (b.taperIn || 0) * k; b.taperOut = (b.taperOut || 0) * k;
-      if (b.dryOut && b.dryOut.len > 0) b.dryOut.len = Math.min(b.dryOut.len * k, 260);
+      if (b.dryOut && b.dryOut.len > 0) b.dryOut.len = Math.min(b.dryOut.len * k, W * 1.1); // 미리보기 획 길이(약 1.3W) 안에서 마르는 모습이 보이게
       if (b.spray && !b.spray.sync) b.spray.size *= Math.max(k, 0.8);
       if (b.dual) b.dual.size *= k;
       if (b.wedge) b.wedge.radius = Math.max(1, b.wedge.radius * k);
-      Object.assign(ADV, { S: SMP.tex, D: SMP.dtex, W, H, batch: [], dbatch: [], tipTex: res.tips, texInfo: res.tex, proc: res.proc, dualTex: res.dual || null, brush: b });
-      advClear(SMP.tex, null); advClear(SMP.dtex, null);
+      Object.assign(ADV, { S: SMP.tex, D: SMP.dtex, Hb: SMP.htex, W, H, batch: [], dbatch: [], tipTex: res.tips, texInfo: res.tex, proc: res.proc, dualTex: res.dual || null, brush: b });
+      advClear(SMP.tex, null); advClear(SMP.dtex, null); advClear(SMP.htex, null);
       const s = { pts: [], acc: 0, dist: 0, last: null, speed: 0, idx: 0, dir: 1, box: null, color: o.color, erase: false, v: 0, n: 0 };
       s.hsv = hsv(...s.color);
       if (o.bg && b.mix && b.mix.mode !== 'none' && W === SMP_W && H === SMP_H) s.mix = { E: null, L: null, ref: 'all', tiles: new Map(), K: null, snap: o.bg, W, H };
@@ -3496,13 +3655,12 @@ void main(){
       gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
       const P = ADV.P.show; gl.useProgram(P.p); gl.bindVertexArray(ADV.vao);
       gl.uniform1f(P.u.uMode, 1); gl.uniform2f(P.u.uOff, 0, 0); gl.uniform2f(P.u.uDoc, W, H); gl.uniform1f(P.u.uOp, b.opacity == null ? 1 : b.opacity);
-      advCtxUniforms(P, null); advTexUniforms(P); advDualUniforms(P, !!advDual(b));
+      advCtxUniforms(P, null); advTexUniforms(P); advDualUniforms(P, !!advDual(b)); advFxUniforms(P, true, false);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, SMP.tex); gl.uniform1i(P.u.uS, 0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       px = new Uint8Array(W * H * 4);
       gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
       gl.deleteTexture(out);
-      if (b.wedge && b.wedge.on) advWaterEdge(px, W, H, b.wedge);
     } finally {
       for (const k of KEYS) ADV[k] = keep[k];
       gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.bindVertexArray(null);
@@ -7194,7 +7352,7 @@ void main(){
       flow: 1, flowEff: null, hardness: 1, interval: 0.08, intervalEff: null, thickness: 1, thickEff: null, vertical: false,
       rotation: 0, rotMask: 3, rotRandom: 1, aa: 1, smoothing: 10, tipOrder: 0, flipH: 0, flipV: 0, ribbon: false,
       texDensity: 0.5, texDensEff: null, texScale: 1, texRotate: 0, texInvert: false, texPerStamp: false,
-      spray: null, jitter: null, taperIn: 0, taperOut: 0, erase: false, unsupported: [], texMode: 'mul', scatter: 0, dryOut: null };
+      spray: null, jitter: null, taperIn: 0, taperOut: 0, erase: false, unsupported: [], texMode: 'mul', scatter: 0, dryOut: null, bristle: null, impasto: null, wet: null };
   }
   // 끝 모양 창 안의 '기본 모양' 고르기 판
   function builtinPicker(list, onPick) {
