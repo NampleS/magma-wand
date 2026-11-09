@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.16.0';
+  const VERSION = '0.17.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -39,13 +39,14 @@
     tool: 'wand', brush: 20, qtol: 12, qexpand: 1, qref: 'all', qkeys: ['Shift+KeyW'],
     bkeys: ['Shift+KeyB'], akeys: ['KeyC'], advBrushId: null, advOpacity: 100, advSize: 10,
     blurSize: 40, blurStrength: 6, blurDensity: 50, koAuto: true, koFont: 'Paperlogy', groupLast: {},
-    gap: 0, qmSize: 30, qmMode: 'add' };
+    gap: 0, qmSize: 30, qmMode: 'add', fillGrow: 0 };
   const S = Object.assign({}, DEFAULTS, loadSettings(), { active: false, busy: false, switching: false });
   if (!['select', 'fill'].includes(S.action)) S.action = 'select';
   if (!['all', 'layer'].includes(S.ref)) S.ref = 'all';
   if (!['all', 'layer'].includes(S.qref)) S.qref = 'all';
   if (!['wand', 'quick', 'brush', 'blur', 'qmask'].includes(S.tool)) S.tool = 'wand';
   if (!['add', 'sub'].includes(S.qmMode)) S.qmMode = 'add';
+  if (!Number.isFinite(S.fillGrow)) S.fillGrow = 0;
   if (!Array.isArray(S.bkeys)) S.bkeys = DEFAULTS.bkeys.slice();
   if (!Array.isArray(S.akeys)) S.akeys = DEFAULTS.akeys.slice();
   S.alpha = false; // 투명색은 켤 때마다 새로 (저장하지 않음)
@@ -61,9 +62,9 @@
   }
   function saveSettings() {
     try {
-      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode } = S;
+      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow } = S;
       localStorage.setItem('magmaWand.settings',
-        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode }));
+        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow }));
     } catch { /* 저장 못 해도 동작에는 지장 없음 */ }
   }
 
@@ -2828,7 +2829,7 @@ void main(){
   const modalObserver = new MutationObserver(() => {
     if (modalObserver.pending) return;
     modalObserver.pending = true;
-    requestAnimationFrame(() => { modalObserver.pending = false; ensureShortcutRow(); ensureMenuItems(); if (LP.on) ensureLayerProps(); ensureKoRow(); });
+    requestAnimationFrame(() => { modalObserver.pending = false; ensureShortcutRow(); ensureMenuItems(); if (LP.on) ensureLayerProps(); ensureKoRow(); ensureFillRow(); });
   });
   // 페이지 본문이 생기기 전에 들어와도 멈추지 않도록 문서 전체를 지켜본다 (0.4.0 버그)
   modalObserver.observe(document.documentElement, { childList: true, subtree: true });
@@ -3099,7 +3100,7 @@ void main(){
     let prevSelMode = null, changedMode = false;
     const label = n >= 0 ? `선택 범위 ${n}px 확장` : `선택 범위 ${-n}px 축소`;
     try {
-      toast(`${label} 중…`);
+      note(`${label} 중…`);
       const vt = viewTransform();
       if (!vt || !(vt.zoom > 0)) return toast('화면 위치 정보를 읽지 못해 멈췄어요');
       if (Math.abs(vt.rot) > 1e-6 || vt.flags) return toast('화면을 회전하거나 뒤집은 상태에서는 아직 쓸 수 없어요');
@@ -3135,7 +3136,7 @@ void main(){
         sampleMask(gs.mask, gs.W, gs.H, 1500, ([x, y]) => toBuf([x + gs.ox, y + gs.oy])), spike * vt.zoom * kx);
       changedMode = plan.mode !== prevSelMode;
       await drawSelectionPlan(canvas, plan);
-      toast(`${label} 완료`);
+      note(`${label} 완료`);
     } catch (e) {
       console.error('[MagmaWand]', e);
       toast('오류: ' + (e && e.message || e));
@@ -3156,6 +3157,8 @@ void main(){
 
   // 화면 아래쪽에 잠깐 뜨는 안내 (마법봉 설정 칸이 안 보일 때도 결과를 알 수 있게)
   let toastEl = null, toastTimer = null;
+  // 자주 일어나는 성공·상태 안내는 팝업 없이 설정 칸 상태 줄에만 (팝업은 오류·경고·드문 기능 결과만)
+  function note(msg) { status(msg); }
   function toast(msg) {
     status(msg);
     if (!toastEl || !toastEl.isConnected) {
@@ -4026,7 +4029,7 @@ void main(){
       const t = ALPHA.prevTool; ALPHA.prevTool = null;
       ALPHA.switching = true; try { await selectTool(t); } finally { ALPHA.switching = false; }
     } else ALPHA.prevTool = null;
-    toast(S.alpha ? '투명색 — 브러시가 지우개가 돼요' : '원래 색으로 돌아왔어요');
+    note(S.alpha ? '투명색 — 브러시가 지우개가 돼요' : '원래 색으로 돌아왔어요');
   }
   // 투명색일 때 Magma 브러시·연필을 고르면 지우개로 바꿔 둔다
   async function alphaSyncTool() {
@@ -4611,7 +4614,7 @@ void main(){
     }
     msPaint();
     const n = msOthers(E).length;
-    toast(n ? `레이어 ${n + 1}개를 함께 골랐어요 — 변형(Ctrl+T)·이동(V)·눈 켜고 끄기를 함께 해요` : '함께 고르기를 풀었어요');
+    note(n ? `레이어 ${n + 1}개를 함께 골랐어요 — 변형(Ctrl+T)·이동(V)·눈·속성을 함께 바꿔요` : '함께 고르기를 풀었어요');
   }
 
   // 눈(보이기) 같이 바꾸기: Magma가 지금 줄의 눈을 바꾼 뒤, 함께 고른 다른 레이어도 같은 상태로 맞춘다
@@ -4971,12 +4974,12 @@ void main(){
     const bad = results.filter(([, e]) => e);
     if (!results.length) return;
     guAdd(ss.ref0, ss.kind === 'move' ? '함께 옮기기' : '함께 변형');
-    toast(bad.length ? `${results.length - bad.length}개는 함께 바꿨지만 ${bad.map(([L, e]) => `"${L.name}"(${e})`).join(', ')}은 못 바꿨어요`
+    (bad.length ? toast : note)(bad.length ? `${results.length - bad.length}개는 함께 바꿨지만 ${bad.map(([L, e]) => `"${L.name}"(${e})`).join(', ')}은 못 바꿨어요`
       : `레이어 ${results.length + 1}개를 함께 ${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} (되돌리기는 레이어마다 ${ss.sel ? '3칸: 선택 해제·선택·변형' : '한 칸'})`);
   }
   // MS.ref = 지난번(동작 직전) 맨 위 되돌리기 기록 — 묶음 되돌리기의 시작점
   const msTimer = setInterval(() => { try { msTick(); if (!MS.busy && !MS.sess) MS.ref = guRef(); } catch (err) { console.warn('[MagmaWand] 함께 고르기', err); } }, 60);
-  cleanups.push(() => { QM.wrap?.remove();
+  cleanups.push(() => { QM.wrap?.remove(); FG.row?.remove();
   });
   cleanups.push(() => { clearInterval(msTimer); MS.sess?.wrap?.remove(); MS.guard?.remove(); document.querySelectorAll('.mw-msel').forEach((r) => r.classList.remove('mw-msel')); });
   on(window, 'scroll', () => { if (MS.set.size) requestAnimationFrame(msPaint); }, true);
@@ -5065,7 +5068,7 @@ void main(){
     }
     guAdd(MS.pref0, '속성 함께 바꾸기');
     const names = { opacity: '불투명도', mode: '합성 모드', opacityLocked: '투명 픽셀 잠금', locked: '잠금', clippingGroup: '클리핑' };
-    toast(bad.length ? `일부는 못 바꿨어요: ${bad.join(', ')}` : `레이어 ${todo.length + 1}개에 ${Object.keys(ch).map((k) => names[k]).join('·')} 함께 맞췄어요`);
+    (bad.length ? toast : note)(bad.length ? `일부는 못 바꿨어요: ${bad.join(', ')}` : `레이어 ${todo.length + 1}개에 ${Object.keys(ch).map((k) => names[k]).join('·')} 함께 맞췄어요`);
   }
 
   // ---------- 빈틈 닫기 (클립 스튜디오 '틈 닫기') ----------
@@ -5225,7 +5228,9 @@ void main(){
     if (QM.st || QM.applying || S.busy || BSZ.on) return;
     if (!QM.mask && !qmFromSelection()) return;
     qmOverlay();
-    QM.st = { pid: e.pointerId, add: S.qmMode === 'sub' ? e.altKey : !e.altKey, last: null, box: null };
+    // 투명색(C)을 고른 상태면 브러시가 지우개가 된다 (Magma 브러시와 같은 규칙)
+    const add = (S.qmMode === 'sub' ? e.altKey : !e.altKey) !== !!S.alpha;
+    QM.st = { pid: e.pointerId, add, last: null, box: null };
     qmAdd(e);
   }
   function qmPointerMove(e) {
@@ -5277,7 +5282,7 @@ void main(){
       if (!cnt) {
         const des = document.querySelector('.selection-tool button[command=deselect]');
         if (des && !des.disabled) press(des);
-        qmReset(); toast('선택을 모두 지웠어요'); return;
+        qmReset(); note('선택을 모두 지웠어요'); return;
       }
       const P = exactPath(bin, QM.W, QM.H, D.spike, { pixelOnly: false });
       if (!P) { toast('선택 모양을 만들지 못했어요'); return; }
@@ -5289,7 +5294,7 @@ void main(){
       await drawSelectionPlan(canvas, plan);
       if (plan.deselectFirst) { await nextFrame(); guAdd(gref0, '퀵 마스크 선택'); }
       qmReset();
-      toast(`퀵 마스크를 선택으로 만들었어요 (${cnt.toLocaleString()}픽셀)` + (P.dropped ? ` · 작은 조각 ${P.dropped}개는 뺐어요` : ''));
+      note(`퀵 마스크를 선택으로 만들었어요 (${cnt.toLocaleString()}픽셀)` + (P.dropped ? ` · 작은 조각 ${P.dropped}개는 뺐어요` : ''));
     } catch (err) {
       console.warn('[MagmaWand] 퀵 마스크', err);
       toast('선택으로 만들지 못했어요: ' + (err && err.message || err));
@@ -5381,18 +5386,18 @@ void main(){
   async function guUndo(g) {
     const h = guHist();
     GU.busy = true;
-    msGuard(true, `${g.what} 되돌리는 중… (${g.n}칸)`);
+    msGuard(true, '');
     let done = 0;
     try { done = await guPress('undo', g.n, h); } finally { msGuard(false); GU.busy = false; }
     GU.list.pop();
     if (done) GU.redo.push({ n: done, redoTop: guTop(h.redos), what: g.what, ref0: g.ref0 });
-    toast(done === g.n ? `${g.what} 되돌렸어요 (Magma 되돌리기 ${done}칸을 한 번에)` + (g.lost ? ' · 더 앞의 칸은 15칸 한도로 지워져 있었어요' : '')
+    (done === g.n && !g.lost ? note : toast)(done === g.n ? `${g.what} 되돌렸어요 (Magma 되돌리기 ${done}칸을 한 번에)` + (g.lost ? ' · 더 앞의 칸은 15칸 한도로 지워져 있었어요' : '')
       : `${g.what} — ${g.n}칸 중 ${done}칸만 되돌렸어요`);
   }
   async function guRedo(r) {
     const h = guHist();
     GU.busy = true;
-    msGuard(true, `${r.what} 다시 하는 중… (${r.n}칸)`);
+    msGuard(true, '');
     let done = 0;
     try { done = await guPress('redo', r.n, h); } finally { msGuard(false); GU.busy = false; }
     GU.redo.pop();
@@ -5400,7 +5405,7 @@ void main(){
       const a = h.undos;
       if (!r.ref0 || a.lastIndexOf(r.ref0) === a.length - 1 - done) GU.list.push({ ref0: r.ref0, top: guTop(a), n: done, what: r.what, lost: false });
     }
-    toast(done === r.n ? `${r.what} 다시 했어요 (${done}칸을 한 번에)` : `${r.what} — ${r.n}칸 중 ${done}칸만 다시 했어요`);
+    (done === r.n ? note : toast)(done === r.n ? `${r.what} 다시 했어요 (${done}칸을 한 번에)` : `${r.what} — ${r.n}칸 중 ${done}칸만 다시 했어요`);
   }
   // 지금 누르면 묶음으로 처리할 게 있는지
   function guUndoTarget() { const g = GU.list[GU.list.length - 1]; return g && !GU.busy && guRef() === g.top ? g : null; }
@@ -5433,6 +5438,161 @@ void main(){
     GU_BLOCK.on = true; setTimeout(() => { GU_BLOCK.on = false; }, 800);
     (g ? guUndo(g) : guRedo(r)).catch((err) => console.warn('[MagmaWand] 묶음 되돌리기', err));
   }, true);
+
+  // ---------- 페인트통 영역 확장·축소 (클립 스튜디오 '영역 확대/축소') ----------
+  // Magma 페인트통(faFillDrip) 설정 칸에 '영역 확장/축소' 줄을 붙인다. 0이면 Magma가 평소처럼 칠한다.
+  // 0이 아니면: 클릭을 마법봉이 받아 Magma 페인트통 설정(대상 레이어·허용 오차·이어진 곳만·빈틈 닫기·반전·채우기/지우기·
+  // 불투명도)을 그대로 읽어 영역을 계산하고, n픽셀 넓히거나(+) 좁힌(−) 뒤 올가미 채우기 한 번으로 칠한다(되돌리기 한 칸).
+  const FG = { row: null, block: false, warned: {} };
+  const fgRow = (label) => magmaRows().find((r) => r.querySelector('.slider-label')?.textContent.trim() === label);
+  const fgRadio = (label) => fgRow(label)?.querySelector('button.on, button.active')?.getAttribute('radiovalue') || null;
+  const fgCheck = (label) => {
+    const lab = [...document.querySelectorAll('editor-sliders .tool-sliders .custom-control-label')].find((x) => x.textContent.trim() === label);
+    const b = lab && lab.closest('label')?.querySelector('button[role=checkbox]');
+    return b ? b.getAttribute('aria-checked') === 'true' : null;
+  };
+  const fgNum = (label) => { const v = parseFloat(fgRow(label)?.querySelector('editable-number')?.textContent); return Number.isFinite(v) ? v : null; };
+  function fgConfig() {
+    const fillBtn = fgRow('Fill mode')?.querySelector('button.on');
+    return {
+      target: fgRadio('Target layer'), mode: fgRadio('Mode'),
+      clear: fillBtn ? fillBtn.textContent.trim() === 'clear' : false,
+      invert: !!fgCheck('Invert'), contig: fgCheck('Contiguous') !== false,
+      tol: fgNum('Tolerance') ?? 0, gap: fgNum('Close gap') ?? 0, opacity: fgNum('Opacity') ?? 100,
+    };
+  }
+  function ensureFillRow() {
+    // 다른 도구 설정 칸으로 바뀌면(Magma가 칸을 다시 쓰는 경우) 붙여 둔 줄을 치운다
+    if (S.active || currentTool() !== 'faFillDrip') { if (FG.row) { FG.row.remove(); FG.row = null; } return; }
+    const gapRow = fgRow('Close gap') || fgRow('Tolerance');
+    if (!gapRow) return;
+    if (FG.row && FG.row.isConnected && FG.row.previousElementSibling === gapRow) return;
+    FG.row?.remove();
+    const min = -20, max = 20;
+    const row = gapRow.cloneNode(true);
+    row.removeAttribute('tooltip');
+    row.title = '칠할 영역을 이 픽셀만큼 넓히거나(+) 좁혀요(−). 0이면 Magma 그대로';
+    row.classList.add('mw-el', 'mw-fgrow');
+    row.querySelector('.slider-label').textContent = '확장/축소';
+    const slider = row.querySelector('.slider'), thumb = row.querySelector('.slider-thumb'), circ = row.querySelector('.slider-circle-outer');
+    const numBtn = row.querySelector('editable-number button'), inp = row.querySelector('editable-number input');
+    if (inp) inp.style.display = 'none';
+    const clamp = (v) => Math.min(max, Math.max(min, Math.round(v)));
+    const render = () => {
+      const p = (S.fillGrow - min) / (max - min) * 100;
+      if (thumb) { thumb.style.width = p + '%'; thumb.style.left = '0%'; }
+      if (circ) circ.style.left = `calc(${p}% - var(--slider_circle_outer-size-default) / 2)`;
+      if (numBtn) numBtn.textContent = (S.fillGrow > 0 ? '+' : '') + S.fillGrow;
+    };
+    const setV = (v) => { S.fillGrow = clamp(v); render(); saveSettings(); };
+    const fromX = (x) => { const r = slider.getBoundingClientRect(); setV(min + (x - r.left) / r.width * (max - min)); };
+    slider?.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      try { slider.setPointerCapture(e.pointerId); } catch { }
+      fromX(e.clientX);
+      const mv = (ev) => fromX(ev.clientX);
+      const up = () => { slider.removeEventListener('pointermove', mv); slider.removeEventListener('pointerup', up); };
+      slider.addEventListener('pointermove', mv); slider.addEventListener('pointerup', up);
+    });
+    row.addEventListener('wheel', (e) => { e.preventDefault(); setV(S.fillGrow + (e.deltaY < 0 ? 1 : -1)); }, { passive: false });
+    if (numBtn && inp) {
+      numBtn.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        numBtn.style.display = 'none'; inp.style.display = 'block';
+        inp.removeAttribute('hidden'); inp.min = String(min); inp.max = String(max);
+        inp.value = String(S.fillGrow); inp.focus(); inp.select();
+      });
+      const finish = () => { const v = parseFloat(inp.value); if (Number.isFinite(v)) setV(v); inp.style.display = 'none'; numBtn.style.display = ''; };
+      inp.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter' || e.key === 'Escape') inp.blur(); });
+      inp.addEventListener('blur', finish);
+    }
+    render();
+    gapRow.after(row);
+    FG.row = row;
+  }
+  // 마스크를 n픽셀 넓히기(+)·좁히기(−) — 거리 변환(원형)
+  function growMaskBy(mask, w, h, n) {
+    const out = new Uint8Array(w * h), r2 = n * n;
+    if (n > 0) { const d2 = edtSq(mask, w, h); for (let i = 0; i < out.length; i++) out[i] = d2[i] <= r2 ? 1 : 0; }
+    else {
+      const inv = new Uint8Array(w * h); for (let i = 0; i < inv.length; i++) inv[i] = mask[i] ? 0 : 1;
+      const d2 = edtSq(inv, w, h); for (let i = 0; i < out.length; i++) out[i] = mask[i] && d2[i] > r2 ? 1 : 0;
+    }
+    return out;
+  }
+  function fgWarnOnce(k, msg) { if (FG.warned[k]) return; FG.warned[k] = true; toast(msg); }
+  function onFillClick(e) {
+    if (!e.isTrusted) return;
+    if (FG.block) {
+      e.stopImmediatePropagation(); if (e.cancelable) e.preventDefault();
+      if (e.type === 'click') FG.block = false;
+      return;
+    }
+    if (e.type !== 'pointerdown' || e.button !== 0 || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (S.active || S.busy || !S.fillGrow || currentTool() !== 'faFillDrip') return;
+    const canvas = getCanvas();
+    if (e.target !== canvas) return;
+    const cfg = fgConfig();
+    if (cfg.mode !== 'color') { fgWarnOnce('mode', '확장/축소는 Mode가 color일 때만 써요 — 이번엔 Magma 그대로 칠해요'); return; }
+    if (cfg.target !== 'active' && cfg.target !== 'all') { fgWarnOnce('target', '확장/축소는 Target layer가 active·all일 때만 써요 — 이번엔 Magma 그대로 칠해요'); return; }
+    if (!docContext(canvas)) { fgWarnOnce('view', '화면을 회전·뒤집기 한 상태라 확장/축소 없이 Magma 그대로 칠해요'); return; }
+    e.stopImmediatePropagation(); e.preventDefault();
+    FG.block = true; setTimeout(() => { FG.block = false; }, 1500);
+    fillGrowRun(e.clientX, e.clientY, cfg).catch((err) => { console.warn('[MagmaWand] 페인트통 확장/축소', err); toast('칠하지 못했어요: ' + (err && err.message || err)); });
+  }
+  async function fillGrowRun(cx, cy, cfg) {
+    const canvas = getCanvas();
+    const D = docContext(canvas);
+    if (!D) return;
+    const E = D.E, L = msActive(E);
+    if (!L) { toast('칠할 레이어를 먼저 골라 주세요'); return; }
+    const img = docImage(D, cfg.target === 'active' ? 'layer' : 'all');
+    if (img.fallback || img.error) { toast(img.error || '그림을 읽지 못했어요'); return; }
+    const [fx, fy] = D.toDoc(cx, cy);
+    const dx = Math.floor(fx), dy = Math.floor(fy);
+    if (dx < 0 || dy < 0 || dx >= img.w || dy >= img.h) return;
+    const pct = Math.max(0, Math.min(100, cfg.tol / 2.55));
+    const ff = cfg.gap > 0 && cfg.contig ? gapCloseFill(img, dx, dy, pct, Math.max(1, Math.ceil(cfg.gap / 2))) : null;
+    let mask = (ff || floodFill(img, dx, dy, pct, null, true, cfg.contig)).mask;
+    if (cfg.invert) for (let i = 0; i < mask.length; i++) mask[i] = mask[i] ? 0 : 1;
+    mask = growMaskBy(mask, img.w, img.h, S.fillGrow);
+    let cnt = 0; for (let i = 0; i < mask.length; i++) cnt += mask[i];
+    if (!cnt) { note('칠할 곳이 없어요 (너무 많이 좁혔어요)'); return; }
+    const P = exactPath(mask, img.w, img.h, D.spike, { pixelOnly: true });
+    if (!P) { toast('칠할 영역을 만들지 못했어요'); return; }
+    const poly = P.pts.map(D.toBuf);
+    const erase = cfg.clear || !!S.alpha;
+    S.busy = true;
+    document.documentElement.classList.add('mw-busy');
+    let prevMode = null, prevAuto = null, prevStab = null, prevOp = null, opRow = null;
+    try {
+      const oldRow = stabilizerRow();
+      if (!(await selectTool('lassoBrushIcon'))) throw new Error('올가미 채우기 도구로 바꾸지 못했어요');
+      await waitPanelChange(oldRow);
+      prevMode = getBrushMode(); prevAuto = getAutoErase();
+      await setBrushMode(erase ? 'erase' : 'draw');
+      if (prevAuto) await setAutoErase(false);
+      // 안전: 원하는 모드인지 확인되지 않으면 긋지 않는다
+      if (getBrushMode() !== (erase ? 'erase' : 'draw') || getAutoErase() === true) throw new Error('올가미 채우기 모드를 맞추지 못해 안전을 위해 멈췄어요');
+      opRow = magmaRows().find((r) => r.querySelector('.slider-label')?.textContent.trim() === 'Opacity');
+      prevOp = opRow ? parseFloat(opRow.querySelector('editable-number')?.textContent) : null;
+      if (prevOp !== null && prevOp !== cfg.opacity) await setRowNumber(opRow, cfg.opacity);
+      prevStab = getStabilizer(); if (prevStab) await setStabilizer(0);
+      await drawLasso(canvas, poly, {});
+      note(`${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀 (영역 ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)` + (ff === null && cfg.gap > 0 && cfg.contig ? ' · 누른 곳이 선과 너무 가까워 빈틈 닫기 없이' : ''));
+    } finally {
+      try {
+        if (prevStab) await setStabilizer(prevStab);
+        if (opRow && opRow.isConnected && prevOp !== null && prevOp !== cfg.opacity) await setRowNumber(opRow, prevOp);
+        if (prevAuto) await setAutoErase(true);
+        if (prevMode && prevMode !== getBrushMode()) await setBrushMode(prevMode);
+        if (currentTool() !== 'faFillDrip') await selectTool('faFillDrip');
+      } catch (e) { console.warn('[MagmaWand] 복구 실패', e); }
+      S.busy = false;
+      document.documentElement.classList.remove('mw-busy');
+    }
+  }
+  for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) on(window, t, (e) => onFillClick(e), true);
 
   // ---------- 고급 브러시: 기본 끝 모양·텍스처 (PNG 없이 고르기) ----------
   // 검은 그림 + 투명 배경 = 끝 모양(알파를 씀), 회색조 불투명 그림 = 텍스처(어두울수록 진하게)
@@ -5796,7 +5956,7 @@ void main(){
       await nextFrame();
       flashRow(row, hit.L);
     }
-    toast(`"${L.name}" 레이어` + (mine ? '를 골랐어요' : ' — 다른 사람 레이어예요'));
+    (mine ? note : toast)(`"${L.name}" 레이어` + (mine ? '를 골랐어요' : ' — 다른 사람 레이어예요'));
   }
   // 마법봉 입력 처리·Magma보다 먼저 (window 캡처, 앞쪽에 등록)
   const PICK_EVENTS = ['pointerdown', 'pointerup', 'pointercancel', 'mousedown', 'mouseup', 'click'];
@@ -5872,7 +6032,7 @@ void main(){
       const toBuf = ([x, y]) => [(m[0] * x + m[2] * y + m[4]) * k, (m[1] * x + m[3] * y + m[5]) * k];
       await drawLasso(canvas, [[R.x, R.y], [R.x + R.w, R.y], [R.x + R.w, R.y + R.h], [R.x, R.y + R.h]].map(toBuf), {});
       layerDirty = true;
-      toast(erase ? (b ? '선택 영역을 지웠어요' : '레이어 전체를 지웠어요') : (b ? '선택 영역을 채웠어요' : '보드 전체를 채웠어요'));
+      note(erase ? (b ? '선택 영역을 지웠어요' : '레이어 전체를 지웠어요') : (b ? '선택 영역을 채웠어요' : '보드 전체를 채웠어요'));
     } catch (err) {
       console.warn('[MagmaWand] 채우기', err);
       toast('채우지 못했어요: ' + (err && err.message || err));
@@ -6428,6 +6588,7 @@ void main(){
     ensureStyle();
     ensureGroups();
     ensureKoRow();
+    ensureFillRow();
     koToolTick();
     alphaTick();
     ensureLayerProps();
@@ -6472,6 +6633,6 @@ void main(){
     advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, parseSut, getAA, setAA, docToBuffer, selectionExists,
     setAlpha, advEraseCommit, fillSelection, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt,
     ensureGroups, activateMember, selectLayerContent, advNewBrush, setMagmaFont, currentFontName, systemFonts, openTextImageDialog,
-    blurDab, blurState: () => BLR, msState: () => MS, guState: () => GU, guRef, rowLayer, msPick, msReplay, msDecompose, gapCloseFill, qmState: () => QM, qmApply, msPropsApply, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons };
+    blurDab, blurState: () => BLR, msState: () => MS, guState: () => GU, guRef, fgConfig, growMaskBy, ensureFillRow, rowLayer, msPick, msReplay, msDecompose, gapCloseFill, qmState: () => QM, qmApply, msPropsApply, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons };
   window.__magmaWand.ready = true; // 끝까지 시작됨 (실행기는 이 표시가 없으면 다시 넣는다)
 })();
