@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.29.2';
+  const VERSION = '0.30.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -51,7 +51,7 @@
     tool: 'wand', brush: 20, qtol: 12, qexpand: 1, qref: 'all', qkeys: ['Shift+KeyW'],
     bkeys: ['Shift+KeyB'], akeys: ['KeyC'], advBrushId: null, advOpacity: 100, advSize: 10,
     blurSize: 40, blurStrength: 6, blurDensity: 50, koAuto: true, koFont: 'Paperlogy', groupLast: {},
-    gap: 0, qmSize: 30, qmMode: 'add', fillGrow: 0, lkeys: [], mkeys: ['KeyQ'], ykeys: [], symOn: true, symN: 2, symMirror: true };
+    gap: 0, qmSize: 30, qmMode: 'add', fillGrow: 0, lkeys: [], mkeys: ['KeyQ'], ykeys: [], symOn: true, symN: 2, symMirror: true, qsOn: true };
   const S = Object.assign({}, DEFAULTS, loadSettings(), { active: false, busy: false, switching: false });
   if (!['select', 'fill'].includes(S.action)) S.action = 'select';
   if (!['all', 'layer'].includes(S.ref)) S.ref = 'all';
@@ -77,9 +77,9 @@
   }
   function saveSettings() {
     try {
-      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror } = S;
+      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn } = S;
       localStorage.setItem('magmaWand.settings',
-        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror }));
+        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn }));
     } catch { /* 저장 못 해도 동작에는 지장 없음 */ }
   }
 
@@ -2920,6 +2920,7 @@ void main(){
     if (!ADV.stroke || e.pointerId !== ADV.pid) return;
     const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
     for (const ce of (evs.length ? evs : [e])) advAddPoint(ce);
+    qsAdvMove(e); // 멈추면 도형 보정
   }
   // ----- 색 혼합 (클립 스튜디오 '색 혼합': 블렌드 / 물감 섞기) -----
   // 도장마다 그 자리 밑그림 색(현재 레이어, 또는 보이는 그림 전체)을 읽어(읽기 전용) 브러시 색과 섞는다.
@@ -3925,7 +3926,12 @@ void main(){
     }
     if (S.tool === 'brush' && ADV.stroke && (e.type === 'pointerup' || e.type === 'pointercancel' || e.type === 'mouseup')) {
       e.stopImmediatePropagation(); e.preventDefault();
-      if (e.type !== 'mouseup' && e.pointerId === ADV.pid) advStrokeEnd(e.type === 'pointercancel');
+      if (e.type !== 'mouseup' && e.pointerId === ADV.pid) { qsHoldStop(); advStrokeEnd(e.type === 'pointercancel'); }
+      return;
+    }
+    if (S.tool === 'brush' && QS.adv && (e.type === 'pointerup' || e.type === 'pointercancel' || e.type === 'mouseup')) {
+      e.stopImmediatePropagation(); e.preventDefault();
+      if (e.type !== 'mouseup' && e.pointerId === QS.adv.pid) qsAdvCommit(e.type === 'pointercancel'); // 보정된 도형으로 그리기
       return;
     }
     if (S.tool === 'qmask' && QM.st && (e.type === 'pointerup' || e.type === 'pointercancel' || e.type === 'mouseup')) {
@@ -3985,6 +3991,7 @@ void main(){
       const over = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
       advCursor(e.clientX, e.clientY, (over || ADV.stroke) && !BSZ.on);
       if (ADV.stroke) { e.stopImmediatePropagation(); advPointerMove(e); }
+      else if (QS.adv) { e.stopImmediatePropagation(); qsAdvAdjust(e); }
       return;
     }
     if (S.tool === 'qmask' && canvas) {
@@ -5954,7 +5961,8 @@ void main(){
   //  - 선대칭 켜기: 거울(N/2개 축) · 끄기: 가운데 점을 중심으로 N등분 회전.
   const SYM_KEY = 'magmaWand.sym';
   const SYM_NATIVE = new Set(['faPencil', 'faPaintBrush', 'faEraser', 'blendIcon', 'lassoBrushIcon']);
-  const SYM = { map: null, cv: null, sig: '', raf: 0, drag: null, rec: null, replaying: false, lastEnd: null, hover: '' };
+  const SYM = { map: null, cv: null, sig: '', raf: 0, drag: null, rec: null, replaying: false, lastEnd: null, hover: '', ver: 0 };
+  const SYM_ID = { k: 'r', a: 0, L: [1, 0, 0, 1], cx: 0, cy: 0 }; // 그대로(자기 자신)
   const symBoardId = () => { const m = location.pathname.match(/\/d\/([^/?#]+)/); return m ? m[1] : ''; };
   function symMap() {
     if (!SYM.map) { try { SYM.map = JSON.parse(localStorage.getItem(SYM_KEY) || '{}') || {}; } catch { SYM.map = {}; } }
@@ -6041,7 +6049,9 @@ void main(){
   function symFrame() {
     SYM.raf = 0;
     const r = symRuler(), editing = S.active && S.tool === 'sym';
-    if (!r || (S.symOn === false && !editing) || !getCanvas()) {
+    const showAxis = !!r && (S.symOn !== false || editing);
+    const qp = qsPreview(); // 도형 보정 미리보기
+    if ((!showAxis && !qp) || !getCanvas()) {
       if (SYM.cv) { SYM.cv.remove(); SYM.cv = null; SYM.sig = ''; }
       setTimeout(symKick, 500); // 다른 보드로 옮겨 가거나 다시 켤 때를 위해 가끔 확인
       return;
@@ -6050,7 +6060,7 @@ void main(){
     if (!V) { setTimeout(symKick, 300); return; }
     if (!SYM.cv || !SYM.cv.isConnected) { SYM.cv = document.createElement('canvas'); SYM.cv.className = 'mw-sym mw-el'; document.body.appendChild(SYM.cv); SYM.sig = ''; }
     const dpr = window.devicePixelRatio || 1, R = V.r;
-    const sig = [R.left, R.top, R.width, R.height, dpr, ...V.m, r.cx, r.cy, r.ang, S.symN, S.symMirror, S.symOn, editing, SYM.hover, SYM.rec ? SYM.rec.pts.length : -1].join(',');
+    const sig = [R.left, R.top, R.width, R.height, dpr, ...V.m, r ? [r.cx, r.cy, r.ang] : '-', showAxis, S.symN, S.symMirror, S.symOn, editing, SYM.hover, SYM.rec ? SYM.rec.pts.length : -1, SYM.ver, qp ? qp[0].pts.length : -1].join(',');
     if (sig !== SYM.sig) {
       SYM.sig = sig;
       const cv = SYM.cv;
@@ -6060,36 +6070,47 @@ void main(){
       const g = cv.getContext('2d');
       g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, W, H);
       g.setTransform(dpr, 0, 0, dpr, -R.left * dpr, -R.top * dpr);
-      const [cx, cy] = V.toClient(r.cx, r.cy);
-      const far = (R.width + R.height) * 2;
-      // 축 방향(화면): 보드에서 각도 방향으로 한 걸음 간 점을 화면으로 옮겨 잰다 (화면 회전·뒤집기 포함)
-      const dirOf = (a) => { const [x, y] = V.toClient(r.cx + Math.cos(a) * 100, r.cy + Math.sin(a) * 100); const d = Math.hypot(x - cx, y - cy) || 1; return [(x - cx) / d, (y - cy) / d]; };
-      const lines = [];
-      const n = symCount();
-      if (S.symMirror !== false) { const m = Math.max(1, Math.floor(n / 2)); for (let j = 0; j < m; j++) lines.push({ d: dirOf(r.ang + (Math.PI * j) / m), full: true }); }
-      else for (let j = 0; j < n; j++) lines.push({ d: dirOf(r.ang + (2 * Math.PI * j) / n), full: false });
-      const off = S.symOn === false;
-      g.lineCap = 'round';
-      for (const pass of [0, 1]) {
-        g.strokeStyle = pass ? (off ? 'rgba(170,170,170,.7)' : 'rgba(167,139,250,.95)') : 'rgba(0,0,0,.45)';
-        g.lineWidth = pass ? 1 : 3;
-        g.setLineDash(off ? [6, 6] : []);
-        g.beginPath();
-        for (const ln of lines) { g.moveTo(ln.full ? cx - ln.d[0] * far : cx, ln.full ? cy - ln.d[1] * far : cy); g.lineTo(cx + ln.d[0] * far, cy + ln.d[1] * far); }
-        g.stroke();
+      g.lineCap = 'round'; g.lineJoin = 'round';
+      if (showAxis) {
+        const [cx, cy] = V.toClient(r.cx, r.cy);
+        const far = (R.width + R.height) * 2;
+        // 축 방향(화면): 보드에서 각도 방향으로 한 걸음 간 점을 화면으로 옮겨 잰다 (화면 회전·뒤집기 포함)
+        const dirOf = (a) => { const [x, y] = V.toClient(r.cx + Math.cos(a) * 100, r.cy + Math.sin(a) * 100); const d = Math.hypot(x - cx, y - cy) || 1; return [(x - cx) / d, (y - cy) / d]; };
+        const lines = [];
+        const n = symCount();
+        if (S.symMirror !== false) { const m = Math.max(1, Math.floor(n / 2)); for (let j = 0; j < m; j++) lines.push({ d: dirOf(r.ang + (Math.PI * j) / m), full: true }); }
+        else for (let j = 0; j < n; j++) lines.push({ d: dirOf(r.ang + (2 * Math.PI * j) / n), full: false });
+        const off = S.symOn === false;
+        for (const pass of [0, 1]) {
+          g.strokeStyle = pass ? (off ? 'rgba(170,170,170,.7)' : 'rgba(167,139,250,.95)') : 'rgba(0,0,0,.45)';
+          g.lineWidth = pass ? 1 : 3;
+          g.setLineDash(off ? [6, 6] : []);
+          g.beginPath();
+          for (const ln of lines) { g.moveTo(ln.full ? cx - ln.d[0] * far : cx, ln.full ? cy - ln.d[1] * far : cy); g.lineTo(cx + ln.d[0] * far, cy + ln.d[1] * far); }
+          g.stroke();
+        }
+        g.setLineDash([]);
+        if (editing) { // 손잡이: 가운데(옮기기)·끝(돌리기)
+          const d0 = lines[0].d, hx = cx + d0[0] * 70, hy = cy + d0[1] * 70;
+          const dot = (x, y, sq, hot) => { g.beginPath(); if (sq) g.rect(x - 5, y - 5, 10, 10); else g.arc(x, y, 6, 0, Math.PI * 2); g.fillStyle = hot ? '#fff' : 'rgba(167,139,250,1)'; g.strokeStyle = 'rgba(0,0,0,.6)'; g.lineWidth = 1.5; g.fill(); g.stroke(); };
+          dot(cx, cy, false, SYM.hover === 'move');
+          dot(hx, hy, true, SYM.hover === 'rot');
+        }
       }
-      g.setLineDash([]);
-      if (editing) { // 손잡이: 가운데(옮기기)·끝(돌리기)
-        const d0 = lines[0].d, hx = cx + d0[0] * 70, hy = cy + d0[1] * 70;
-        const dot = (x, y, sq, hot) => { g.beginPath(); if (sq) g.rect(x - 5, y - 5, 10, 10); else g.arc(x, y, 6, 0, Math.PI * 2); g.fillStyle = hot ? '#fff' : 'rgba(167,139,250,1)'; g.strokeStyle = 'rgba(0,0,0,.6)'; g.lineWidth = 1.5; g.fill(); g.stroke(); };
-        dot(cx, cy, false, SYM.hover === 'move');
-        dot(hx, hy, true, SYM.hover === 'rot');
-      }
-      // 그리는 중(Magma 브러시): 건너편에 그려질 획을 미리 얇게
-      if (SYM.rec && SYM.rec.pts.length > 1) {
+      const z = viewZoom();
+      if (qp) { // 도형 보정: 손을 떼면 그려질 모양
+        for (const it of qp) {
+          g.beginPath();
+          it.pts.forEach((p, i) => { const [sx, sy] = V.toClient(p[0], p[1]); if (i) g.lineTo(sx, sy); else g.moveTo(sx, sy); });
+          g.globalAlpha = 0.35; g.strokeStyle = 'rgba(0,0,0,.6)'; g.lineWidth = Math.max(1.5, Math.min(60, it.w * z)) + 2; g.stroke();
+          g.globalAlpha = 0.8; g.strokeStyle = it.color; g.lineWidth = Math.max(1.5, Math.min(60, it.w * z)); g.stroke();
+        }
+        g.globalAlpha = 1;
+      } else if (SYM.rec && SYM.rec.pts.length > 1 && symOn()) {
+        // 그리는 중(Magma 브러시): 건너편에 그려질 획을 미리 얇게
         const T = symTransforms(!!SYM.rec.blockAll);
-        const z = viewZoom(), w = Math.max(1.5, Math.min(40, (getBrushSize() || 4) * z));
-        g.strokeStyle = SYM.rec.color; g.globalAlpha = 0.45; g.lineWidth = w; g.lineJoin = 'round';
+        const w = Math.max(1.5, Math.min(40, (getBrushSize() || 4) * z));
+        g.strokeStyle = SYM.rec.color; g.globalAlpha = 0.45; g.lineWidth = w;
         const pts = SYM.rec.from ? [SYM.rec.from, ...SYM.rec.pts] : SYM.rec.pts;
         for (const t of T) {
           g.beginPath();
@@ -6157,14 +6178,18 @@ void main(){
       if (e.type === 'pointermove') {
         const V = symView();
         if (!V) return;
+        if (R.snap) { R.snap.cur = V.toDoc(e.clientX, e.clientY); SYM.ver++; symKick(); return; } // 보정된 도형 돌리기·키우기
         const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
         for (const ce of (evs.length ? evs : [e])) R.pts.push(symRecPt(V, ce));
+        if (qsOn()) qsHoldReset(e.clientX, e.clientY, () => qsSnapNative(R));
         symKick();
         return;
       }
       if (e.type === 'pointerup' || e.type === 'pointercancel') {
         SYM.rec = null;
+        qsHoldStop();
         if (e.type === 'pointercancel') { symKick(); return; }
+        if (!R.snap && !symOn()) { symKick(); return; } // 대칭 없이 그냥 그린 획
         const V = symView();
         if (V) { const p = symRecPt(V, e), q = R.pts[R.pts.length - 1]; if (q) p.p = q.p; R.pts.push(p); } // 손 뗀 점의 필압 0은 빼고(획이 그 앞에서 끊김)
         symReplay(R).catch((err) => console.warn('[MagmaWand] 대칭 획', err));
@@ -6176,18 +6201,19 @@ void main(){
     // 건너편 획을 긋는 동안(몇 프레임) 새로 누른 것은 Magma에 넘기지 않는다 (두 획이 한 획으로 섞이지 않게)
     if (SYM.replaying && canvas && e.target === canvas) { e.stopImmediatePropagation(); if (e.cancelable) e.preventDefault(); return; }
     if (!canvas || e.target !== canvas || e.button !== 0 || e.altKey || e.ctrlKey || e.metaKey || spaceDown) return;
-    if (S.active || S.busy || !symOn()) return;
+    if (S.active || S.busy || (!symOn() && !qsOn())) return;
     const tool = currentTool();
     if (!SYM_NATIVE.has(tool)) return;
     const V = symView();
     if (!V) return;
     const E = getEditor();
     const n = E && Number.isFinite(E.primaryColor) ? E.primaryColor >>> 8 : 0;
-    const shift = !!(e.shiftKey && tool !== 'lassoBrushIcon' && SYM.lastEnd && SYM.lastEnd.tool === tool);
+    const shift = !!(e.shiftKey && symOn() && tool !== 'lassoBrushIcon' && SYM.lastEnd && SYM.lastEnd.tool === tool);
     SYM.rec = { pid: e.pointerId, ptype: e.pointerType, tool, pts: [symRecPt(V, e)], color: tool === 'faEraser' ? '#ffffff' : '#' + n.toString(16).padStart(6, '0'), blockAll: shift, from: shift ? SYM.lastEnd : null, ref0: guRef() };
     // Shift+클릭 직선: Magma는 '마지막 획 끝'에서 잇는데, 그 끝이 복사본 끝일 수 있다 → 이 획은 Magma에 넘기지 않고
     // 원본·복사본 모두 내 기록의 끝점에서 이어 그린다(원본을 맨 나중에 그어 Magma의 '마지막 끝'도 원본과 같게)
     if (shift) { e.stopImmediatePropagation(); if (e.cancelable) e.preventDefault(); }
+    if (qsOn()) qsHoldReset(e.clientX, e.clientY, () => qsSnapNative(SYM.rec));
   }
   for (const t of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) on(window, t, symNative, true);
   // Magma가 앞 획을 완전히 마무리할 때까지 기다린다. 마무리 전에 다음 획을 보내면 Magma가 그 점들을
@@ -6201,12 +6227,25 @@ void main(){
   }
   async function symReplay(R) {
     if (!R.pts.length) { symKick(); return; }
-    let pts = R.pts;
-    if (R.from) pts = [{ ...R.from, t: pts[0].t - 1 }, ...pts];
-    const T = symTransforms(R.blockAll);
+    let pts = R.pts, T, stab = null;
+    if (R.snap) {
+      // 보정된 도형: 새 시각을 붙인 점들. 펜은 첫 점 필압을 아주 조금 올려 둔다(Magma는 펜 획 첫머리에서 필압이 오르기 전 점을 건너뜀)
+      const pr = R.ptype === 'pen' ? Math.max(0.05, qsPressure(R.pts)) : 0.5, Q = qsPts(R.snap);
+      const t0 = performance.now() - (Q.length + 2) * 6 - 30;
+      pts = [{ x: Q[0][0], y: Q[0][1], p: pr, tx: 0, ty: 0, w: 1, h: 1, t: t0 }]
+        .concat(Q.map((q, i) => ({ x: q[0], y: q[1], p: pr + 0.002, tx: 0, ty: 0, w: 1, h: 1, t: t0 + (i + 1) * 6 })));
+      T = symOn() ? symTransforms(true) : [SYM_ID];
+    } else {
+      if (R.from) pts = [{ ...R.from, t: pts[0].t - 1 }, ...pts];
+      // Magma 입력 줄은 한 번에 200개가 넘으면 앞쪽을 버린다 → 190개 이하로 고르게 솎기(끝점은 남김)
+      if (pts.length > 190) { const k = (pts.length - 1) / 189; pts = Array.from({ length: 190 }, (_, i) => pts[Math.round(i * k)]); }
+      T = symTransforms(R.blockAll);
+    }
     SYM.replaying = true;
     let made = 0;
     try {
+      // 보정된 도형은 손떨림 보정 없이 (있으면 모서리가 둥글어지고 원이 작아짐). 끝나면 원래 값으로
+      if (R.snap) { await symIdle(); const v = getStabilizer(); if (v && await setStabilizer(0)) stab = v; }
       for (const t of T) {
         if (!await symIdle()) break;
         const canvas = getCanvas(), V = symView();
@@ -6229,11 +6268,14 @@ void main(){
         made++;
       }
       await symIdle();
-    } finally { SYM.replaying = false; }
+    } finally {
+      if (stab != null) { try { await setStabilizer(stab); } catch { /* 무시 */ } }
+      SYM.replaying = false;
+    }
     if (R.tool !== 'lassoBrushIcon') SYM.lastEnd = { ...pts[pts.length - 1], tool: R.tool };
     requestAnimationFrame(() => requestAnimationFrame(symKick));
     // 되돌리기: 원본과 건너편 획들을 한 묶음으로 (Ctrl+Z 한 번에 모두)
-    const want = made + (R.blockAll ? 0 : 1);
+    const want = made + (R.blockAll ? 0 : 1); // 보정된 도형은 원래 획이 취소돼 blockAll
     if (want >= 2) {
       const h = guHist();
       if (h) await waitFor(() => { const a = h.undos, i = R.ref0 ? a.lastIndexOf(R.ref0) : -1; return a.length - 1 - i >= want; }, 4000);
@@ -6250,6 +6292,293 @@ void main(){
   }, true);
   symKick();
   cleanups.push(() => { cancelAnimationFrame(SYM.raf); SYM.raf = 0; SYM.cv?.remove(); SYM.cv = null; });
+
+  // ---------- 도형 보정 (클립 스튜디오 최신판·프로크리에이트 'QuickShape') ----------
+  // 획을 긋다가 펜을 떼지 않고 잠깐(0.5초) 멈추면, 지금까지 그은 선과 가장 비슷한 깔끔한 선으로 바꿔 보여 준다:
+  // 직선 · 꺾은선 · 원호 · 매끈한 곡선 · 원 · 타원 · 다각형(삼각형·사각형 등, 변 길이는 제각각, 거의 직각이면 반듯한 사각형).
+  // 멈춘 채 펜을 움직이면 그 도형을 돌리고 키운다(직선은 끝점이 따라옴). 손을 떼면 그 모양으로 그린다.
+  //  - Magma 브러시: 멈춘 순간 Magma에 '획 취소'(pointercancel, 사용자가 손을 놓친 것과 같은 입력)를 보내 원래 획은 기록 없이 버리고,
+  //    손을 떼면 보정된 선을 한 획으로 다시 긋는다(되돌리기 한 칸). 손떨림 보정은 그 획 동안만 0으로 했다가 되돌린다(모서리가 둥글어지지 않게).
+  //  - 고급 브러시: 획 버퍼를 비우고 보정된 선으로 다시 찍어 붙여넣기 한 번.
+  //  - 대칭 자가 켜져 있으면 보정된 선도 건너편에 함께.
+  const QS_HOLD = 500;
+  const QS = { adv: null, hold: { x: 0, y: 0, timer: 0 } };
+  const qsOn = () => S.qsOn !== false;
+  const qd = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  function qsSegDist(p, a, b) {
+    const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy;
+    const t = l2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2)) : 0;
+    return Math.hypot(p[0] - a[0] - dx * t, p[1] - a[1] - dy * t);
+  }
+  const qsLen = (P) => { let l = 0; for (let i = 1; i < P.length; i++) l += qd(P[i - 1], P[i]); return l; };
+  function qsResample(P, n) {
+    const L = qsLen(P), step = L / (n - 1), out = [P[0].slice()];
+    let acc = 0, i = 1, prev = P[0];
+    while (out.length < n - 1 && i < P.length) {
+      const d = qd(prev, P[i]);
+      if (acc + d >= step && d > 0) { const f = (step - acc) / d; prev = [prev[0] + (P[i][0] - prev[0]) * f, prev[1] + (P[i][1] - prev[1]) * f]; out.push(prev); acc = 0; }
+      else { acc += d; prev = P[i]; i++; }
+    }
+    while (out.length < n) out.push(P[P.length - 1].slice());
+    return out;
+  }
+  function qsDP(P, eps) { // Douglas–Peucker: 남길 점의 번호
+    const keep = new Uint8Array(P.length); keep[0] = keep[P.length - 1] = 1;
+    const st = [[0, P.length - 1]];
+    while (st.length) {
+      const [a, b] = st.pop(); let md = -1, mi = -1;
+      for (let i = a + 1; i < b; i++) { const d = qsSegDist(P[i], P[a], P[b]); if (d > md) { md = d; mi = i; } }
+      if (md > eps) { keep[mi] = 1; st.push([a, mi], [mi, b]); }
+    }
+    const idx = []; keep.forEach((k, i) => { if (k) idx.push(i); }); return idx;
+  }
+  function qsFitLine(P) { // 주성분 직선 {c, d}
+    let cx = 0, cy = 0; for (const p of P) { cx += p[0]; cy += p[1]; } cx /= P.length; cy /= P.length;
+    let xx = 0, xy = 0, yy = 0; for (const p of P) { const dx = p[0] - cx, dy = p[1] - cy; xx += dx * dx; xy += dx * dy; yy += dy * dy; }
+    const a = 0.5 * Math.atan2(2 * xy, xx - yy); return { c: [cx, cy], d: [Math.cos(a), Math.sin(a)] };
+  }
+  function qsCross(L1, L2) {
+    const den = L1.d[0] * L2.d[1] - L1.d[1] * L2.d[0];
+    if (Math.abs(den) < 1e-6) return null;
+    const t = ((L2.c[0] - L1.c[0]) * L2.d[1] - (L2.c[1] - L1.c[1]) * L2.d[0]) / den;
+    return [L1.c[0] + L1.d[0] * t, L1.c[1] + L1.d[1] * t];
+  }
+  const qsTurn = (a, b, c) => { const u = Math.atan2(b[1] - a[1], b[0] - a[0]), v = Math.atan2(c[1] - b[1], c[0] - b[0]); let d = v - u; d = Math.atan2(Math.sin(d), Math.cos(d)); return Math.abs(d); };
+  // 꺾은선·다각형: 꼭짓점 찾기 → 거의 일직선인 꼭짓점 빼기 → 각 변을 직선으로 맞춘 뒤 이웃 변끼리 만나는 점을 꼭짓점으로
+  function qsPoly(R, D, closed) {
+    let P = R;
+    if (closed) { // 가운데서 가장 먼 점(모서리일 가능성이 큼)에서 시작하는 고리
+      let cx = 0, cy = 0; for (const p of R) { cx += p[0]; cy += p[1]; } cx /= R.length; cy /= R.length;
+      let k = 0, md = -1; R.forEach((p, i) => { const d = Math.hypot(p[0] - cx, p[1] - cy); if (d > md) { md = d; k = i; } });
+      P = R.slice(k).concat(R.slice(0, k)); P.push(P[0]);
+    }
+    let idx = qsDP(P, Math.max(0.035 * D, 0.5));
+    for (let changed = true; changed && idx.length > 2;) { // 거의 일직선인 꼭짓점(20° 미만) 빼기
+      changed = false;
+      for (let j = 1; j < idx.length - 1; j++) if (qsTurn(P[idx[j - 1]], P[idx[j]], P[idx[j + 1]]) < 0.35) { idx.splice(j, 1); changed = true; break; }
+    }
+    if (closed && idx.length > 3 && qsTurn(P[idx[idx.length - 2]], P[0], P[idx[1]]) < 0.35) { idx.shift(); idx[idx.length - 1] = idx[0]; } // 시작점이 꼭짓점이 아니면
+    const segs = idx.length - 1;
+    if (segs < (closed ? 3 : 2) || segs > 10) return null;
+    // 변마다 직선 맞추기 (양 끝 15%는 모서리 흔들림이라 뺌)
+    const lines = [];
+    for (let s = 0; s < segs; s++) {
+      const a = idx[s], b = idx[s + 1], m = Math.max(1, Math.floor((b - a) * 0.15));
+      const part = P.slice(a + m, b - m + 1); lines.push(qsFitLine(part.length >= 2 ? part : [P[a], P[b]]));
+    }
+    const V = [];
+    for (let s = 0; s <= segs; s++) {
+      if (closed) { const x = qsCross(lines[(s - 1 + segs) % segs], lines[s % segs]); V.push(x && qd(x, P[idx[s]]) < 0.25 * D ? x : P[idx[s]]); }
+      else if (s === 0 || s === segs) { const Lq = lines[s === 0 ? 0 : segs - 1], p = P[idx[s]]; const t = (p[0] - Lq.c[0]) * Lq.d[0] + (p[1] - Lq.c[1]) * Lq.d[1]; V.push([Lq.c[0] + Lq.d[0] * t, Lq.c[1] + Lq.d[1] * t]); }
+      else { const x = qsCross(lines[s - 1], lines[s]); V.push(x && qd(x, P[idx[s]]) < 0.25 * D ? x : P[idx[s]]); }
+    }
+    if (closed) V[V.length - 1] = V[0];
+    let err = 0; for (const p of P) { let m = Infinity; for (let s = 0; s < segs; s++) m = Math.min(m, qsSegDist(p, V[s], V[s + 1])); err += m; }
+    err /= P.length * D;
+    let minTurn = Math.PI; // 꼭짓점에서 꺾이는 각 중 가장 작은 것
+    for (let s = closed ? 0 : 1; s < segs; s++) minTurn = Math.min(minTurn, qsTurn(V[(s - 1 + segs) % segs], V[s], V[s + 1]));
+    return { pts: V, err, segs, minTurn };
+  }
+  // 거의 직각인 사각형은 반듯한 직사각형으로 (기울기는 그대로)
+  function qsRect(V) {
+    const Q = V.slice(0, 4);
+    for (let i = 0; i < 4; i++) { const t = qsTurn(Q[(i + 3) % 4], Q[i], Q[(i + 1) % 4]); if (Math.abs(t - Math.PI / 2) > 0.21) return V; }
+    let sx = 0, sy = 0; // 변 방향의 평균(90° 단위로 접어서)
+    for (let i = 0; i < 4; i++) { const a = Math.atan2(Q[(i + 1) % 4][1] - Q[i][1], Q[(i + 1) % 4][0] - Q[i][0]) * 4; sx += Math.cos(a); sy += Math.sin(a); }
+    let phi = Math.atan2(sy, sx) / 4;
+    if (Math.abs(phi) < 0.07) phi = 0; // 4° 안쪽이면 수평·수직으로
+    const c = Math.cos(phi), s = Math.sin(phi);
+    const loc = Q.map((p) => [p[0] * c + p[1] * s, -p[0] * s + p[1] * c]);
+    const xs = loc.map((p) => p[0]).sort((a, b) => a - b), ys = loc.map((p) => p[1]).sort((a, b) => a - b);
+    const x0 = (xs[0] + xs[1]) / 2, x1 = (xs[2] + xs[3]) / 2, y0 = (ys[0] + ys[1]) / 2, y1 = (ys[2] + ys[3]) / 2;
+    const back = (x, y) => [x * c - y * s, x * s + y * c];
+    // 원래 그은 순서(시작 모서리·방향)를 따라가게
+    const corners = [back(x0, y0), back(x1, y0), back(x1, y1), back(x0, y1)];
+    let k = 0, md = Infinity; corners.forEach((p, i) => { const d = qd(p, Q[0]); if (d < md) { md = d; k = i; } });
+    let order = [0, 1, 2, 3].map((i) => corners[(k + i) % 4]);
+    if (qd(order[1], Q[1]) > qd(order[3], Q[1])) order = [order[0], order[3], order[2], order[1]];
+    return [...order, order[0]];
+  }
+  function qsEllipse(R, D) {
+    let cx = 0, cy = 0; for (const p of R) { cx += p[0]; cy += p[1]; } cx /= R.length; cy /= R.length;
+    const Lf = qsFitLine(R), ux = Lf.d[0], uy = Lf.d[1];
+    const us = R.map((p) => (p[0] - cx) * ux + (p[1] - cy) * uy).sort((a, b) => a - b), vs = R.map((p) => -(p[0] - cx) * uy + (p[1] - cy) * ux).sort((a, b) => a - b);
+    const q = (A, f) => A[Math.min(A.length - 1, Math.max(0, Math.round(f * (A.length - 1))))];
+    const u0 = q(us, 0.02), u1 = q(us, 0.98), v0 = q(vs, 0.02), v1 = q(vs, 0.98);
+    let a = (u1 - u0) / 2, b = (v1 - v0) / 2;
+    const ccx = cx + ux * (u0 + u1) / 2 - uy * (v0 + v1) / 2, ccy = cy + uy * (u0 + u1) / 2 + ux * (v0 + v1) / 2;
+    if (!(a > 0) || !(b > 0)) return null;
+    if (b / a > 0.88) a = b = (a + b) / 2; // 거의 원이면 정원
+    let err = 0;
+    for (const p of R) { const u = (p[0] - ccx) * ux + (p[1] - ccy) * uy, v = -(p[0] - ccx) * uy + (p[1] - ccy) * ux; err += Math.abs(Math.hypot(u / a, v / b) - 1) * (a + b) / 2; }
+    err /= R.length * D;
+    // 그은 방향·시작 위치 그대로 한 바퀴
+    const ang = (p) => Math.atan2(-(p[0] - ccx) * uy + (p[1] - ccy) * ux, (p[0] - ccx) * ux + (p[1] - ccy) * uy);
+    const t0 = ang(R[0]); let turn = 0; for (let i = 1; i < R.length; i++) { let d = ang(R[i]) - ang(R[i - 1]); d = Math.atan2(Math.sin(d), Math.cos(d)); turn += d; }
+    const dir = turn >= 0 ? 1 : -1, n = 96, pts = [];
+    for (let i = 0; i <= n; i++) { const t = t0 + dir * (2 * Math.PI * i) / n, u = a * Math.cos(t), v = b * Math.sin(t); pts.push([ccx + u * ux - v * uy, ccy + u * uy + v * ux]); }
+    return { pts, err, circle: a === b };
+  }
+  function qsArc(R, D) { // 원 맞추기(대수적 최소제곱) → 원호
+    let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, sz = 0, sxz = 0, syz = 0; const n = R.length;
+    for (const [x, y] of R) { const z = x * x + y * y; sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y; sz += z; sxz += x * z; syz += y * z; }
+    const M = [[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, n]], r = [-sxz, -syz, -sz];
+    const det3 = (m) => m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    const d0 = det3(M); if (!d0) return null;
+    const col = (k) => M.map((row, i) => row.map((v, j) => (j === k ? r[i] : v)));
+    const A = det3(col(0)) / d0, B = det3(col(1)) / d0, C = det3(col(2)) / d0;
+    const cx = -A / 2, cy = -B / 2, rad = Math.sqrt(Math.max(0, cx * cx + cy * cy - C));
+    if (!(rad > 0) || rad > 4 * D) return null;
+    let err = 0; for (const p of R) err += Math.abs(Math.hypot(p[0] - cx, p[1] - cy) - rad); err /= n * D;
+    const ang = (p) => Math.atan2(p[1] - cy, p[0] - cx);
+    let sweep = 0; for (let i = 1; i < n; i++) { let d = ang(R[i]) - ang(R[i - 1]); d = Math.atan2(Math.sin(d), Math.cos(d)); sweep += d; }
+    if (Math.abs(sweep) < 0.35 || Math.abs(sweep) > 2 * Math.PI) return null;
+    const t0 = ang(R[0]), m = Math.max(16, Math.round(Math.abs(sweep) / (2 * Math.PI) * 96)), pts = [];
+    for (let i = 0; i <= m; i++) { const t = t0 + (sweep * i) / m; pts.push([cx + rad * Math.cos(t), cy + rad * Math.sin(t)]); }
+    return { pts, err };
+  }
+  function qsSmooth(R, closed) { // 매끈한 곡선: 흔들림만 걸러 낸다 (모양은 그대로)
+    let P = R.map((p) => p.slice());
+    const n = P.length, w = 4;
+    for (let pass = 0; pass < 3; pass++) {
+      const Q = P.map((p) => p.slice());
+      for (let i = 0; i < n; i++) {
+        if (!closed && (i === 0 || i === n - 1)) continue;
+        let x = 0, y = 0, c = 0;
+        for (let k = -w; k <= w; k++) {
+          let j = i + k;
+          if (closed) j = (j + n) % n; else if (j < 0 || j >= n) continue;
+          const g = Math.exp(-(k * k) / (w * w * 0.5)); x += P[j][0] * g; y += P[j][1] * g; c += g;
+        }
+        Q[i] = [x / c, y / c];
+      }
+      P = Q;
+    }
+    if (closed) P.push(P[0].slice());
+    return P;
+  }
+  // 그은 점들 → 가장 비슷한 보정 선 (보드 좌표). 너무 짧거나 모르겠으면 null
+  function qsFit(raw) {
+    const P0 = [];
+    for (const q of raw) { const l = P0[P0.length - 1]; if (!l || Math.hypot(q.x - l[0], q.y - l[1]) > 0.3) P0.push([q.x, q.y]); }
+    if (P0.length < 3) return null;
+    const z = viewZoom() || 1, len = qsLen(P0);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of P0) { x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]); }
+    const D = Math.hypot(x1 - x0, y1 - y0);
+    if (len * z < 30 || D * z < 20) return null; // 화면에서 너무 작은 획
+    const R = qsResample(P0, 128), A = R[0], B = R[127], gap = qd(A, B);
+    const closed = gap < 0.2 * D && len > 1.6 * D;
+    if (!closed) {
+      let dev = 0; for (const q of R) dev = Math.max(dev, qsSegDist(q, A, B));
+      if (gap > 0 && dev < 0.06 * gap) return { kind: 'line', pts: [A, B], closed: false };
+      const poly = qsPoly(R, D, false);
+      if (poly && poly.err < 0.02 && poly.minTurn > 0.45) return { kind: 'polyline', pts: poly.pts, closed: false };
+      const arc = qsArc(R, D);
+      if (arc && arc.err < 0.018) return { kind: 'arc', pts: arc.pts, closed: false };
+      return { kind: 'curve', pts: qsSmooth(R, false), closed: false };
+    }
+    const loop = R.slice(0, 127);
+    const ell = qsEllipse(loop, D), poly = qsPoly(loop, D, true);
+    const eErr = ell ? ell.err : 1;
+    if (poly && poly.segs <= 6 && poly.minTurn > 0.7 && poly.err < 0.025 && poly.err <= eErr) {
+      const pts = poly.segs === 4 ? qsRect(poly.pts) : poly.pts;
+      return { kind: poly.segs === 3 ? 'triangle' : poly.segs === 4 ? 'quad' : 'polygon', pts, closed: true };
+    }
+    if (ell && eErr < 0.05) return { kind: ell.circle ? 'circle' : 'ellipse', pts: ell.pts, closed: true };
+    if (poly && poly.err < 0.02 && poly.minTurn > 0.7) return { kind: 'polygon', pts: poly.pts, closed: true };
+    return { kind: 'curve', pts: qsSmooth(loop, true), closed: true };
+  }
+  // 멈춘 뒤 펜을 움직이면: 기준점(닫힌 도형 = 가운데, 열린 선 = 시작점)을 중심으로 돌리고 키운다
+  function qsMake(fit, anchor) {
+    const P = fit.pts;
+    let piv;
+    if (fit.closed) { let cx = 0, cy = 0; const m = P.length - 1; for (let i = 0; i < m; i++) { cx += P[i][0]; cy += P[i][1]; } piv = [cx / m, cy / m]; } else piv = P[0];
+    return { fit, piv, anchor, cur: anchor };
+  }
+  function qsPts(Q) {
+    const v0 = [Q.anchor[0] - Q.piv[0], Q.anchor[1] - Q.piv[1]], v1 = [Q.cur[0] - Q.piv[0], Q.cur[1] - Q.piv[1]];
+    const l0 = Math.hypot(...v0), l1 = Math.hypot(...v1);
+    if (l0 < 1e-3 || l1 < 1e-3) return Q.fit.pts;
+    const s = l1 / l0, a = Math.atan2(v1[1], v1[0]) - Math.atan2(v0[1], v0[0]), c = Math.cos(a) * s, n = Math.sin(a) * s;
+    return Q.fit.pts.map((p) => { const dx = p[0] - Q.piv[0], dy = p[1] - Q.piv[1]; return [Q.piv[0] + c * dx - n * dy, Q.piv[1] + n * dx + c * dy]; });
+  }
+  // 멈춤 감지: 화면에서 5px 넘게 움직이면 다시 잼
+  function qsHoldReset(cx, cy, fn) {
+    const H = QS.hold;
+    if (H.timer && Math.hypot(cx - H.x, cy - H.y) <= 5) return;
+    clearTimeout(H.timer); H.x = cx; H.y = cy;
+    H.timer = setTimeout(() => { H.timer = 0; fn(); }, QS_HOLD);
+  }
+  function qsHoldStop() { clearTimeout(QS.hold.timer); QS.hold.timer = 0; }
+  const qsPressure = (pts) => { const ps = pts.map((p) => p.p).filter((v) => v > 0).sort((a, b) => a - b); return ps.length ? ps[Math.floor(ps.length / 2)] : 0.5; };
+  // ----- Magma 브러시 -----
+  function qsSnapNative(R) {
+    if (SYM.rec !== R || R.snap || !qsOn()) return;
+    const fit = qsFit(R.from ? [R.from, ...R.pts] : R.pts);
+    if (!fit) return;
+    const last = R.pts[R.pts.length - 1];
+    R.snap = qsMake(fit, [last.x, last.y]);
+    // Magma 쪽 원래 획은 '취소'로 버린다 (기록에 안 남음, 실측). 이 획의 남은 입력도 Magma에 넘기지 않는다
+    if (!R.blockAll) {
+      const canvas = getCanvas(), V = symView();
+      if (canvas && V) {
+        const [cx, cy] = V.toClient(last.x, last.y);
+        const ev = new PointerEvent('pointercancel', { bubbles: true, cancelable: false, composed: true, view: window, pointerId: R.pid, pointerType: R.ptype, isPrimary: true, clientX: cx, clientY: cy });
+        ev.__magmaWand = true;
+        canvas.dispatchEvent(ev);
+      }
+      R.blockAll = true;
+    }
+    symKick();
+  }
+  // ----- 고급 브러시 -----
+  function qsAdvMove(e) {
+    if (!qsOn() || !ADV.stroke || QS.adv) return;
+    const s = ADV.stroke;
+    if (!s.qsPts) s.qsPts = [];
+    const [x, y] = advDocPoint(e);
+    s.qsPts.push({ x, y, p: e.pointerType === 'pen' ? e.pressure : 0.5 });
+    qsHoldReset(e.clientX, e.clientY, () => qsSnapAdv(s, e.pointerType));
+  }
+  function qsSnapAdv(s, ptype) {
+    if (ADV.stroke !== s || QS.adv || !s.qsPts || !qsOn()) return;
+    const fit = qsFit(s.qsPts);
+    if (!fit) return;
+    const last = s.qsPts[s.qsPts.length - 1];
+    QS.adv = { Q: qsMake(fit, [last.x, last.y]), pid: ADV.pid, ptype, pr: qsPressure(s.qsPts), color: s.erase ? '#ffffff' : '#' + s.color.map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join('') };
+    advStrokeEnd(true); // 지금까지 찍은 획은 버리고
+    symKick();
+  }
+  function qsAdvAdjust(e) {
+    const A = QS.adv;
+    if (!A || e.pointerId !== A.pid) return;
+    const V = symView(); if (!V) return;
+    A.Q.cur = V.toDoc(e.clientX, e.clientY); SYM.ver++; symKick();
+  }
+  function qsAdvCommit(cancel) {
+    const A = QS.adv; QS.adv = null; symKick();
+    if (!A || cancel || !ADV.brush) return;
+    const pts = qsPts(A.Q), V = symView();
+    if (!V || pts.length < 2) return;
+    const z = viewZoom() || 1; let t = performance.now();
+    const ev = (q) => { const [cx, cy] = V.toClient(q[0], q[1]); return { clientX: cx, clientY: cy, pressure: A.pr, pointerType: A.ptype, timeStamp: t }; };
+    if (!advStrokeStart(ev(pts[0]))) return;
+    ADV.stroke.straight = true; // 보정된 선 그대로 (브러시의 손떨림 보정·튀는 점 거르기 없이)
+    for (let i = 1; i < pts.length; i++) { t += Math.max(4, qd(pts[i - 1], pts[i]) * z / 0.6); advAddPoint(ev(pts[i]), pts[i]); }
+    ADV.stroke.straight = false;
+    advStrokeEnd(false);
+  }
+  // 덧그림에 그릴 미리보기: [{pts(보드), color, width}]
+  function qsPreview() {
+    const R = SYM.rec;
+    let pts = null, color = '#000', w = 4;
+    if (R && R.snap) { pts = qsPts(R.snap); color = R.color; w = (getBrushSize() || 4); }
+    else if (QS.adv) { pts = qsPts(QS.adv.Q); color = QS.adv.color; w = ADV.brush ? (S.advSize > 0 ? S.advSize : ADV.brush.size) : 4; }
+    if (!pts) return null;
+    const T = symOn() ? symTransforms(true) : [SYM_ID];
+    return T.map((t) => ({ pts: pts.map((p) => symPt(t, p[0], p[1])), color, w }));
+  }
 
   // ---------- 자유 변형: Ctrl을 누른 채 점을 잡으면 그 점만 움직이기 (클립 스튜디오 방식) ----------
   // Magma 변형 도구(Ctrl+T)에는 이미 'distort'(자유 왜곡) 모드가 있다. Ctrl을 누르고 손잡이를 잡는 동안만 그 모드로
@@ -8837,6 +9166,7 @@ void main(){
     if ((S.tool !== 'qmask' || !onNow) && QM.mask) await qmLeave();
     if (S.tool !== 'quick' && S.tool !== 'brush' && S.tool !== 'blur' && S.tool !== 'qmask') qCursor(0, 0, false);
     if (S.tool !== 'brush' && ADV.stroke) advStrokeEnd(false);
+    if (S.tool !== 'brush' && QS.adv) { QS.adv = null; symKick(); }
     if (onNow && S.tool === 'brush' && !ADV.brush) advSelect(S.advBrushId).then(() => advListRender?.());
     if (onNow === S.active) { syncToolButton(); if (onNow) { ensureSettings(); if (S.tool === 'qmask' && !QM.mask) qmEnter(); } return; }
     S.active = onNow;
@@ -9370,6 +9700,8 @@ void main(){
     head(L('색상환', 'Color wheel'));
     let wheel = 'square'; try { wheel = (JSON.parse(localStorage.getItem('settings') || '{}').colorWheelMode) || 'square'; } catch { /* 무시 */ }
     for (const t of ['Square', 'Triangle']) item(t === 'Square' ? L('사각형', 'Square') : L('삼각형', 'Triangle'), wheel === t.toLowerCase(), () => dkLayoutOption(t));
+    head(L('그리기', 'Drawing'));
+    item(L('멈추면 도형으로 보정', 'Hold to snap shapes (QuickShape)'), qsOn(), () => { S.qsOn = !qsOn(); saveSettings(); });
     head(L('확장 언어', 'Extension language'));
     let lv = 'auto'; try { lv = JSON.parse(localStorage.getItem('magmaWand.settings') || '{}').lang || 'auto'; } catch { /* 무시 */ }
     item(L('자동 (Magma 계정 언어)', 'Auto (Magma account language)'), lv === 'auto', () => setExtLang('auto'));
@@ -9500,7 +9832,7 @@ void main(){
   // ---------- 영어 화면: 확장이 만든 화면의 한국어 글자를 영어로 바꿔 끼운다 ----------
   // 확장이 만든 요소(.mw-…, .mx-…) 안의 글자·title·placeholder만 바꾸고, 원문은 기억해 두었다가 한국어로 돌아가면 되돌린다.
   // 저장되는 값(브러시 분류·프리셋 이름 등)은 그대로 한국어라서 기능에는 영향이 없다.
-  const I18N_EN = /*I18N_EN*/{"현재 레이어를 찾지 못했어요":"Couldn't find the current layer","화면을 읽지 못했어요 (Magma 창이 가려져 있지 않은지 확인해 주세요)":"Couldn't read the screen (make sure the Magma window isn't covered)","그림판 밖을 눌렀어요":"You clicked outside the canvas","보드 바깥을 눌렀어요":"You clicked outside the board","영역을 만들지 못했어요":"Couldn't create the area","클립보드 기능을 쓸 수 없어요":"Clipboard isn't available","현재 레이어 참조: 선택이 있는 상태에서는 레이어를 새로 읽을 수 없어요. 선택을 해제하고 한 번 클릭한 뒤 이어서 쓰세요":"Current layer reference: the layer can't be re-read while there's a selection. Deselect, click once, then continue","현재 레이어를 읽지 못했어요":"Couldn't read the current layer","현재 레이어가 비어 있어요":"The current layer is empty","현재 레이어 위치를 읽지 못했어요":"Couldn't read the current layer's position","현재 레이어 크기가 맞지 않아요":"The current layer's size doesn't match","화면 위치 정보를 읽지 못했어요":"Couldn't read the screen position info","화면을 회전하거나 뒤집은 상태에서는 현재 레이어 참조를 쓸 수 없어요":"Current layer reference doesn't work while the view is rotated or flipped"," · 작은 조각 ${P.dropped}개는 점이 너무 많아 뺐어요":" · Left out ${P.dropped} small pieces that had too many points"," · 테두리가 복잡해 조금 매끈하게 그었어요":" · The outline was complex, so it was smoothed a little"," · 선 위를 눌러 빈틈 닫기 없이 했어요":" · You clicked on a line, so gap closing was skipped","그림판 화면을 찾지 못했어요":"Couldn't find the canvas view","영역 계산 중…":"Calculating area…","올가미 채우기 도구로 바꾸지 못했어요":"Couldn't switch to the Lasso fill tool","안전을 위해 멈췄어요: 올가미 채우기를 그리기 모드로 바꾸지 못했어요":"Stopped for safety: couldn't switch Lasso fill to draw mode","마법봉 선택":"Magic Wand selection",", 테두리 ${R.pieces}개":", ${R.pieces} outlines",", 구멍 ${holes}개":", ${holes} holes","${fill ? '채움' : '선택'}: ${count.toLocaleString()}픽셀${parts} (${(ms / 1000).toFixed(1)}초)":"${fill ? '채움' : '선택'}: ${count.toLocaleString()} px${parts} (${(ms / 1000).toFixed(1)}s)"," · 화면 기준":" · based on screen","오류: ":"Error: ","화면을 회전·뒤집은 상태에서는 현재 레이어 참조를 쓸 수 없어요":"Current layer reference doesn't work while the view is rotated/flipped","빼는 중… (손을 떼면 확정)":"Subtracting… (release to confirm)","선택 중… (손을 떼면 확정)":"Selecting… (release to confirm)","취소했어요":"Canceled","${Q.subtract ? '뺌' : '선택'}: ${count.toLocaleString()}픽셀":"${Q.subtract ? '뺌' : '선택'}: ${count.toLocaleString()} px","브러시 크기 ${BSZ.size}":"Brush size ${BSZ.size}","클립 스튜디오 브러시(.sut) 파일이 아니에요":"This isn't a Clip Studio brush (.sut) file","브러시 설정을 찾지 못했어요":"Couldn't find the brush settings","브러시":"Brush","합성 모드(${num(v.CompositeMode, 0)}번)는 '보통'으로 그려요 — 지우개 브러시면 ⚙ 설정 → 잉크 → 합성 모드에서 '지우기'":"Blend mode #${num(v.CompositeMode, 0)} draws as 'Normal' — for an eraser brush, set ⚙ Settings → Ink → Blend mode to 'Erase'","셰이더: ":"Shader: ","셰이더 연결: ":"Shader link: ","WebGL2를 쓸 수 없어요":"WebGL2 isn't available","'${brush.name}'의 필압·속도 곡선을 예전 버전이 잘못 읽었어요 — 지금은 곧은 곡선으로 그려요. .sut를 다시 가져오면 원래 곡선대로 돼요":"An older version misread the pressure/speed curves of '${brush.name}' — it now draws with straight curves. Re-import the .sut to get the original curves","수채":"Watercolor","숨겨진 레이어에는 그릴 수 없어요 — 레이어의 눈 아이콘을 켜 주세요":"You can't draw on a hidden layer — turn on the layer's eye icon","잠긴 레이어에는 그릴 수 없어요 — 레이어 잠금을 풀어 주세요":"You can't draw on a locked layer — unlock the layer","지우지 못했어요: ":"Couldn't erase: ","획을 보드에 넣지 못했어요: ":"Couldn't add the stroke to the board: ","칠하지":"Paint","브러시를 준비하지 못했어요: ":"Couldn't prepare the brush: ","먼저 오른쪽 설정 칸에서 브러시(.sut)를 가져와 주세요":"First import a brush (.sut) in the settings panel on the right","이 브러시는 지우개·특수 합성이라 아직 쓸 수 없어요":"This brush is an eraser/special blend, so it can't be used yet","이 브러시는 끝 모양 PNG가 필요해요 — 설정 칸의 \"끝 모양 PNG 넣기\"를 눌러 주세요":"This brush needs a tip shape PNG — click \"Add tip shape PNG\" in the settings panel","그릴 레이어를 먼저 골라 주세요":"Pick a layer to draw on first","글자 레이어에는 그릴 수 없어요 — 그림 레이어를 골라 주세요":"You can't draw on a text layer — pick a drawing layer","주의: Magma 설정 \"붙여넣기를 새 레이어로\"가 켜져 있어 획마다 새 레이어가 생겨요":"Note: Magma's \"Paste as new layer\" setting is on, so every stroke creates a new layer","＋ 브러시 가져오기 (.sut)":"＋ Import Brush (.sut)","＋ 기본 브러시":"＋ Basic Brush","클립 스튜디오 파일 없이, 기본 끝 모양으로 새 브러시를 만들어요":"Create a new brush with a basic tip shape — no Clip Studio file needed","끝 모양 바꾸기":"Change Tip Shape","⚙ 브러시 설정":"⚙ Brush Settings","크기·잉크·색 혼합(물감 섞기)·끝 모양·획·스프레이·텍스처·색 흔들기를 하나하나 바꿔요":"Adjust size, ink, color mixing (paint mixing), tip shape, stroke, spray, texture and color jitter one by one","지우기":"Delete","＋ 새 브러시 (프리셋)":"＋ New Brush (Preset)","연필·G펜·수채·유화(물감 섞기)·손끝·에어브러시·스프레이 등 프리셋으로 새 브러시를 만들어요":"Create a new brush from presets like pencil, G-Pen, watercolor, oil (paint mixing), finger blend, airbrush, spray and more","브러시 ${files.length - fails}개를 가져왔어요":"Imported ${files.length - fails} brushes"," — 끝 모양 PNG가 필요한 브러시가 있어요":" — some brushes need a tip shape PNG","한 번 더 누르면 지워요":"Click again to delete","브러시가 없어요. \"＋ 새 브러시 (프리셋)\"으로 만들거나 클립 스튜디오 브러시 파일(.sut)을 가져오세요.":"No brushes yet. Make one with \"＋ New Brush (Preset)\" or import a Clip Studio brush file (.sut).","⚠ 보호된 소재 ${need}개: \"끝 모양 바꾸기\"에서 기본 모양을 고르거나, CSP에서 PNG로 저장해 넣어 주세요":"⚠ ${need} protected materials: pick a basic shape in \"Change Tip Shape\", or save them as PNG in CSP and add them","아직 안 되는 기능: ${cur.unsupported.join(', ')} (나머지 설정으로 그려요)":"Not supported yet: ${cur.unsupported.join(', ')} (drawing with the other settings)","끝 모양·텍스처":"Tip Shape & Texture","기본 모양":"Basic shapes","을 누르면 준비된 모양 중에서 고를 수 있어요. 내 그림을 쓰려면":"lets you pick from ready-made shapes. To use your own image, add it with","PNG 고르기":"Choose PNG","로 넣어요(검은 그림 + 투명 배경).\n        클립 스튜디오의 보호된 소재는 CSP에서 캔버스에 붙여 PNG로 저장한 뒤 넣으면 똑같이 쓸 수 있어요.":"(black drawing + transparent background).\n        Protected Clip Studio materials work the same way: paste them onto a canvas in CSP, save as PNG, then add them.","닫기":"Close","끝 모양 ${i + 1}":"Tip shape ${i + 1}","2중 브러시 끝 모양":"Dual brush tip shape","텍스처":"Texture","없음":"None","모양 필요 (미리보기는 소재 썸네일)":"Shape needed (preview is the material thumbnail)","준비됨":"Ready","기본 모양: ":"Basic shape: ","모양을 넣지 못했어요: ":"Couldn't add the shape: ","바꾸기":"Change","그림을 열지 못했어요: ":"Couldn't open the image: ","필압":"Pressure","속도":"Speed","무작위":"Random","먼저 브러시를 골라 주세요":"Pick a brush first","브러시 설정 — ":"Brush Settings — ","  ${t} 최소":"  ${t} min","크기":"Size","브러시 크기":"Brush size","크기 효과":"Size dynamics","필압 곡선":"Pressure curve","필압 곡선: 100보다 작으면 살살 눌러도 굵고 진하게, 크면 세게 눌러야 굵어져요(펜에만 적용).":"Pressure curve: below 100, light pressure gives thick, dark lines; above 100, you have to press harder to get thick lines (pen only).","잉크":"Ink","불투명도":"Opacity","불투명도 효과":"Opacity dynamics","흐름(밀도)":"Flow (density)","흐름 효과":"Flow dynamics","안티에일리어스":"Anti-aliasing","합성 모드":"Blend mode","보통":"Normal","물감 겹치기":"Glaze","곱하기":"Multiply","물감 겹치기: 투명한 물감을 덧칠한 것처럼 감산 혼합돼요(노랑 위에 파랑 = 초록, 수채). 곱하기: 화면 곱하기라 겹칠수록 어둡고 탁해요(마커). 지우기: 이 브러시 모양 그대로 지우개가 돼요. 같은 레이어 안의 그림과 섞여요.":"Glaze: blends subtractively, like layering transparent paint (blue over yellow = green, watercolor). Multiply: screen multiply, so overlaps get darker and muddier (marker). Erase: the brush becomes an eraser with this exact shape. Mixes with the drawing on the same layer.","수채 경계":"Watercolor edge","수채 경계 켜기":"Enable watercolor edge","범위":"Range","투명도 영향":"Opacity influence","명도 영향":"Brightness influence","물이 마르면서 가장자리에 물감이 고인 것처럼 획 테두리 안쪽을 진하게 해요. 그리는 동안에도 결과와 똑같이 보여요.":"Darkens the inside of the stroke's edge, as if paint pooled at the rim while drying. Looks the same while you draw as in the final result.","물감":"Paint","붓털 켜기":"Enable bristles","붓 모양":"Brush shape","둥근 붓":"Round brush","평붓":"Flat brush","털 수":"Bristle count","털 결 세기":"Bristle texture strength","털마다 색 차이":"Per-bristle color variation","붓털: 털마다 물감을 따로 묻혀 끊김 없는 결이 남아요. 획 탭의 \\'물감 마름\\'을 같이 쓰면 길게 그을수록 털이 하나씩 말라 갈라져요. 끝 모양·각도 설정 대신 쓰여요.":"Bristles: each bristle carries its own paint, leaving a continuous texture. Combine with \\'Paint dry-out\\' in the Stroke tab and the bristles dry and split one by one the longer you drag. Used instead of the tip shape and angle settings.","두께감":"Impasto","광택":"Gloss","두께감: 물감이 두껍게 올라온 것처럼 붓 자국 굴곡에 왼쪽 위 빛과 그림자를 넣어요(0 = 끔). 광택이 높을수록 유화처럼 반짝여요.":"Impasto: adds light from the upper left and shadows to the brushstroke ridges, as if the paint is built up thick (0 = off). Higher gloss makes it shine like oil paint.","젖은 물감(수채)":"Wet paint (watercolor)","가장자리 흔들림":"Edge wobble","가장자리 풀림":"Edge bleed","안료 알갱이":"Pigment granulation","젖은 물감: 물이 닿은 경계가 또렷하고 구불구불해져요. 풀림을 올리면 젖은 종이처럼 번지고, 알갱이는 종이 골에 안료가 가라앉은 오돌토돌함이에요. 수채 경계와 함께 쓰면 좋아요.":"Wet paint: edges where the water reaches become crisp and wavy. Raise bleed to spread like wet paper; granulation is the bumpy look of pigment settling into the paper grooves. Works well with watercolor edge.","색 혼합":"Color mixing","블렌드":"Blend","물감 섞기":"Paint mixing","물감량":"Paint amount","물감량 효과":"Paint amount dynamics","물감 농도":"Paint density","물감 농도 효과":"Paint density dynamics","색 늘이기":"Color stretch","섞을 밑색":"Mix with","현재 레이어":"Current layer","보이는 그림":"Visible image","물감량 100 = 메인 색만 · 0 = 밑색만 끌고 다님(손끝). 물감 농도가 낮을수록 묽게, 색 늘이기가 클수록 끌고 온 색이 길게 남아요.":"Paint amount 100 = main color only · 0 = drags only the underlying color (finger blend). Lower paint density = thinner paint; higher color stretch = the dragged color lasts longer.","끝 모양":"Tip shape","경도(원형일 때)":"Hardness (round tip)","두께":"Thickness","두께 방향":"Thickness direction","가로":"Horizontal","세로":"Vertical","두께 효과":"Thickness dynamics","각도":"Angle","각도: 필압":"Angle: pressure","각도: 진행 방향":"Angle: direction","각도: 무작위":"Angle: random","  무작위 정도":"  Randomness","좌우 반전":"Flip horizontal","반전":"Flip","상하 반전":"Flip vertical","여러 모양 순서":"Multiple tip order","차례":"Sequential","왕복":"Back and forth","획":"Stroke","간격":"Spacing","간격 효과":"Spacing dynamics","손떨림 보정":"Stabilizer","입(시작 가늘게)":"Start taper","출(끝 가늘게)":"End taper","리본(끝 모양을 띠처럼 늘이기)":"Ribbon (stretch the tip like a band)","흩어짐":"Scatter","물감 마름(길이)":"Paint dry-out (length)","  마른 뒤 남는 양":"  Amount left when dry","물감 마름: 그 길이만큼 그으면 붓의 물감이 줄어 획이 갈라져요(갈필). 0이면 꺼짐.":"Paint dry-out: after dragging this far, the brush runs low on paint and the stroke splits (dry brush). 0 = off.","스프레이":"Spray","스프레이 켜기":"Enable spray","입자 크기":"Particle size","입자 크기를 브러시 크기에 맞춤":"Match particle size to brush size","입자 크기 효과":"Particle size dynamics","입자 수":"Particle count","입자 수 효과":"Particle count dynamics","가운데로 모임":"Gather to center","텍스처를 쓰고 있어요":"Using a texture","텍스처 없음 — 아래 단추로 고르세요":"No texture — pick one with the button below","농도":"Density","배율":"Scale","농도 강조":"Density boost","결 방식":"Grain mode","무늬 덮기":"Overlay pattern","깊이":"Depth","골에 남는 가루(깊이)":"Powder left in grooves (depth)","깊이: 종이 결을 높낮이로 써요. 살살 칠하면 높은 곳에만 묻고, 세게·여러 번 칠할수록 골까지 채워져요(연필·목탄·파스텔). 농도 = 골 깊이.":"Depth: uses the paper grain as height. Light strokes only touch the high spots; pressing harder or layering fills the grooves too (pencil, charcoal, pastel). Density = groove depth.","도장마다 적용(끄면 획 전체에, 깊이 방식은 늘 획 전체)":"Apply per stamp (off = whole stroke; depth mode always applies to the whole stroke)","2중 브러시":"Dual brush","이 브러시에는 2중 브러시가 없어요. 클립 스튜디오 브러시(.sut)에 2중 브러시가 있으면 여기서 바꿀 수 있어요.":"This brush has no dual brush. If a Clip Studio brush (.sut) has one, you can change it here.","2중 브러시 쓰기":"Use dual brush","흐름":"Flow","흩뿌리기":"Scatter","두 번째 끝 모양으로 찍은 무늬 안쪽만 남겨서 거친 질감을 만들어요.":"Keeps only the inside of the pattern stamped with the second tip shape, for a rough texture.","색 흔들기":"Color jitter","색상":"Hue","채도":"Saturation","명도":"Brightness","도장마다 색을 이만큼 흔들어요(반짝이·잎 같은 브러시에 좋아요).":"Jitters the color this much per stamp (great for brushes like glitter or leaves).","이름·관리":"Name & Manage","이름":"Name","분류":"Category","끝 모양·텍스처 바꾸기…":"Change tip shape & texture…","이 브러시 복제":"Duplicate this brush"," 사본":" copy","연필·스케치":"Pencil & Sketch","잉크·펜":"Ink & Pen","마커":"Marker","드라이 (목탄·파스텔)":"Dry (Charcoal & Pastel)","물감 (유화·구아슈)":"Paint (Oil & Gouache)","섞기·문지르기":"Blend & Smudge","에어브러시":"Airbrush","질감·특수":"Texture & Special","장식·자연":"Decoration & Nature","HB 연필":"HB Pencil","단단하고 옅은 선. 살살 그으면 종이 이에만 걸려요":"Hard, light lines. Light strokes catch only the paper's tooth","4B 연필":"4B Pencil","부드럽고 진한 흑연. 눌러 칠하면 결이 메워져요":"Soft, dark graphite. Press hard to fill in the grain","8B 연필":"8B Pencil","아주 무른 연필. 진하고 번들거리는 검정":"A very soft pencil. Dark, shiny black","샤프":"Mechanical Pencil","가늘고 일정한 밑그림 선":"Thin, even sketch lines","색연필":"Colored Pencil","색이 종이 결에 걸리는 밀랍 질감, 겹쳐 칠해 진하게":"Waxy texture where color catches the paper grain; layer it to darken","연필 눕혀 칠하기":"Pencil (side)","연필을 눕혀 넓게 음영 넣기":"Lay the pencil on its side for broad shading","목탄 연필":"Charcoal Pencil","거칠고 깊은 검정, 결이 가로로 비쳐요":"Rough, deep black with horizontal grain showing through","G펜":"G-Pen","필압으로 굵기가 바뀌는 매끈한 펜 선":"Smooth pen lines whose width changes with pressure","마루펜":"Maru Pen","가늘고 단단한 펜. 세밀한 선":"Thin, firm pen for fine lines","테크니컬 펜":"Technical Pen","굵기가 일정한 제도 펜":"Drafting pen with a constant width","붓펜":"Brush Pen","끝이 날렵한 붓펜":"Brush pen with a sharp tip","먹 붓":"Ink Brush","누르는 만큼 확 굵어지는 먹선":"Ink lines that swell sharply with pressure","마른 먹":"Dry Ink","그을수록 먹이 말라 갈라지는 붓 선":"Brush lines where the ink dries and splits as you drag","캘리그래피 펜":"Calligraphy Pen","각도가 고정된 납작 펜촉 (가로획 굵고 세로획 가늘게)":"Flat nib at a fixed angle (thick horizontal, thin vertical strokes)","펠트펜":"Felt Pen","가장자리가 살짝 번진 사인펜":"Felt-tip pen with slightly bleeding edges","사각 마커":"Chisel Marker","겹칠수록 진해지는 납작 마커":"Flat marker that darkens where strokes overlap","알코올 마커":"Alcohol Marker","부드러운 가장자리, 덧칠하면 한 단계씩 진해짐":"Soft edges; each layer darkens it one step","형광펜":"Highlighter","아래 그림이 비치는 형광 띠":"Highlighter band that lets the drawing below show through","버드나무 목탄":"Willow Charcoal","가볍고 부드러운 목탄. 손에 묻어나듯 결이 많이 남아요":"Light, soft charcoal. Leaves lots of grain, like it rubs off on your hand","압축 목탄":"Compressed Charcoal","진하고 무거운 검정, 세게 누르면 꽉 메워짐":"Dark, heavy black; fills in solid when you press hard","목탄 옆면":"Charcoal (side)","목탄을 눕혀 넓게 끌기 — 큰 면과 음영":"Drag charcoal on its side — big areas and shading","콩테":"Conté","단단한 사각 스틱, 또렷한 결":"Hard square stick with crisp grain","소프트 파스텔":"Soft Pastel","가루가 날리는 부드러운 파스텔, 큰 종이 결":"Soft, dusty pastel with large paper grain","오일 파스텔":"Oil Pastel","끈적하게 밀리며 밑색과 살짝 섞이는 밀랍 파스텔":"Waxy pastel that drags stickily and mixes slightly with the color below","크레용":"Crayon","어린이 크레용처럼 오돌토돌하게":"Bumpy, like kids' crayons","분필":"Chalk","칠판 분필, 가루와 끊김":"Blackboard chalk, dusty and broken","갈필 (마른 붓)":"Dry Brush","물감이 마르며 털 자국이 갈라지는 붓 — 길게 그어 보세요":"A brush whose bristle marks split as the paint dries — try a long stroke","스펀지":"Sponge","스펀지로 두드린 구멍 숭숭한 자국":"Porous marks dabbed with a sponge","점묘":"Stippling","펜 끝으로 콕콕 찍은 점 음영":"Dot shading tapped with a pen tip","수채 둥근 붓":"Round Watercolor","가장자리에 물감이 고이는 맑은 수채":"Clear watercolor with paint pooling at the edges","수채 세필":"Fine Watercolor","작은 붓으로 그리는 가는 수채 선":"Thin watercolor lines with a small brush","수채 번짐":"Watercolor Bleed","젖은 종이에 떨어뜨린 듯 가장자리가 풀리는 수채":"Watercolor whose edges spread, as if dropped on wet paper","수채 글레이즈":"Watercolor Glaze","넓고 고르게 까는 투명한 막 — 덧칠할수록 한 겹씩 진해져요":"A wide, even transparent wash — each layer darkens it one step","수채 알갱이":"Granulating Watercolor","울트라마린처럼 안료가 종이 골에 가라앉아 오돌토돌":"Pigment settles into the paper grooves for a bumpy look, like ultramarine","마른 수채":"Dry Watercolor","물기 적은 붓이 종이 결 위로 스치는 거친 수채":"Rough watercolor from a dry brush skimming the paper grain","수채 평붓":"Flat Watercolor","넓은 면을 고르게 바르는 납작 수채 붓, 옅은 털 결":"Flat watercolor brush for even, wide areas, with faint bristle grain","수채 물 번지기":"Watercolor Water Blend","밑색을 끌어와 물로 풀어 주는 붓":"A brush that pulls the underlying color and loosens it with water","유화 둥근 붓":"Round Oil Brush","털 결이 남고 밑색과 섞이는 유화, 길게 그으면 갈라져요":"Oil paint that leaves bristle grain and mixes with the color below; splits on long strokes","유화 평붓":"Flat Oil Brush","넓은 평붓으로 물감을 밀어 바르기":"Push paint on with a wide flat brush","유화 임파스토":"Oil Impasto","물감을 두껍게 올려 붓 자국이 도드라지는 유화":"Oil paint laid on thick so the brushstrokes stand out","마른 붓 (스컴블)":"Dry Brush (Scumble)","물감 적은 붓을 문질러 털 자국만 거칠게 남기기":"Rub a brush with little paint to leave only rough bristle marks","구아슈":"Gouache","불투명하고 무광으로 고르게 덮이는 물감":"Opaque, matte paint that covers evenly","구아슈 둥근 붓":"Round Gouache","작은 면과 디테일을 납작하게 메우는 구아슈":"Gouache for filling small areas and details flat","아크릴":"Acrylic","빨리 마르는 진한 물감, 끝으로 갈수록 털 자국":"Fast-drying rich paint, with bristle marks toward the end","팔레트 나이프":"Palette Knife","칼날로 물감을 펴 바르면 가장자리에 물감 둑이 생겨요":"Spread paint with the blade and ridges of paint form at the edges","색 섞기 붓":"Color Blender","밑색을 끌며 부드럽게 섞기":"Pull the underlying color and blend softly","유화 블렌더":"Oil Blender","마른 붓으로 물감 경계를 털 결 따라 풀어 주기":"Loosen paint edges along the bristle grain with a dry brush","손끝 (문지르기)":"Finger Blend (Smudge)","색 없이 손가락으로 문지르기":"Smudge with your finger, no color","거친 문지르기":"Rough Smudge","결이 남게 문질러 펴기 (목탄·파스텔 문지르기)":"Smudge and spread while keeping the grain (for charcoal/pastel)","붓털 문지르기":"Bristle Smudge","털 결을 따라 색을 끌어 늘이기":"Drag and stretch color along the bristle grain","부드러운 에어브러시":"Soft Airbrush","아주 부드러운 그러데이션":"Very soft gradient","단단한 에어브러시":"Hard Airbrush","가장자리가 조금 더 또렷한 에어브러시":"Airbrush with slightly crisper edges","거친 에어브러시":"Rough Airbrush","알갱이가 보이는 그러데이션 (노이즈 음영)":"Gradient with visible grain (noise shading)","흩뿌린 물감 입자":"Scattered paint particles","종이결 칠":"Paper Texture","종이 결이 살아 있는 넓은 음영":"Broad shading with lively paper grain","캔버스결 칠":"Canvas Texture","캔버스 천 결이 비치는 칠":"Fill with the canvas weave showing through","그런지":"Grunge","낡고 얼룩진 질감 칠하기":"Paint a worn, stained texture","물감 튀김":"Paint Splatter","튀긴 물감 방울":"Splattered paint drops","빗금 칠":"Hatching","칠한 곳에 빗금 무늬":"Hatching pattern where you paint","망점 (스크린톤)":"Halftone (Screentone)","칠한 곳에 망점 무늬":"Halftone pattern where you paint","풀":"Grass","풀잎 무더기를 이어 찍기":"Stamp clumps of grass in a row","털 (레이크)":"Fur (Rake)","나란한 털 결을 한 번에":"Parallel fur strands in one go","털 가닥":"Hair Strands","짐승 털·머리카락 뭉치":"Clumps of animal fur or hair","잎 뿌리기":"Leaf Scatter","흩날리는 잎":"Drifting leaves","구름":"Clouds","뭉게구름 덩이":"Puffy cloud clumps","반짝이":"Sparkle","반짝이는 십자 빛":"Sparkling cross-shaped light","별 뿌리기":"Star Scatter","크기·색이 조금씩 다른 별":"Stars of slightly varying size and color","눈송이":"Snowflakes","흩날리는 눈송이":"Drifting snowflakes","연필":"Pencil","진한 연필":"Dark Pencil","유화 (물감 섞기)":"Oil (Paint Mixing)","수채 번짐 (곱하기)":"Watercolor Bleed (Multiply)","망점(스크린톤)":"Halftone (Screentone)","가져온 브러시":"Imported Brushes","내 브러시":"My Brushes","새 브러시 — 프리셋 ${ADV_PRESETS.length}종":"New Brush — ${ADV_PRESETS.length} presets","고르면 지금 색으로 새 브러시가 만들어져요":"Pick one to create a new brush in the current color","빈 브러시 (끝 모양만 고르기)":"Blank Brush (choose tip shape only)","찾기 — 예: 연필, 목탄, 수채, 결":"Search — e.g. pencil, charcoal, watercolor, grain","브러시를 만들지 못했어요: ":"Couldn't create the brush: ","전체":"All","\"${pr.name}\" 브러시를 만들었어요":"Created the \"${pr.name}\" brush","찾는 프리셋이 없어요":"No matching presets","마법봉":"Magic Wand","빠른 선택":"Quick Selection","고급 브러시":"Advanced Brush","블러":"Blur","퀵 마스크":"Quick Mask","마법봉 (Magic Wand)":"Magic Wand","빠른 선택 (Quick Selection)":"Quick Selection","고급 브러시 (CSP Brush)":"Advanced Brush (CSP Brush)","블러 (Blur)":"Blur","퀵 마스크 (Quick Mask)":"Quick Mask","투명색 전환 (Transparent Color)":"Transparent Color Toggle","아무 키 조합이나 누르세요":"Press any key combination","선택 모드를 바꾸지 못했어요":"Couldn't change the selection mode","Magma의 Copy merged(Ctrl+Shift+C)가 응답하지 않았어요":"Magma's Copy merged (Ctrl+Shift+C) didn't respond","선택 모양을 읽지 못했어요":"Couldn't read the selection shape","선택 위치 정보를 읽지 못했어요":"Couldn't read the selection position","선택 범위 ${n}px 확장":"Expand selection by ${n}px","선택 범위 ${-n}px 축소":"Shrink selection by ${-n}px","${label} 중…":"${label}…","화면 위치 정보를 읽지 못해 멈췄어요":"Stopped: couldn't read the screen position info","화면을 회전하거나 뒤집은 상태에서는 아직 쓸 수 없어요":"This doesn't work yet while the view is rotated or flipped","화면을 읽지 못했어요":"Couldn't read the screen","선택 영역이 화면에 충분히 보이도록 한 뒤 다시 해 주세요":"Make sure enough of the selection is visible on screen, then try again","화면 위치 계산이 맞지 않아 안전을 위해 멈췄어요":"Stopped for safety: the screen position calculation didn't match","${label}: 남는 영역이 없어서 선택을 해제했어요":"${label}: nothing was left, so the selection was cleared","${label} 완료":"${label} done","${grow ? '넓힐' : '좁힐'} 픽셀 수":"Pixels to ${grow ? '넓힐' : '좁힐'}","선택 범위 확장…":"Expand Selection…","선택 범위 축소…":"Shrink Selection…","작업 기록 (내 컴퓨터)…":"History (this computer)…","레이어 속성 (내 화면)…":"Layer Properties (my screen)…","저장된 그림을 찾지 못했어요":"Couldn't find the saved image","방금":"just now","${Math.round(s / 60)}분 전":"${Math.round(s / 60)} min ago","${Math.round(s / 3600)}시간 전":"${Math.round(s / 3600)} h ago","${Math.round(s / 86400)}일 전":"${Math.round(s / 86400)} d ago","오늘":"Today","보드를 연 상태에서 쓸 수 있어요":"Available while a board is open","이 컴퓨터 사용량 ${fmtMB(await histUsage())}":"Used on this computer: ${fmtMB(await histUsage())}","기록을 읽지 못했어요":"Couldn't read the history","아직 저장된 기록이 없어요. 그림을 그리면 몇 분 안에 저장돼요(지금 저장도 돼요).":"Nothing saved yet. It saves within a few minutes after you draw (or use Save now).","레이어 ${p.layers.length}개":"${p.layers.length} layers"," · ${p.changed}개 바뀜":" · ${p.changed} changed"," (빈 레이어)":" (empty layer)","복사":"Copy","복사 중…":"Copying…","복사됨":"Copied","\"${l.name}\"(${fmtTime(p.t).split(' · ')[0]})을 복사했어요 → Edit → Paste on new layer로 붙이세요":"Copied \"${l.name}\" (${fmtTime(p.t).split(' · ')[0]}) → paste it with Edit → Paste on new layer","복사하지 못했어요: ":"Couldn't copy: ","저장 중…":"Saving…","지금 저장":"Save now","지금 상태를 저장했어요":"Saved the current state","마지막 기록과 달라진 게 없어요":"Nothing has changed since the last save","이 보드 기록 지우기":"Clear this board's history","이 보드의 작업 기록을 지웠어요 (Magma 보드는 그대로예요)":"Cleared this board's history (the Magma board itself is unchanged)","지우지 못했어요":"Couldn't delete","보드가 너무 커서 레이어 스트로크를 쓸 수 없어요":"The board is too large for layer stroke","레이어를 고른 뒤 다시 열어 주세요":"Pick a layer, then open this again","\"${L.name}\" 레이어 스트로크를 지웠어요":"Removed the layer stroke from \"${L.name}\"","투명색 사용 중":"Transparent color in use","투명색":"Transparent color"," (${(S.akeys || []).map(comboText).join(', ') || '단축키 없음'}) — 누르면 지금 색과 바꿔요":" (${(S.akeys || []).map(comboText).join(', ') || '단축키 없음'}) — click to swap with the current color","투명색: 그리면 지워져요":"Transparent color: drawing erases","투명색 — 브러시가 지우개가 돼요":"Transparent color — the brush becomes an eraser","원래 색으로 돌아왔어요":"Back to the original color","올가미 채우기를 지우기 모드로 바꾸지 못했어요":"Couldn't switch Lasso fill to erase mode"," 못 했어요: ":" failed: ","지우지":"Erase","투명색 지우기":"Transparent color erase","흐리게 하지":"Blur","잠긴 레이어 획":"Locked layer stroke","투명 부분 잠금이 켜진 레이어라 지울 수 없어요":"This layer has transparent pixel lock on, so it can't be erased","선택 영역이 있으면 고급 브러시로 지울 수 없어요 — 선택을 풀고 다시 해 주세요":"The Advanced Brush can't erase while there's a selection — deselect and try again","흐리게 할 레이어를 먼저 골라 주세요":"Pick a layer to blur first","글자 레이어는 흐리게 할 수 없어요":"Text layers can't be blurred","선택 영역이 있으면 블러를 쓸 수 없어요 — 선택을 풀고 다시 해 주세요":"Blur doesn't work while there's a selection — deselect and try again","흐리게 하지 못했어요: ":"Couldn't blur: ","사각형 선택":"Rectangle Selection","타원 선택":"Ellipse Selection","올가미 선택":"Lasso Selection","리퀴파이":"Liquify","사각형":"Rectangle","타원":"Ellipse","도형":"Shapes","손 (화면 이동)":"Hand (pan)","화면 회전":"Rotate View","확대·축소":"Zoom"," — 누르면 같은 폴더 도구가 펼쳐져요":" — click to open the other tools in this group","레이어 내용 선택 메뉴를 찾지 못했어요":"Couldn't find the layer content selection menu","Magma 편집기를 찾지 못했어요":"Couldn't find the Magma editor","이 레이어를 알아보지 못했어요":"Couldn't recognize this layer","먼저 레이어 하나를 골라 주세요":"Pick a layer first","다른 사람 레이어는 함께 고를 수 없어요":"Other people's layers can't be selected together","지금 레이어는 늘 함께 바뀌어요":"The current layer always changes along with them","한 번에 함께 바꿀 수 있는 레이어는 ${MS_MAX + 1}개까지예요 (되돌리기가 15칸이라서)":"You can change up to ${MS_MAX + 1} layers together at once (undo only has 15 steps)","레이어 ${n + 1}개를 함께 골랐어요 — 변형(Ctrl+T)·이동(V)·눈·속성을 함께 바꿔요":"Selected ${n + 1} layers together — transform (Ctrl+T), move (V), visibility and properties change together","함께 고르기를 풀었어요":"Cleared multi-selection","선택을 풀지 못함":"couldn't deselect","올가미 선택으로 바꾸지 못함":"couldn't switch to Lasso selection","선택 모드를 바꾸지 못함":"couldn't change the selection mode","원래 선택을 다시 긋지 못함":"couldn't redraw the original selection","레이어를 고르지 못함":"couldn't pick the layer","빈 레이어":"empty layer","변형을 시작하지 못함":"couldn't start the transform","왜곡 모드 단추를 찾지 못함":"couldn't find the distort mode button","변형이 시작되지 않음":"transform didn't start","모양이 맞지 않음":"shape doesn't match","모양이 맞지 않음 — Ctrl+Z로 되돌려 주세요":"shape doesn't match — undo with Ctrl+Z","모양이 맞지 않아 그대로 둠":"shape doesn't match, left as is","함께 변형하다 멈췄어요: ":"Stopped while transforming together: ","여러 조각(또는 구멍)으로 된 선택은 지금 레이어만 바뀌어요":"With a selection made of several pieces (or holes), only the current layer changes","선택 영역이 있을 때는 함께 고른 레이어 ${MS_MAX_SEL}개까지만 같이 바뀌어요(레이어마다 되돌리기 3칸) — 지금 레이어만 바뀌어요":"With a selection, only up to ${MS_MAX_SEL} selected layers can change together (3 undo steps per layer) — only the current layer changes","잠긴 레이어(${locked.map((L) => L.name).join(', ')})가 있어 지금 레이어만 바뀌어요":"There are locked layers (${locked.map((L) => L.name).join(', ')}), so only the current layer changes","레이어 ${todo.length}개에 같은 ${ss.kind === 'move' ? '이동' : '변형'}을 하는 중…":"Applying the same ${ss.kind === 'move' ? '이동' : '변형'} to ${todo.length} layers…","앞 레이어에서 멈춤":"stopped at an earlier layer","함께 옮기기":"Move together","함께 변형":"Transform together","${results.length - bad.length}개는 함께 바꿨지만 ${bad.map(([L, e]) => `\"${L.name}\"(${e})`).join(', ')}은 못 바꿨어요":"Changed ${results.length - bad.length} together, but couldn't change ${bad.map(([L, e]) => `\"${L.name}\"(${e})`).join(', ')}","레이어 ${results.length + 1}개를 함께 ${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} (되돌리기는 레이어마다 ${ss.sel ? '3칸: 선택 해제·선택·변형' : '한 칸'})":"${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} ${results.length + 1} layers together (undo per layer: ${ss.sel ? '3칸: 선택 해제·선택·변형' : '한 칸'})","속성을 함께 바꾸다 멈췄어요: ":"Stopped while changing properties together: ","레이어 칸을 찾지 못함":"couldn't find the layer row","불투명도 칸을 찾지 못함":"couldn't find the opacity field","불투명도가 바뀌지 않음":"opacity didn't change","합성 모드를 찾지 못함":"couldn't find the blend mode","합성 모드가 바뀌지 않음":"blend mode didn't change","단추를 찾지 못함":"couldn't find the button","바뀌지 않음":"didn't change","레이어 ${todo.length}개에 같은 속성을 맞추는 중…":"Matching the same properties on ${todo.length} layers…","\"${L.name}\"(고르지 못함)":"\"${L.name}\"(couldn't pick)","속성 함께 바꾸기":"Change properties together","투명 픽셀 잠금":"Lock transparent pixels","잠금":"Lock","클리핑":"Clipping","일부는 못 바꿨어요: ${bad.join(', ')}":"Some couldn't be changed: ${bad.join(', ')}","레이어 ${todo.length + 1}개에 ${Object.keys(ch).map((k) => names[k]).join('·')} 함께 맞췄어요":"Matched ${Object.keys(ch).map((k) => names[k]).join('·')} on ${todo.length + 1} layers","보드가 너무 커서 퀵 마스크를 쓸 수 없어요":"The board is too large for Quick Mask","칠한 모양: Enter = 선택으로 만들기 · Esc = 처음 선택으로 · Ctrl+Z = 한 획 되돌리기":"Painted shape: Enter = make selection · Esc = back to original selection · Ctrl+Z = undo one stroke","화면을 회전·뒤집기 한 상태에서는 퀵 마스크를 선택으로 만들 수 없어요 — 화면을 원래대로 돌리고 Enter":"Quick Mask can't become a selection while the view is rotated/flipped — reset the view, then press Enter","선택을 모두 지웠어요":"Cleared the whole selection","선택 모양을 만들지 못했어요":"Couldn't make the selection shape","퀵 마스크 선택":"Quick Mask selection","퀵 마스크를 선택으로 만들었어요 (${cnt.toLocaleString()}픽셀)":"Turned the Quick Mask into a selection (${cnt.toLocaleString()} px)"," · 작은 조각 ${P.dropped}개는 뺐어요":" · Left out ${P.dropped} small pieces","선택으로 만들지 못했어요: ":"Couldn't make a selection: ","처음 선택으로 돌렸어요":"Restored the original selection","되돌릴 획이 없어요 (Magma 되돌리기는 퀵 마스크에서 나간 뒤에)":"No strokes to undo (use Magma's undo after leaving Quick Mask)","클리핑을 바꾸지 못했어요: ":"Couldn't change clipping: ","다른 사람 레이어는 클리핑할 수 없어요":"Other people's layers can't be clipped","레이어를 고르지 못했어요":"Couldn't pick the layer","클리핑 단추를 찾지 못했어요":"Couldn't find the clipping button","\"${L.name}\" 클리핑 ${L.clippingGroup ? '켬 (아래 레이어 모양 안에만 보여요)' : '끔'}":"\"${L.name}\" clipping ${L.clippingGroup ? '켬 (아래 레이어 모양 안에만 보여요)' : '끔'}","클리핑이 바뀌지 않았어요":"Clipping didn't change","${g.what} 되돌렸어요 (Magma 되돌리기 ${done}칸을 한 번에)":"Undid ${g.what} (${done} Magma undo steps at once)"," · 더 앞의 칸은 15칸 한도로 지워져 있었어요":" · earlier steps were already gone due to the 15-step limit","${g.what} — ${g.n}칸 중 ${done}칸만 되돌렸어요":"${g.what} — undid only ${done} of ${g.n} steps","${r.what} 다시 했어요 (${done}칸을 한 번에)":"Redid ${r.what} (${done} steps at once)","${r.what} — ${r.n}칸 중 ${done}칸만 다시 했어요":"${r.what} — redid only ${done} of ${r.n} steps","칠할 영역을 이 픽셀만큼 넓히거나(+) 좁혀요(−). 0이면 Magma 그대로":"Grows (+) or shrinks (−) the fill area by this many pixels. 0 = Magma's default","확장/축소":"Expand/Shrink","Mode가 opacity·smart이거나 Target layer가 above·below면 확장/축소·빈틈 닫기 없이 Magma 그대로 칠해요":"If Mode is opacity/smart or Target layer is above/below, it fills the normal Magma way, without expand/shrink or gap closing","칠하지 못했어요: ":"Couldn't fill: ","칠할 레이어를 먼저 골라 주세요":"Pick a layer to fill first","그림을 읽지 못했어요":"Couldn't read the image","칠할 곳이 없어요 (너무 많이 좁혔어요)":"Nothing to fill (shrunk too much)","칠할 영역을 만들지 못했어요":"Couldn't create the fill area","올가미 채우기 모드를 맞추지 못해 안전을 위해 멈췄어요":"Stopped for safety: couldn't set the Lasso fill mode","${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀":"${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()} px"," (영역 ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)":" (area ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)"," · 틈 ${ff.bridges}곳 이음":" · bridged ${ff.bridges} gaps","${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀 · 안티에일리어스":"${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()} px · anti-aliased","원 (딱딱)":"Circle (hard)","원 (부드러움)":"Circle (soft)","납작붓":"Flat Brush","연필 (거친)":"Pencil (rough)","스프레이 점":"Spray Dots","붓털":"Bristles","수채 얼룩":"Watercolor Blot","흑연":"Graphite","목탄 끝":"Charcoal Tip","파스텔 덩이":"Pastel Chunk","마른 붓털":"Dry Bristles","납작 붓털":"Flat Bristles","레이크":"Rake","별":"Star","하트":"Heart","잎":"Leaf","삼각형":"Triangle","종이":"Paper","수채 종이":"Watercolor Paper","캔버스 천":"Canvas","노이즈":"Noise","거친 결":"Rough Grain","드로잉지 결":"Drawing Paper","목탄지":"Charcoal Paper","중목 종이":"Medium-Grain Paper","사포":"Sandpaper","빗금":"Hatching","망점":"Halftone","기본 브러시 ":"Basic Brush ","한글이 보이도록 기본 글꼴을 \"${font}\"로 맞췄어요 (끄려면 오른쪽 '자동' 해제)":"Set the default font to \"${font}\" so Korean text shows up (to turn this off, uncheck 'Auto' on the right)","\"${f}\" 글꼴에는 한글이 없어 네모로 보여요 — 글자를 고르고 오른쪽 '한글' 글꼴 단추를 눌러 주세요":"The \"${f}\" font has no Korean characters, so they show as boxes — select the text and click the 'Korean' font button on the right","한글":"Korean","글꼴을 ${f}로 (한글이 보이는 Magma 글꼴)":"Set the font to ${f} (a Magma font that shows Korean)","한글을 치면 자동으로 한글 글꼴로 바꿔요":"Switch to a Korean font automatically when you type Korean","자동":"Auto","내 컴퓨터 글꼴…":"My computer's fonts…","컴퓨터에 설치된 글꼴로 글자를 그림으로 넣어요":"Add text as an image using fonts installed on your computer","글자를 써 주세요":"Please type some text","붙일 레이어를 먼저 골라 주세요":"Pick a layer to paste on first","글자 레이어 말고 그림 레이어를 골라 주세요":"Pick a drawing layer, not a text layer","글자를 붙였어요 — 이동 도구로 옮길 수 있어요":"Text added — you can move it with the Move tool","여기에는 그림이 있는 레이어가 없어요":"There's no layer with a drawing here","\"${L.name}\" 레이어":"Layer \"${L.name}\"","를 골랐어요":" selected"," — 다른 사람 레이어예요":" — it's someone else's layer","채울 레이어를 먼저 골라 주세요":"Pick a layer to fill first","Alt를 떼면 채워요 — 다시 눌러 주세요":"Fills when you release Alt — press it again","올가미 채우기 설정을 바꾸지 못했어요":"Couldn't change the Lasso fill settings","선택 영역을 지웠어요":"Erased the selection","레이어 전체를 지웠어요":"Erased the whole layer","선택 영역을 채웠어요":"Filled the selection","보드 전체를 채웠어요":"Filled the whole board","채우지 못했어요: ":"Couldn't fill: ","레이어 속성 — 브러시 설정 자리에 레이어 속성을 띄워요":"Layer Properties — shows layer properties where the brush settings are","레이어 속성":"Layer Properties","레이어를 고르면 속성이 보여요":"Pick a layer to see its properties","경계 효과 (테두리)":"Border Effect (outline)","테두리 두께":"Border thickness","흐리기":"Blur","테두리 색":"Border color","테두리 안티에일리어싱":"Border anti-aliasing","내 화면에만 보여요 (보드에는 평범한 레이어)":"Only visible on my screen (a normal layer on the board)","효과":"Effect","켜짐":"On","꺼짐":"Off","그리기: 손을 떼면 보드에 들어가요 · Alt: 스포이트 · Shift+클릭: 직선 · Ctrl+Alt 끌기·[ ]: 크기":"Draw: goes onto the board when you release · Alt: eyedropper · Shift+click: straight line · Ctrl+Alt drag / [ ]: size","문지르기: 흐리게(손을 떼면 보드에 들어가요, 되돌리기 2칸) · [ ]: 크기":"Drag: blur (goes onto the board when you release, 2 undo steps) · [ ]: size","빨간 곳 = 선택 · 칠하기: 넣기 · Alt: 반대로 · Enter: 선택으로 · Esc: 처음으로 · [ ]: 크기":"Red = selection · Paint: add · Alt: reverse · Enter: to selection · Esc: start over · [ ]: size","문지르기: 선택(선택이 있으면 추가) · Alt: 빼기 · [ ]: 브러시 크기":"Drag: select (adds to an existing selection) · Alt: subtract · [ ]: brush size","클릭한 영역을 지금 색으로 채워요":"Fills the clicked area with the current color","클릭: 선택 · Shift: 추가 · Alt: 빼기":"Click: select · Shift: add · Alt: subtract","불투명도 (%)":"Opacity (%)","강도 (흐림 반경 px)":"Strength (blur radius px)","밀도 (%)":"Density (%)","선택으로 만들기":"Make Selection","아직 칠한 게 없어요":"Nothing painted yet","처음으로":"Start Over","모두 지우기":"Clear All","선택을 비우고 새로 칠하기":"Empty the selection and paint from scratch","칠하기":"Paint","선택 넣기":"Add to selection","선택 빼기":"Subtract from selection","참조":"Reference","모든 레이어":"All layers","허용 오차":"Tolerance","영역 확장":"Expand area","동작":"Action","선택":"Select","채우기":"Fill","이어진 곳만":"Contiguous","전체 같은 색":"All matching colors","빈틈 닫기":"Close gaps","v${VERSION}으로 업데이트됐어요":"Updated to v${VERSION}","도구":"Tools","색상환":"Color wheel","브러시 목록":"Brush list","레이어":"Layers","펼치기":"Expand","접기":"Collapse","닫기 (Window 메뉴에서 다시 열기)":"Close (reopen from the Window menu)","Window — 패널·화면 배치":"Window — panels & layout","패널":"Panels","화면 모드":"View mode","두 줄":"Two rows","배치 처음으로 (이 모드)":"Reset layout (this mode)","사용자 지정 UI 끄기 (원래 화면)":"Turn off custom UI (original layout)","사용자 지정 UI 켜기":"Turn on custom UI","레이아웃 설정 단추를 찾지 못했어요":"Couldn't find the layout settings button","Magma 화면 조각을 찾지 못함":"couldn't find a Magma screen element","화면 배치에 문제가 생겨 원래 Magma 화면으로 돌렸어요. 다른 기능은 그대로 쓸 수 있어요 (Window 메뉴에서 다시 켜기)":"Something went wrong with the layout, so it switched back to the original Magma layout. Other features still work (turn it back on from the Window menu)","처음 보는 화면 조각: ":"Unknown screen element: ","대칭 자":"Symmetry Ruler","대칭 자 (Symmetry Ruler)":"Symmetry Ruler","원근 격자":"Perspective Grid","대칭":"Symmetry","켜기":"On","끄기":"Off","선 개수":"Lines","선대칭":"Line symmetry","보드 가운데":"Board center","자 지우기":"Remove ruler","축을 세로로":"Make the axis vertical","축을 가로로":"Make the axis horizontal","축을 보드 한가운데로":"Move the axis to the board center","이 보드의 대칭 자를 없애요":"Remove the symmetry ruler from this board","대칭 자는 내 화면에만 보여요. Magma 브러시는 건너편 획마다 되돌리기 한 칸":"Only you see the ruler. With Magma brushes, each mirrored stroke is one undo step","끌기: 새 축 · 가운데 점 끌기: 옮기기 · 네모 점 끌기: 돌리기(Shift: 15°씩)":"Drag: new axis · Drag center dot: move · Drag square: rotate (Shift: 15° steps)","보드에 끌어서 대칭 축을 만드세요 (Shift: 15°씩)":"Drag on the board to make a symmetry axis (Shift: 15° steps)","대칭 획":"Symmetry stroke","대칭 자는 내 화면에만 보여요. Ctrl+Z 한 번에 건너편 획까지 함께 되돌아가요":"Only you see the ruler. One Ctrl+Z undoes the mirrored strokes too"};
+  const I18N_EN = /*I18N_EN*/{"현재 레이어를 찾지 못했어요":"Couldn't find the current layer","화면을 읽지 못했어요 (Magma 창이 가려져 있지 않은지 확인해 주세요)":"Couldn't read the screen (make sure the Magma window isn't covered)","그림판 밖을 눌렀어요":"You clicked outside the canvas","보드 바깥을 눌렀어요":"You clicked outside the board","영역을 만들지 못했어요":"Couldn't create the area","클립보드 기능을 쓸 수 없어요":"Clipboard isn't available","현재 레이어 참조: 선택이 있는 상태에서는 레이어를 새로 읽을 수 없어요. 선택을 해제하고 한 번 클릭한 뒤 이어서 쓰세요":"Current layer reference: the layer can't be re-read while there's a selection. Deselect, click once, then continue","현재 레이어를 읽지 못했어요":"Couldn't read the current layer","현재 레이어가 비어 있어요":"The current layer is empty","현재 레이어 위치를 읽지 못했어요":"Couldn't read the current layer's position","현재 레이어 크기가 맞지 않아요":"The current layer's size doesn't match","화면 위치 정보를 읽지 못했어요":"Couldn't read the screen position info","화면을 회전하거나 뒤집은 상태에서는 현재 레이어 참조를 쓸 수 없어요":"Current layer reference doesn't work while the view is rotated or flipped"," · 작은 조각 ${P.dropped}개는 점이 너무 많아 뺐어요":" · Left out ${P.dropped} small pieces that had too many points"," · 테두리가 복잡해 조금 매끈하게 그었어요":" · The outline was complex, so it was smoothed a little"," · 선 위를 눌러 빈틈 닫기 없이 했어요":" · You clicked on a line, so gap closing was skipped","그림판 화면을 찾지 못했어요":"Couldn't find the canvas view","영역 계산 중…":"Calculating area…","올가미 채우기 도구로 바꾸지 못했어요":"Couldn't switch to the Lasso fill tool","안전을 위해 멈췄어요: 올가미 채우기를 그리기 모드로 바꾸지 못했어요":"Stopped for safety: couldn't switch Lasso fill to draw mode","마법봉 선택":"Magic Wand selection",", 테두리 ${R.pieces}개":", ${R.pieces} outlines",", 구멍 ${holes}개":", ${holes} holes","${fill ? '채움' : '선택'}: ${count.toLocaleString()}픽셀${parts} (${(ms / 1000).toFixed(1)}초)":"${fill ? '채움' : '선택'}: ${count.toLocaleString()} px${parts} (${(ms / 1000).toFixed(1)}s)"," · 화면 기준":" · based on screen","오류: ":"Error: ","화면을 회전·뒤집은 상태에서는 현재 레이어 참조를 쓸 수 없어요":"Current layer reference doesn't work while the view is rotated/flipped","빼는 중… (손을 떼면 확정)":"Subtracting… (release to confirm)","선택 중… (손을 떼면 확정)":"Selecting… (release to confirm)","취소했어요":"Canceled","${Q.subtract ? '뺌' : '선택'}: ${count.toLocaleString()}픽셀":"${Q.subtract ? '뺌' : '선택'}: ${count.toLocaleString()} px","브러시 크기 ${BSZ.size}":"Brush size ${BSZ.size}","클립 스튜디오 브러시(.sut) 파일이 아니에요":"This isn't a Clip Studio brush (.sut) file","브러시 설정을 찾지 못했어요":"Couldn't find the brush settings","브러시":"Brush","합성 모드(${num(v.CompositeMode, 0)}번)는 '보통'으로 그려요 — 지우개 브러시면 ⚙ 설정 → 잉크 → 합성 모드에서 '지우기'":"Blend mode #${num(v.CompositeMode, 0)} draws as 'Normal' — for an eraser brush, set ⚙ Settings → Ink → Blend mode to 'Erase'","셰이더: ":"Shader: ","셰이더 연결: ":"Shader link: ","WebGL2를 쓸 수 없어요":"WebGL2 isn't available","'${brush.name}'의 필압·속도 곡선을 예전 버전이 잘못 읽었어요 — 지금은 곧은 곡선으로 그려요. .sut를 다시 가져오면 원래 곡선대로 돼요":"An older version misread the pressure/speed curves of '${brush.name}' — it now draws with straight curves. Re-import the .sut to get the original curves","수채":"Watercolor","숨겨진 레이어에는 그릴 수 없어요 — 레이어의 눈 아이콘을 켜 주세요":"You can't draw on a hidden layer — turn on the layer's eye icon","잠긴 레이어에는 그릴 수 없어요 — 레이어 잠금을 풀어 주세요":"You can't draw on a locked layer — unlock the layer","지우지 못했어요: ":"Couldn't erase: ","획을 보드에 넣지 못했어요: ":"Couldn't add the stroke to the board: ","칠하지":"Paint","브러시를 준비하지 못했어요: ":"Couldn't prepare the brush: ","먼저 오른쪽 설정 칸에서 브러시(.sut)를 가져와 주세요":"First import a brush (.sut) in the settings panel on the right","이 브러시는 지우개·특수 합성이라 아직 쓸 수 없어요":"This brush is an eraser/special blend, so it can't be used yet","이 브러시는 끝 모양 PNG가 필요해요 — 설정 칸의 \"끝 모양 PNG 넣기\"를 눌러 주세요":"This brush needs a tip shape PNG — click \"Add tip shape PNG\" in the settings panel","그릴 레이어를 먼저 골라 주세요":"Pick a layer to draw on first","글자 레이어에는 그릴 수 없어요 — 그림 레이어를 골라 주세요":"You can't draw on a text layer — pick a drawing layer","주의: Magma 설정 \"붙여넣기를 새 레이어로\"가 켜져 있어 획마다 새 레이어가 생겨요":"Note: Magma's \"Paste as new layer\" setting is on, so every stroke creates a new layer","＋ 브러시 가져오기 (.sut)":"＋ Import Brush (.sut)","＋ 기본 브러시":"＋ Basic Brush","클립 스튜디오 파일 없이, 기본 끝 모양으로 새 브러시를 만들어요":"Create a new brush with a basic tip shape — no Clip Studio file needed","끝 모양 바꾸기":"Change Tip Shape","⚙ 브러시 설정":"⚙ Brush Settings","크기·잉크·색 혼합(물감 섞기)·끝 모양·획·스프레이·텍스처·색 흔들기를 하나하나 바꿔요":"Adjust size, ink, color mixing (paint mixing), tip shape, stroke, spray, texture and color jitter one by one","지우기":"Delete","＋ 새 브러시 (프리셋)":"＋ New Brush (Preset)","연필·G펜·수채·유화(물감 섞기)·손끝·에어브러시·스프레이 등 프리셋으로 새 브러시를 만들어요":"Create a new brush from presets like pencil, G-Pen, watercolor, oil (paint mixing), finger blend, airbrush, spray and more","브러시 ${files.length - fails}개를 가져왔어요":"Imported ${files.length - fails} brushes"," — 끝 모양 PNG가 필요한 브러시가 있어요":" — some brushes need a tip shape PNG","한 번 더 누르면 지워요":"Click again to delete","브러시가 없어요. \"＋ 새 브러시 (프리셋)\"으로 만들거나 클립 스튜디오 브러시 파일(.sut)을 가져오세요.":"No brushes yet. Make one with \"＋ New Brush (Preset)\" or import a Clip Studio brush file (.sut).","⚠ 보호된 소재 ${need}개: \"끝 모양 바꾸기\"에서 기본 모양을 고르거나, CSP에서 PNG로 저장해 넣어 주세요":"⚠ ${need} protected materials: pick a basic shape in \"Change Tip Shape\", or save them as PNG in CSP and add them","아직 안 되는 기능: ${cur.unsupported.join(', ')} (나머지 설정으로 그려요)":"Not supported yet: ${cur.unsupported.join(', ')} (drawing with the other settings)","끝 모양·텍스처":"Tip Shape & Texture","기본 모양":"Basic shapes","을 누르면 준비된 모양 중에서 고를 수 있어요. 내 그림을 쓰려면":"lets you pick from ready-made shapes. To use your own image, add it with","PNG 고르기":"Choose PNG","로 넣어요(검은 그림 + 투명 배경).\n        클립 스튜디오의 보호된 소재는 CSP에서 캔버스에 붙여 PNG로 저장한 뒤 넣으면 똑같이 쓸 수 있어요.":"(black drawing + transparent background).\n        Protected Clip Studio materials work the same way: paste them onto a canvas in CSP, save as PNG, then add them.","닫기":"Close","끝 모양 ${i + 1}":"Tip shape ${i + 1}","2중 브러시 끝 모양":"Dual brush tip shape","텍스처":"Texture","없음":"None","모양 필요 (미리보기는 소재 썸네일)":"Shape needed (preview is the material thumbnail)","준비됨":"Ready","기본 모양: ":"Basic shape: ","모양을 넣지 못했어요: ":"Couldn't add the shape: ","바꾸기":"Change","그림을 열지 못했어요: ":"Couldn't open the image: ","필압":"Pressure","속도":"Speed","무작위":"Random","먼저 브러시를 골라 주세요":"Pick a brush first","브러시 설정 — ":"Brush Settings — ","  ${t} 최소":"  ${t} min","크기":"Size","브러시 크기":"Brush size","크기 효과":"Size dynamics","필압 곡선":"Pressure curve","필압 곡선: 100보다 작으면 살살 눌러도 굵고 진하게, 크면 세게 눌러야 굵어져요(펜에만 적용).":"Pressure curve: below 100, light pressure gives thick, dark lines; above 100, you have to press harder to get thick lines (pen only).","잉크":"Ink","불투명도":"Opacity","불투명도 효과":"Opacity dynamics","흐름(밀도)":"Flow (density)","흐름 효과":"Flow dynamics","안티에일리어스":"Anti-aliasing","합성 모드":"Blend mode","보통":"Normal","물감 겹치기":"Glaze","곱하기":"Multiply","물감 겹치기: 투명한 물감을 덧칠한 것처럼 감산 혼합돼요(노랑 위에 파랑 = 초록, 수채). 곱하기: 화면 곱하기라 겹칠수록 어둡고 탁해요(마커). 지우기: 이 브러시 모양 그대로 지우개가 돼요. 같은 레이어 안의 그림과 섞여요.":"Glaze: blends subtractively, like layering transparent paint (blue over yellow = green, watercolor). Multiply: screen multiply, so overlaps get darker and muddier (marker). Erase: the brush becomes an eraser with this exact shape. Mixes with the drawing on the same layer.","수채 경계":"Watercolor edge","수채 경계 켜기":"Enable watercolor edge","범위":"Range","투명도 영향":"Opacity influence","명도 영향":"Brightness influence","물이 마르면서 가장자리에 물감이 고인 것처럼 획 테두리 안쪽을 진하게 해요. 그리는 동안에도 결과와 똑같이 보여요.":"Darkens the inside of the stroke's edge, as if paint pooled at the rim while drying. Looks the same while you draw as in the final result.","물감":"Paint","붓털 켜기":"Enable bristles","붓 모양":"Brush shape","둥근 붓":"Round brush","평붓":"Flat brush","털 수":"Bristle count","털 결 세기":"Bristle texture strength","털마다 색 차이":"Per-bristle color variation","붓털: 털마다 물감을 따로 묻혀 끊김 없는 결이 남아요. 획 탭의 \\'물감 마름\\'을 같이 쓰면 길게 그을수록 털이 하나씩 말라 갈라져요. 끝 모양·각도 설정 대신 쓰여요.":"Bristles: each bristle carries its own paint, leaving a continuous texture. Combine with \\'Paint dry-out\\' in the Stroke tab and the bristles dry and split one by one the longer you drag. Used instead of the tip shape and angle settings.","두께감":"Impasto","광택":"Gloss","두께감: 물감이 두껍게 올라온 것처럼 붓 자국 굴곡에 왼쪽 위 빛과 그림자를 넣어요(0 = 끔). 광택이 높을수록 유화처럼 반짝여요.":"Impasto: adds light from the upper left and shadows to the brushstroke ridges, as if the paint is built up thick (0 = off). Higher gloss makes it shine like oil paint.","젖은 물감(수채)":"Wet paint (watercolor)","가장자리 흔들림":"Edge wobble","가장자리 풀림":"Edge bleed","안료 알갱이":"Pigment granulation","젖은 물감: 물이 닿은 경계가 또렷하고 구불구불해져요. 풀림을 올리면 젖은 종이처럼 번지고, 알갱이는 종이 골에 안료가 가라앉은 오돌토돌함이에요. 수채 경계와 함께 쓰면 좋아요.":"Wet paint: edges where the water reaches become crisp and wavy. Raise bleed to spread like wet paper; granulation is the bumpy look of pigment settling into the paper grooves. Works well with watercolor edge.","색 혼합":"Color mixing","블렌드":"Blend","물감 섞기":"Paint mixing","물감량":"Paint amount","물감량 효과":"Paint amount dynamics","물감 농도":"Paint density","물감 농도 효과":"Paint density dynamics","색 늘이기":"Color stretch","섞을 밑색":"Mix with","현재 레이어":"Current layer","보이는 그림":"Visible image","물감량 100 = 메인 색만 · 0 = 밑색만 끌고 다님(손끝). 물감 농도가 낮을수록 묽게, 색 늘이기가 클수록 끌고 온 색이 길게 남아요.":"Paint amount 100 = main color only · 0 = drags only the underlying color (finger blend). Lower paint density = thinner paint; higher color stretch = the dragged color lasts longer.","끝 모양":"Tip shape","경도(원형일 때)":"Hardness (round tip)","두께":"Thickness","두께 방향":"Thickness direction","가로":"Horizontal","세로":"Vertical","두께 효과":"Thickness dynamics","각도":"Angle","각도: 필압":"Angle: pressure","각도: 진행 방향":"Angle: direction","각도: 무작위":"Angle: random","  무작위 정도":"  Randomness","좌우 반전":"Flip horizontal","반전":"Flip","상하 반전":"Flip vertical","여러 모양 순서":"Multiple tip order","차례":"Sequential","왕복":"Back and forth","획":"Stroke","간격":"Spacing","간격 효과":"Spacing dynamics","손떨림 보정":"Stabilizer","입(시작 가늘게)":"Start taper","출(끝 가늘게)":"End taper","리본(끝 모양을 띠처럼 늘이기)":"Ribbon (stretch the tip like a band)","흩어짐":"Scatter","물감 마름(길이)":"Paint dry-out (length)","  마른 뒤 남는 양":"  Amount left when dry","물감 마름: 그 길이만큼 그으면 붓의 물감이 줄어 획이 갈라져요(갈필). 0이면 꺼짐.":"Paint dry-out: after dragging this far, the brush runs low on paint and the stroke splits (dry brush). 0 = off.","스프레이":"Spray","스프레이 켜기":"Enable spray","입자 크기":"Particle size","입자 크기를 브러시 크기에 맞춤":"Match particle size to brush size","입자 크기 효과":"Particle size dynamics","입자 수":"Particle count","입자 수 효과":"Particle count dynamics","가운데로 모임":"Gather to center","텍스처를 쓰고 있어요":"Using a texture","텍스처 없음 — 아래 단추로 고르세요":"No texture — pick one with the button below","농도":"Density","배율":"Scale","농도 강조":"Density boost","결 방식":"Grain mode","무늬 덮기":"Overlay pattern","깊이":"Depth","골에 남는 가루(깊이)":"Powder left in grooves (depth)","깊이: 종이 결을 높낮이로 써요. 살살 칠하면 높은 곳에만 묻고, 세게·여러 번 칠할수록 골까지 채워져요(연필·목탄·파스텔). 농도 = 골 깊이.":"Depth: uses the paper grain as height. Light strokes only touch the high spots; pressing harder or layering fills the grooves too (pencil, charcoal, pastel). Density = groove depth.","도장마다 적용(끄면 획 전체에, 깊이 방식은 늘 획 전체)":"Apply per stamp (off = whole stroke; depth mode always applies to the whole stroke)","2중 브러시":"Dual brush","이 브러시에는 2중 브러시가 없어요. 클립 스튜디오 브러시(.sut)에 2중 브러시가 있으면 여기서 바꿀 수 있어요.":"This brush has no dual brush. If a Clip Studio brush (.sut) has one, you can change it here.","2중 브러시 쓰기":"Use dual brush","흐름":"Flow","흩뿌리기":"Scatter","두 번째 끝 모양으로 찍은 무늬 안쪽만 남겨서 거친 질감을 만들어요.":"Keeps only the inside of the pattern stamped with the second tip shape, for a rough texture.","색 흔들기":"Color jitter","색상":"Hue","채도":"Saturation","명도":"Brightness","도장마다 색을 이만큼 흔들어요(반짝이·잎 같은 브러시에 좋아요).":"Jitters the color this much per stamp (great for brushes like glitter or leaves).","이름·관리":"Name & Manage","이름":"Name","분류":"Category","끝 모양·텍스처 바꾸기…":"Change tip shape & texture…","이 브러시 복제":"Duplicate this brush"," 사본":" copy","연필·스케치":"Pencil & Sketch","잉크·펜":"Ink & Pen","마커":"Marker","드라이 (목탄·파스텔)":"Dry (Charcoal & Pastel)","물감 (유화·구아슈)":"Paint (Oil & Gouache)","섞기·문지르기":"Blend & Smudge","에어브러시":"Airbrush","질감·특수":"Texture & Special","장식·자연":"Decoration & Nature","HB 연필":"HB Pencil","단단하고 옅은 선. 살살 그으면 종이 이에만 걸려요":"Hard, light lines. Light strokes catch only the paper's tooth","4B 연필":"4B Pencil","부드럽고 진한 흑연. 눌러 칠하면 결이 메워져요":"Soft, dark graphite. Press hard to fill in the grain","8B 연필":"8B Pencil","아주 무른 연필. 진하고 번들거리는 검정":"A very soft pencil. Dark, shiny black","샤프":"Mechanical Pencil","가늘고 일정한 밑그림 선":"Thin, even sketch lines","색연필":"Colored Pencil","색이 종이 결에 걸리는 밀랍 질감, 겹쳐 칠해 진하게":"Waxy texture where color catches the paper grain; layer it to darken","연필 눕혀 칠하기":"Pencil (side)","연필을 눕혀 넓게 음영 넣기":"Lay the pencil on its side for broad shading","목탄 연필":"Charcoal Pencil","거칠고 깊은 검정, 결이 가로로 비쳐요":"Rough, deep black with horizontal grain showing through","G펜":"G-Pen","필압으로 굵기가 바뀌는 매끈한 펜 선":"Smooth pen lines whose width changes with pressure","마루펜":"Maru Pen","가늘고 단단한 펜. 세밀한 선":"Thin, firm pen for fine lines","테크니컬 펜":"Technical Pen","굵기가 일정한 제도 펜":"Drafting pen with a constant width","붓펜":"Brush Pen","끝이 날렵한 붓펜":"Brush pen with a sharp tip","먹 붓":"Ink Brush","누르는 만큼 확 굵어지는 먹선":"Ink lines that swell sharply with pressure","마른 먹":"Dry Ink","그을수록 먹이 말라 갈라지는 붓 선":"Brush lines where the ink dries and splits as you drag","캘리그래피 펜":"Calligraphy Pen","각도가 고정된 납작 펜촉 (가로획 굵고 세로획 가늘게)":"Flat nib at a fixed angle (thick horizontal, thin vertical strokes)","펠트펜":"Felt Pen","가장자리가 살짝 번진 사인펜":"Felt-tip pen with slightly bleeding edges","사각 마커":"Chisel Marker","겹칠수록 진해지는 납작 마커":"Flat marker that darkens where strokes overlap","알코올 마커":"Alcohol Marker","부드러운 가장자리, 덧칠하면 한 단계씩 진해짐":"Soft edges; each layer darkens it one step","형광펜":"Highlighter","아래 그림이 비치는 형광 띠":"Highlighter band that lets the drawing below show through","버드나무 목탄":"Willow Charcoal","가볍고 부드러운 목탄. 손에 묻어나듯 결이 많이 남아요":"Light, soft charcoal. Leaves lots of grain, like it rubs off on your hand","압축 목탄":"Compressed Charcoal","진하고 무거운 검정, 세게 누르면 꽉 메워짐":"Dark, heavy black; fills in solid when you press hard","목탄 옆면":"Charcoal (side)","목탄을 눕혀 넓게 끌기 — 큰 면과 음영":"Drag charcoal on its side — big areas and shading","콩테":"Conté","단단한 사각 스틱, 또렷한 결":"Hard square stick with crisp grain","소프트 파스텔":"Soft Pastel","가루가 날리는 부드러운 파스텔, 큰 종이 결":"Soft, dusty pastel with large paper grain","오일 파스텔":"Oil Pastel","끈적하게 밀리며 밑색과 살짝 섞이는 밀랍 파스텔":"Waxy pastel that drags stickily and mixes slightly with the color below","크레용":"Crayon","어린이 크레용처럼 오돌토돌하게":"Bumpy, like kids' crayons","분필":"Chalk","칠판 분필, 가루와 끊김":"Blackboard chalk, dusty and broken","갈필 (마른 붓)":"Dry Brush","물감이 마르며 털 자국이 갈라지는 붓 — 길게 그어 보세요":"A brush whose bristle marks split as the paint dries — try a long stroke","스펀지":"Sponge","스펀지로 두드린 구멍 숭숭한 자국":"Porous marks dabbed with a sponge","점묘":"Stippling","펜 끝으로 콕콕 찍은 점 음영":"Dot shading tapped with a pen tip","수채 둥근 붓":"Round Watercolor","가장자리에 물감이 고이는 맑은 수채":"Clear watercolor with paint pooling at the edges","수채 세필":"Fine Watercolor","작은 붓으로 그리는 가는 수채 선":"Thin watercolor lines with a small brush","수채 번짐":"Watercolor Bleed","젖은 종이에 떨어뜨린 듯 가장자리가 풀리는 수채":"Watercolor whose edges spread, as if dropped on wet paper","수채 글레이즈":"Watercolor Glaze","넓고 고르게 까는 투명한 막 — 덧칠할수록 한 겹씩 진해져요":"A wide, even transparent wash — each layer darkens it one step","수채 알갱이":"Granulating Watercolor","울트라마린처럼 안료가 종이 골에 가라앉아 오돌토돌":"Pigment settles into the paper grooves for a bumpy look, like ultramarine","마른 수채":"Dry Watercolor","물기 적은 붓이 종이 결 위로 스치는 거친 수채":"Rough watercolor from a dry brush skimming the paper grain","수채 평붓":"Flat Watercolor","넓은 면을 고르게 바르는 납작 수채 붓, 옅은 털 결":"Flat watercolor brush for even, wide areas, with faint bristle grain","수채 물 번지기":"Watercolor Water Blend","밑색을 끌어와 물로 풀어 주는 붓":"A brush that pulls the underlying color and loosens it with water","유화 둥근 붓":"Round Oil Brush","털 결이 남고 밑색과 섞이는 유화, 길게 그으면 갈라져요":"Oil paint that leaves bristle grain and mixes with the color below; splits on long strokes","유화 평붓":"Flat Oil Brush","넓은 평붓으로 물감을 밀어 바르기":"Push paint on with a wide flat brush","유화 임파스토":"Oil Impasto","물감을 두껍게 올려 붓 자국이 도드라지는 유화":"Oil paint laid on thick so the brushstrokes stand out","마른 붓 (스컴블)":"Dry Brush (Scumble)","물감 적은 붓을 문질러 털 자국만 거칠게 남기기":"Rub a brush with little paint to leave only rough bristle marks","구아슈":"Gouache","불투명하고 무광으로 고르게 덮이는 물감":"Opaque, matte paint that covers evenly","구아슈 둥근 붓":"Round Gouache","작은 면과 디테일을 납작하게 메우는 구아슈":"Gouache for filling small areas and details flat","아크릴":"Acrylic","빨리 마르는 진한 물감, 끝으로 갈수록 털 자국":"Fast-drying rich paint, with bristle marks toward the end","팔레트 나이프":"Palette Knife","칼날로 물감을 펴 바르면 가장자리에 물감 둑이 생겨요":"Spread paint with the blade and ridges of paint form at the edges","색 섞기 붓":"Color Blender","밑색을 끌며 부드럽게 섞기":"Pull the underlying color and blend softly","유화 블렌더":"Oil Blender","마른 붓으로 물감 경계를 털 결 따라 풀어 주기":"Loosen paint edges along the bristle grain with a dry brush","손끝 (문지르기)":"Finger Blend (Smudge)","색 없이 손가락으로 문지르기":"Smudge with your finger, no color","거친 문지르기":"Rough Smudge","결이 남게 문질러 펴기 (목탄·파스텔 문지르기)":"Smudge and spread while keeping the grain (for charcoal/pastel)","붓털 문지르기":"Bristle Smudge","털 결을 따라 색을 끌어 늘이기":"Drag and stretch color along the bristle grain","부드러운 에어브러시":"Soft Airbrush","아주 부드러운 그러데이션":"Very soft gradient","단단한 에어브러시":"Hard Airbrush","가장자리가 조금 더 또렷한 에어브러시":"Airbrush with slightly crisper edges","거친 에어브러시":"Rough Airbrush","알갱이가 보이는 그러데이션 (노이즈 음영)":"Gradient with visible grain (noise shading)","흩뿌린 물감 입자":"Scattered paint particles","종이결 칠":"Paper Texture","종이 결이 살아 있는 넓은 음영":"Broad shading with lively paper grain","캔버스결 칠":"Canvas Texture","캔버스 천 결이 비치는 칠":"Fill with the canvas weave showing through","그런지":"Grunge","낡고 얼룩진 질감 칠하기":"Paint a worn, stained texture","물감 튀김":"Paint Splatter","튀긴 물감 방울":"Splattered paint drops","빗금 칠":"Hatching","칠한 곳에 빗금 무늬":"Hatching pattern where you paint","망점 (스크린톤)":"Halftone (Screentone)","칠한 곳에 망점 무늬":"Halftone pattern where you paint","풀":"Grass","풀잎 무더기를 이어 찍기":"Stamp clumps of grass in a row","털 (레이크)":"Fur (Rake)","나란한 털 결을 한 번에":"Parallel fur strands in one go","털 가닥":"Hair Strands","짐승 털·머리카락 뭉치":"Clumps of animal fur or hair","잎 뿌리기":"Leaf Scatter","흩날리는 잎":"Drifting leaves","구름":"Clouds","뭉게구름 덩이":"Puffy cloud clumps","반짝이":"Sparkle","반짝이는 십자 빛":"Sparkling cross-shaped light","별 뿌리기":"Star Scatter","크기·색이 조금씩 다른 별":"Stars of slightly varying size and color","눈송이":"Snowflakes","흩날리는 눈송이":"Drifting snowflakes","연필":"Pencil","진한 연필":"Dark Pencil","유화 (물감 섞기)":"Oil (Paint Mixing)","수채 번짐 (곱하기)":"Watercolor Bleed (Multiply)","망점(스크린톤)":"Halftone (Screentone)","가져온 브러시":"Imported Brushes","내 브러시":"My Brushes","새 브러시 — 프리셋 ${ADV_PRESETS.length}종":"New Brush — ${ADV_PRESETS.length} presets","고르면 지금 색으로 새 브러시가 만들어져요":"Pick one to create a new brush in the current color","빈 브러시 (끝 모양만 고르기)":"Blank Brush (choose tip shape only)","찾기 — 예: 연필, 목탄, 수채, 결":"Search — e.g. pencil, charcoal, watercolor, grain","브러시를 만들지 못했어요: ":"Couldn't create the brush: ","전체":"All","\"${pr.name}\" 브러시를 만들었어요":"Created the \"${pr.name}\" brush","찾는 프리셋이 없어요":"No matching presets","마법봉":"Magic Wand","빠른 선택":"Quick Selection","고급 브러시":"Advanced Brush","블러":"Blur","퀵 마스크":"Quick Mask","마법봉 (Magic Wand)":"Magic Wand","빠른 선택 (Quick Selection)":"Quick Selection","고급 브러시 (CSP Brush)":"Advanced Brush (CSP Brush)","블러 (Blur)":"Blur","퀵 마스크 (Quick Mask)":"Quick Mask","투명색 전환 (Transparent Color)":"Transparent Color Toggle","아무 키 조합이나 누르세요":"Press any key combination","선택 모드를 바꾸지 못했어요":"Couldn't change the selection mode","Magma의 Copy merged(Ctrl+Shift+C)가 응답하지 않았어요":"Magma's Copy merged (Ctrl+Shift+C) didn't respond","선택 모양을 읽지 못했어요":"Couldn't read the selection shape","선택 위치 정보를 읽지 못했어요":"Couldn't read the selection position","선택 범위 ${n}px 확장":"Expand selection by ${n}px","선택 범위 ${-n}px 축소":"Shrink selection by ${-n}px","${label} 중…":"${label}…","화면 위치 정보를 읽지 못해 멈췄어요":"Stopped: couldn't read the screen position info","화면을 회전하거나 뒤집은 상태에서는 아직 쓸 수 없어요":"This doesn't work yet while the view is rotated or flipped","화면을 읽지 못했어요":"Couldn't read the screen","선택 영역이 화면에 충분히 보이도록 한 뒤 다시 해 주세요":"Make sure enough of the selection is visible on screen, then try again","화면 위치 계산이 맞지 않아 안전을 위해 멈췄어요":"Stopped for safety: the screen position calculation didn't match","${label}: 남는 영역이 없어서 선택을 해제했어요":"${label}: nothing was left, so the selection was cleared","${label} 완료":"${label} done","${grow ? '넓힐' : '좁힐'} 픽셀 수":"Pixels to ${grow ? '넓힐' : '좁힐'}","선택 범위 확장…":"Expand Selection…","선택 범위 축소…":"Shrink Selection…","작업 기록 (내 컴퓨터)…":"History (this computer)…","레이어 속성 (내 화면)…":"Layer Properties (my screen)…","저장된 그림을 찾지 못했어요":"Couldn't find the saved image","방금":"just now","${Math.round(s / 60)}분 전":"${Math.round(s / 60)} min ago","${Math.round(s / 3600)}시간 전":"${Math.round(s / 3600)} h ago","${Math.round(s / 86400)}일 전":"${Math.round(s / 86400)} d ago","오늘":"Today","보드를 연 상태에서 쓸 수 있어요":"Available while a board is open","이 컴퓨터 사용량 ${fmtMB(await histUsage())}":"Used on this computer: ${fmtMB(await histUsage())}","기록을 읽지 못했어요":"Couldn't read the history","아직 저장된 기록이 없어요. 그림을 그리면 몇 분 안에 저장돼요(지금 저장도 돼요).":"Nothing saved yet. It saves within a few minutes after you draw (or use Save now).","레이어 ${p.layers.length}개":"${p.layers.length} layers"," · ${p.changed}개 바뀜":" · ${p.changed} changed"," (빈 레이어)":" (empty layer)","복사":"Copy","복사 중…":"Copying…","복사됨":"Copied","\"${l.name}\"(${fmtTime(p.t).split(' · ')[0]})을 복사했어요 → Edit → Paste on new layer로 붙이세요":"Copied \"${l.name}\" (${fmtTime(p.t).split(' · ')[0]}) → paste it with Edit → Paste on new layer","복사하지 못했어요: ":"Couldn't copy: ","저장 중…":"Saving…","지금 저장":"Save now","지금 상태를 저장했어요":"Saved the current state","마지막 기록과 달라진 게 없어요":"Nothing has changed since the last save","이 보드 기록 지우기":"Clear this board's history","이 보드의 작업 기록을 지웠어요 (Magma 보드는 그대로예요)":"Cleared this board's history (the Magma board itself is unchanged)","지우지 못했어요":"Couldn't delete","보드가 너무 커서 레이어 스트로크를 쓸 수 없어요":"The board is too large for layer stroke","레이어를 고른 뒤 다시 열어 주세요":"Pick a layer, then open this again","\"${L.name}\" 레이어 스트로크를 지웠어요":"Removed the layer stroke from \"${L.name}\"","투명색 사용 중":"Transparent color in use","투명색":"Transparent color"," (${(S.akeys || []).map(comboText).join(', ') || '단축키 없음'}) — 누르면 지금 색과 바꿔요":" (${(S.akeys || []).map(comboText).join(', ') || '단축키 없음'}) — click to swap with the current color","투명색: 그리면 지워져요":"Transparent color: drawing erases","투명색 — 브러시가 지우개가 돼요":"Transparent color — the brush becomes an eraser","원래 색으로 돌아왔어요":"Back to the original color","올가미 채우기를 지우기 모드로 바꾸지 못했어요":"Couldn't switch Lasso fill to erase mode"," 못 했어요: ":" failed: ","지우지":"Erase","투명색 지우기":"Transparent color erase","흐리게 하지":"Blur","잠긴 레이어 획":"Locked layer stroke","투명 부분 잠금이 켜진 레이어라 지울 수 없어요":"This layer has transparent pixel lock on, so it can't be erased","선택 영역이 있으면 고급 브러시로 지울 수 없어요 — 선택을 풀고 다시 해 주세요":"The Advanced Brush can't erase while there's a selection — deselect and try again","흐리게 할 레이어를 먼저 골라 주세요":"Pick a layer to blur first","글자 레이어는 흐리게 할 수 없어요":"Text layers can't be blurred","선택 영역이 있으면 블러를 쓸 수 없어요 — 선택을 풀고 다시 해 주세요":"Blur doesn't work while there's a selection — deselect and try again","흐리게 하지 못했어요: ":"Couldn't blur: ","사각형 선택":"Rectangle Selection","타원 선택":"Ellipse Selection","올가미 선택":"Lasso Selection","리퀴파이":"Liquify","사각형":"Rectangle","타원":"Ellipse","도형":"Shapes","손 (화면 이동)":"Hand (pan)","화면 회전":"Rotate View","확대·축소":"Zoom"," — 누르면 같은 폴더 도구가 펼쳐져요":" — click to open the other tools in this group","레이어 내용 선택 메뉴를 찾지 못했어요":"Couldn't find the layer content selection menu","Magma 편집기를 찾지 못했어요":"Couldn't find the Magma editor","이 레이어를 알아보지 못했어요":"Couldn't recognize this layer","먼저 레이어 하나를 골라 주세요":"Pick a layer first","다른 사람 레이어는 함께 고를 수 없어요":"Other people's layers can't be selected together","지금 레이어는 늘 함께 바뀌어요":"The current layer always changes along with them","한 번에 함께 바꿀 수 있는 레이어는 ${MS_MAX + 1}개까지예요 (되돌리기가 15칸이라서)":"You can change up to ${MS_MAX + 1} layers together at once (undo only has 15 steps)","레이어 ${n + 1}개를 함께 골랐어요 — 변형(Ctrl+T)·이동(V)·눈·속성을 함께 바꿔요":"Selected ${n + 1} layers together — transform (Ctrl+T), move (V), visibility and properties change together","함께 고르기를 풀었어요":"Cleared multi-selection","선택을 풀지 못함":"couldn't deselect","올가미 선택으로 바꾸지 못함":"couldn't switch to Lasso selection","선택 모드를 바꾸지 못함":"couldn't change the selection mode","원래 선택을 다시 긋지 못함":"couldn't redraw the original selection","레이어를 고르지 못함":"couldn't pick the layer","빈 레이어":"empty layer","변형을 시작하지 못함":"couldn't start the transform","왜곡 모드 단추를 찾지 못함":"couldn't find the distort mode button","변형이 시작되지 않음":"transform didn't start","모양이 맞지 않음":"shape doesn't match","모양이 맞지 않음 — Ctrl+Z로 되돌려 주세요":"shape doesn't match — undo with Ctrl+Z","모양이 맞지 않아 그대로 둠":"shape doesn't match, left as is","함께 변형하다 멈췄어요: ":"Stopped while transforming together: ","여러 조각(또는 구멍)으로 된 선택은 지금 레이어만 바뀌어요":"With a selection made of several pieces (or holes), only the current layer changes","선택 영역이 있을 때는 함께 고른 레이어 ${MS_MAX_SEL}개까지만 같이 바뀌어요(레이어마다 되돌리기 3칸) — 지금 레이어만 바뀌어요":"With a selection, only up to ${MS_MAX_SEL} selected layers can change together (3 undo steps per layer) — only the current layer changes","잠긴 레이어(${locked.map((L) => L.name).join(', ')})가 있어 지금 레이어만 바뀌어요":"There are locked layers (${locked.map((L) => L.name).join(', ')}), so only the current layer changes","레이어 ${todo.length}개에 같은 ${ss.kind === 'move' ? '이동' : '변형'}을 하는 중…":"Applying the same ${ss.kind === 'move' ? '이동' : '변형'} to ${todo.length} layers…","앞 레이어에서 멈춤":"stopped at an earlier layer","함께 옮기기":"Move together","함께 변형":"Transform together","${results.length - bad.length}개는 함께 바꿨지만 ${bad.map(([L, e]) => `\"${L.name}\"(${e})`).join(', ')}은 못 바꿨어요":"Changed ${results.length - bad.length} together, but couldn't change ${bad.map(([L, e]) => `\"${L.name}\"(${e})`).join(', ')}","레이어 ${results.length + 1}개를 함께 ${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} (되돌리기는 레이어마다 ${ss.sel ? '3칸: 선택 해제·선택·변형' : '한 칸'})":"${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} ${results.length + 1} layers together (undo per layer: ${ss.sel ? '3칸: 선택 해제·선택·변형' : '한 칸'})","속성을 함께 바꾸다 멈췄어요: ":"Stopped while changing properties together: ","레이어 칸을 찾지 못함":"couldn't find the layer row","불투명도 칸을 찾지 못함":"couldn't find the opacity field","불투명도가 바뀌지 않음":"opacity didn't change","합성 모드를 찾지 못함":"couldn't find the blend mode","합성 모드가 바뀌지 않음":"blend mode didn't change","단추를 찾지 못함":"couldn't find the button","바뀌지 않음":"didn't change","레이어 ${todo.length}개에 같은 속성을 맞추는 중…":"Matching the same properties on ${todo.length} layers…","\"${L.name}\"(고르지 못함)":"\"${L.name}\"(couldn't pick)","속성 함께 바꾸기":"Change properties together","투명 픽셀 잠금":"Lock transparent pixels","잠금":"Lock","클리핑":"Clipping","일부는 못 바꿨어요: ${bad.join(', ')}":"Some couldn't be changed: ${bad.join(', ')}","레이어 ${todo.length + 1}개에 ${Object.keys(ch).map((k) => names[k]).join('·')} 함께 맞췄어요":"Matched ${Object.keys(ch).map((k) => names[k]).join('·')} on ${todo.length + 1} layers","보드가 너무 커서 퀵 마스크를 쓸 수 없어요":"The board is too large for Quick Mask","칠한 모양: Enter = 선택으로 만들기 · Esc = 처음 선택으로 · Ctrl+Z = 한 획 되돌리기":"Painted shape: Enter = make selection · Esc = back to original selection · Ctrl+Z = undo one stroke","화면을 회전·뒤집기 한 상태에서는 퀵 마스크를 선택으로 만들 수 없어요 — 화면을 원래대로 돌리고 Enter":"Quick Mask can't become a selection while the view is rotated/flipped — reset the view, then press Enter","선택을 모두 지웠어요":"Cleared the whole selection","선택 모양을 만들지 못했어요":"Couldn't make the selection shape","퀵 마스크 선택":"Quick Mask selection","퀵 마스크를 선택으로 만들었어요 (${cnt.toLocaleString()}픽셀)":"Turned the Quick Mask into a selection (${cnt.toLocaleString()} px)"," · 작은 조각 ${P.dropped}개는 뺐어요":" · Left out ${P.dropped} small pieces","선택으로 만들지 못했어요: ":"Couldn't make a selection: ","처음 선택으로 돌렸어요":"Restored the original selection","되돌릴 획이 없어요 (Magma 되돌리기는 퀵 마스크에서 나간 뒤에)":"No strokes to undo (use Magma's undo after leaving Quick Mask)","클리핑을 바꾸지 못했어요: ":"Couldn't change clipping: ","다른 사람 레이어는 클리핑할 수 없어요":"Other people's layers can't be clipped","레이어를 고르지 못했어요":"Couldn't pick the layer","클리핑 단추를 찾지 못했어요":"Couldn't find the clipping button","\"${L.name}\" 클리핑 ${L.clippingGroup ? '켬 (아래 레이어 모양 안에만 보여요)' : '끔'}":"\"${L.name}\" clipping ${L.clippingGroup ? '켬 (아래 레이어 모양 안에만 보여요)' : '끔'}","클리핑이 바뀌지 않았어요":"Clipping didn't change","${g.what} 되돌렸어요 (Magma 되돌리기 ${done}칸을 한 번에)":"Undid ${g.what} (${done} Magma undo steps at once)"," · 더 앞의 칸은 15칸 한도로 지워져 있었어요":" · earlier steps were already gone due to the 15-step limit","${g.what} — ${g.n}칸 중 ${done}칸만 되돌렸어요":"${g.what} — undid only ${done} of ${g.n} steps","${r.what} 다시 했어요 (${done}칸을 한 번에)":"Redid ${r.what} (${done} steps at once)","${r.what} — ${r.n}칸 중 ${done}칸만 다시 했어요":"${r.what} — redid only ${done} of ${r.n} steps","칠할 영역을 이 픽셀만큼 넓히거나(+) 좁혀요(−). 0이면 Magma 그대로":"Grows (+) or shrinks (−) the fill area by this many pixels. 0 = Magma's default","확장/축소":"Expand/Shrink","Mode가 opacity·smart이거나 Target layer가 above·below면 확장/축소·빈틈 닫기 없이 Magma 그대로 칠해요":"If Mode is opacity/smart or Target layer is above/below, it fills the normal Magma way, without expand/shrink or gap closing","칠하지 못했어요: ":"Couldn't fill: ","칠할 레이어를 먼저 골라 주세요":"Pick a layer to fill first","그림을 읽지 못했어요":"Couldn't read the image","칠할 곳이 없어요 (너무 많이 좁혔어요)":"Nothing to fill (shrunk too much)","칠할 영역을 만들지 못했어요":"Couldn't create the fill area","올가미 채우기 모드를 맞추지 못해 안전을 위해 멈췄어요":"Stopped for safety: couldn't set the Lasso fill mode","${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀":"${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()} px"," (영역 ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)":" (area ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)"," · 틈 ${ff.bridges}곳 이음":" · bridged ${ff.bridges} gaps","${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀 · 안티에일리어스":"${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()} px · anti-aliased","원 (딱딱)":"Circle (hard)","원 (부드러움)":"Circle (soft)","납작붓":"Flat Brush","연필 (거친)":"Pencil (rough)","스프레이 점":"Spray Dots","붓털":"Bristles","수채 얼룩":"Watercolor Blot","흑연":"Graphite","목탄 끝":"Charcoal Tip","파스텔 덩이":"Pastel Chunk","마른 붓털":"Dry Bristles","납작 붓털":"Flat Bristles","레이크":"Rake","별":"Star","하트":"Heart","잎":"Leaf","삼각형":"Triangle","종이":"Paper","수채 종이":"Watercolor Paper","캔버스 천":"Canvas","노이즈":"Noise","거친 결":"Rough Grain","드로잉지 결":"Drawing Paper","목탄지":"Charcoal Paper","중목 종이":"Medium-Grain Paper","사포":"Sandpaper","빗금":"Hatching","망점":"Halftone","기본 브러시 ":"Basic Brush ","한글이 보이도록 기본 글꼴을 \"${font}\"로 맞췄어요 (끄려면 오른쪽 '자동' 해제)":"Set the default font to \"${font}\" so Korean text shows up (to turn this off, uncheck 'Auto' on the right)","\"${f}\" 글꼴에는 한글이 없어 네모로 보여요 — 글자를 고르고 오른쪽 '한글' 글꼴 단추를 눌러 주세요":"The \"${f}\" font has no Korean characters, so they show as boxes — select the text and click the 'Korean' font button on the right","한글":"Korean","글꼴을 ${f}로 (한글이 보이는 Magma 글꼴)":"Set the font to ${f} (a Magma font that shows Korean)","한글을 치면 자동으로 한글 글꼴로 바꿔요":"Switch to a Korean font automatically when you type Korean","자동":"Auto","내 컴퓨터 글꼴…":"My computer's fonts…","컴퓨터에 설치된 글꼴로 글자를 그림으로 넣어요":"Add text as an image using fonts installed on your computer","글자를 써 주세요":"Please type some text","붙일 레이어를 먼저 골라 주세요":"Pick a layer to paste on first","글자 레이어 말고 그림 레이어를 골라 주세요":"Pick a drawing layer, not a text layer","글자를 붙였어요 — 이동 도구로 옮길 수 있어요":"Text added — you can move it with the Move tool","여기에는 그림이 있는 레이어가 없어요":"There's no layer with a drawing here","\"${L.name}\" 레이어":"Layer \"${L.name}\"","를 골랐어요":" selected"," — 다른 사람 레이어예요":" — it's someone else's layer","채울 레이어를 먼저 골라 주세요":"Pick a layer to fill first","Alt를 떼면 채워요 — 다시 눌러 주세요":"Fills when you release Alt — press it again","올가미 채우기 설정을 바꾸지 못했어요":"Couldn't change the Lasso fill settings","선택 영역을 지웠어요":"Erased the selection","레이어 전체를 지웠어요":"Erased the whole layer","선택 영역을 채웠어요":"Filled the selection","보드 전체를 채웠어요":"Filled the whole board","채우지 못했어요: ":"Couldn't fill: ","레이어 속성 — 브러시 설정 자리에 레이어 속성을 띄워요":"Layer Properties — shows layer properties where the brush settings are","레이어 속성":"Layer Properties","레이어를 고르면 속성이 보여요":"Pick a layer to see its properties","경계 효과 (테두리)":"Border Effect (outline)","테두리 두께":"Border thickness","흐리기":"Blur","테두리 색":"Border color","테두리 안티에일리어싱":"Border anti-aliasing","내 화면에만 보여요 (보드에는 평범한 레이어)":"Only visible on my screen (a normal layer on the board)","효과":"Effect","켜짐":"On","꺼짐":"Off","그리기: 손을 떼면 보드에 들어가요 · Alt: 스포이트 · Shift+클릭: 직선 · Ctrl+Alt 끌기·[ ]: 크기":"Draw: goes onto the board when you release · Alt: eyedropper · Shift+click: straight line · Ctrl+Alt drag / [ ]: size","문지르기: 흐리게(손을 떼면 보드에 들어가요, 되돌리기 2칸) · [ ]: 크기":"Drag: blur (goes onto the board when you release, 2 undo steps) · [ ]: size","빨간 곳 = 선택 · 칠하기: 넣기 · Alt: 반대로 · Enter: 선택으로 · Esc: 처음으로 · [ ]: 크기":"Red = selection · Paint: add · Alt: reverse · Enter: to selection · Esc: start over · [ ]: size","문지르기: 선택(선택이 있으면 추가) · Alt: 빼기 · [ ]: 브러시 크기":"Drag: select (adds to an existing selection) · Alt: subtract · [ ]: brush size","클릭한 영역을 지금 색으로 채워요":"Fills the clicked area with the current color","클릭: 선택 · Shift: 추가 · Alt: 빼기":"Click: select · Shift: add · Alt: subtract","불투명도 (%)":"Opacity (%)","강도 (흐림 반경 px)":"Strength (blur radius px)","밀도 (%)":"Density (%)","선택으로 만들기":"Make Selection","아직 칠한 게 없어요":"Nothing painted yet","처음으로":"Start Over","모두 지우기":"Clear All","선택을 비우고 새로 칠하기":"Empty the selection and paint from scratch","칠하기":"Paint","선택 넣기":"Add to selection","선택 빼기":"Subtract from selection","참조":"Reference","모든 레이어":"All layers","허용 오차":"Tolerance","영역 확장":"Expand area","동작":"Action","선택":"Select","채우기":"Fill","이어진 곳만":"Contiguous","전체 같은 색":"All matching colors","빈틈 닫기":"Close gaps","v${VERSION}으로 업데이트됐어요":"Updated to v${VERSION}","도구":"Tools","색상환":"Color wheel","브러시 목록":"Brush list","레이어":"Layers","펼치기":"Expand","접기":"Collapse","닫기 (Window 메뉴에서 다시 열기)":"Close (reopen from the Window menu)","Window — 패널·화면 배치":"Window — panels & layout","패널":"Panels","화면 모드":"View mode","두 줄":"Two rows","배치 처음으로 (이 모드)":"Reset layout (this mode)","사용자 지정 UI 끄기 (원래 화면)":"Turn off custom UI (original layout)","사용자 지정 UI 켜기":"Turn on custom UI","레이아웃 설정 단추를 찾지 못했어요":"Couldn't find the layout settings button","Magma 화면 조각을 찾지 못함":"couldn't find a Magma screen element","화면 배치에 문제가 생겨 원래 Magma 화면으로 돌렸어요. 다른 기능은 그대로 쓸 수 있어요 (Window 메뉴에서 다시 켜기)":"Something went wrong with the layout, so it switched back to the original Magma layout. Other features still work (turn it back on from the Window menu)","처음 보는 화면 조각: ":"Unknown screen element: ","대칭 자":"Symmetry Ruler","대칭 자 (Symmetry Ruler)":"Symmetry Ruler","원근 격자":"Perspective Grid","대칭":"Symmetry","켜기":"On","끄기":"Off","선 개수":"Lines","선대칭":"Line symmetry","보드 가운데":"Board center","자 지우기":"Remove ruler","축을 세로로":"Make the axis vertical","축을 가로로":"Make the axis horizontal","축을 보드 한가운데로":"Move the axis to the board center","이 보드의 대칭 자를 없애요":"Remove the symmetry ruler from this board","대칭 자는 내 화면에만 보여요. Magma 브러시는 건너편 획마다 되돌리기 한 칸":"Only you see the ruler. With Magma brushes, each mirrored stroke is one undo step","끌기: 새 축 · 가운데 점 끌기: 옮기기 · 네모 점 끌기: 돌리기(Shift: 15°씩)":"Drag: new axis · Drag center dot: move · Drag square: rotate (Shift: 15° steps)","보드에 끌어서 대칭 축을 만드세요 (Shift: 15°씩)":"Drag on the board to make a symmetry axis (Shift: 15° steps)","대칭 획":"Symmetry stroke","대칭 자는 내 화면에만 보여요. Ctrl+Z 한 번에 건너편 획까지 함께 되돌아가요":"Only you see the ruler. One Ctrl+Z undoes the mirrored strokes too","그리기":"Drawing","멈추면 도형으로 보정":"Hold to snap shapes (QuickShape)"};
   const I18N = { built: false, exact: new Map(), subs: [], pats: [], obs: null, busy: false };
   const I18N_SCOPE = '[class*="mw-"], [class*="mx-"]';
   const I18N_ATTRS = ['title', 'placeholder', 'aria-label', 'tooltip'];
