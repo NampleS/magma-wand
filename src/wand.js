@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.26.8';
+  const VERSION = '0.27.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -8182,6 +8182,48 @@ void main(){
     .mw-txt-in { width: 100%; box-sizing: border-box; min-height: 64px; margin: 6px 0; background: #1c1d21; color: #eee; border: 1px solid #44464f; border-radius: 4px; padding: 6px; font-size: 14px; }
     .mw-txt-font { max-width: 240px; background: #1c1d21; color: #eee; border: 1px solid #44464f; border-radius: 4px; }
     .mw-txt-prev { background: conic-gradient(#ddd 25%, #fff 0 50%, #ddd 0 75%, #fff 0) 0 0 / 16px 16px; border-radius: 4px; padding: 6px; margin: 6px 0; max-height: 200px; overflow: auto; }
+    /* 사용자 지정 UI (도킹 패널) */
+    html.mx-dock-on .editor-right, html.mx-dock-on .editor-left { visibility: hidden !important; pointer-events: none !important; }
+    html.mx-dock-on:not(.mx-uihidden) .editor { inset: var(--mx-t, 43px) var(--mx-r, 261px) var(--mx-b, 0px) var(--mx-l, 40px) !important; }
+    html.mx-uihidden .mx-dock { display: none !important; }
+    html.mx-dock-on editor-color button[tooltip="Layout options"], html.mx-dock-on [command="toggle-hide-column"] { display: none !important; }
+    .mx-dock { position: absolute; left: 0; right: 0; bottom: 0; top: 43px; pointer-events: none; z-index: 4; }
+    .mx-hold { display: none !important; }
+    .mx-frame { position: absolute; pointer-events: auto; display: flex; flex-direction: column; box-sizing: border-box; isolation: isolate;
+      background: var(--mx-bg, rgb(35,35,35)); outline: 1px solid var(--mx-bd, rgb(53,53,53)); outline-offset: -1px; }
+    .mx-frame.mx-float { box-shadow: 0 6px 22px rgba(0,0,0,.55); outline-color: rgba(255,255,255,.14); }
+    .mx-rs { position: absolute; z-index: 4; display: none; background: transparent; }
+    .mx-float > .mx-rs { display: block; }
+    .mx-rs-n, .mx-rs-s { left: 6px; right: 6px; height: 5px; cursor: ns-resize; } .mx-rs-n { top: -2px; } .mx-rs-s { bottom: -2px; }
+    .mx-rs-e, .mx-rs-w { top: 6px; bottom: 6px; width: 5px; cursor: ew-resize; } .mx-rs-e { right: -2px; } .mx-rs-w { left: -2px; }
+    .mx-rs-ne, .mx-rs-nw, .mx-rs-se, .mx-rs-sw { width: 10px; height: 10px; }
+    .mx-rs-ne { top: -2px; right: -2px; cursor: nesw-resize; } .mx-rs-sw { bottom: -2px; left: -2px; cursor: nesw-resize; }
+    .mx-rs-nw { top: -2px; left: -2px; cursor: nwse-resize; } .mx-rs-se { bottom: -2px; right: -2px; cursor: nwse-resize; }
+    .mx-head { position: relative; z-index: 2; flex: 0 0 18px; height: 18px; display: flex; align-items: stretch; overflow: hidden; cursor: grab; user-select: none;
+      font: 600 10.5px/18px system-ui, sans-serif; color: rgba(255,255,255,.5); background: rgba(255,255,255,.035); border-bottom: 1px solid rgba(255,255,255,.05); }
+    .mx-head:active { cursor: grabbing; }
+    .mx-tab { padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .mx-tab.on { color: rgba(255,255,255,.88); background: rgba(255,255,255,.06); }
+    .mx-head .mx-tab:only-child { background: transparent; }
+    .mx-tab.mx-empty { opacity: .45; }
+    .mx-fbody { position: relative; z-index: 1; flex: 1 1 auto; min-height: 0; }
+    .mx-pbody { position: absolute; inset: 0; }
+    .mx-pbody.mx-flow { overflow: hidden auto; }
+    .mx-pbody.mx-flow.mx-fits { overflow: visible; }
+    .mx-pbody > editor-layers, .mx-pbody > editor-properties-presets-list { position: absolute !important; inset: 0 !important; height: auto !important; width: auto !important; }
+    .mx-pbody.mx-tools { display: flex; flex-direction: column; align-items: center; overflow: hidden; }
+    .mx-pbody.mx-tools > .editor-left-scroll { flex: 1 1 auto; min-height: 0; }
+    .mx-pbody.mx-tools > .btn-sequence-wrapper { flex: 0 0 auto; }
+    .mx-split { position: absolute; pointer-events: auto; z-index: 3; background: var(--mx-bd, rgb(53,53,53)); }
+    .mx-split.mx-h { cursor: col-resize; } .mx-split.mx-v { cursor: row-resize; }
+    .mx-split:hover, .mx-split.mx-act { background: rgba(77,140,255,.55); }
+    .mx-hl { position: absolute; pointer-events: none; z-index: 60; background: rgba(77,140,255,.22); border: 2px solid rgba(77,140,255,.9); box-sizing: border-box; border-radius: 3px; transition: left .06s, top .06s, width .06s, height .06s; }
+    .mx-hl.mx-tabhl { background: rgba(77,140,255,.12); border-style: dashed; }
+    .mx-ghost { position: absolute; pointer-events: none; z-index: 61; height: 18px; padding: 0 8px; box-sizing: border-box; overflow: hidden; white-space: nowrap;
+      font: 600 10.5px/18px system-ui, sans-serif; color: #fff; background: rgba(77,140,255,.85); border-radius: 3px; box-shadow: 0 4px 14px rgba(0,0,0,.4); }
+    .mx-winmenu { min-width: 210px; }
+    .mx-winmenu .mx-wi { display: flex; align-items: center; gap: 6px; }
+    .mx-winmenu .mx-chk { display: inline-block; width: 14px; text-align: center; opacity: .9; }
   `;
   let styleEl = null, toolBtn = null, titleEl = null, rowsEl = null, statusEl = null;
   let lastStatus = '';
@@ -8421,8 +8463,602 @@ void main(){
     }
   }
 
+  // ---------- 사용자 지정 UI: 패널 떼기·붙이기·탭 묶기 (클립 스튜디오처럼) ----------
+  // Magma 화면 조각(도구 막대·색상환·브러시·브러시 목록·레이어)을 '패널'로 감싸 원래 자리에서 꺼내 옮긴다.
+  //  - Magma 요소 자체를 옮기므로 기능은 그대로다(Angular 화면 조각은 옮겨도 계속 동작, 실측).
+  //  - 배치 = 나무: 나누기(s, d: 'h' 가로로 나란히 | 'v' 세로로 쌓기, f: 남는 공간을 받는 칸) · 탭 묶음(g) · 그림판(c).
+  //    떠 있는 묶음은 따로(f 목록). 그림판 칸의 위치를 Magma 그림판(.editor)에 넘기면 Magma가 알아서 크기를 맞춘다(실측).
+  //  - 처음 배치 = 그 화면 모드에서 Magma가 놓은 자리를 재서 만든다 → 어느 모드든 처음 모습이 원래와 같다.
+  //  - 끄기(Window 메뉴) = 옮긴 요소를 원래 자리로 되돌리고 덧붙인 것을 모두 걷어낸다. 문제가 생기면 저절로 꺼진다.
+  // 새 패널을 더할 때: DOCK_PANELS에 한 줄(id·제목·Magma 요소 선택자·원래 칸) 넣으면 같은 방식으로 붙이고 묶을 수 있다.
+  const DOCK_KEY = 'magmaWand.dock';
+  const DOCK_HEAD = 18, DOCK_SPL = 4, DOCK_MIN = 48;
+  const DOCK_PANELS = [
+    { id: 'tools', title: '도구', sel: ['.editor-left > .editor-left-scroll', '.editor-left > .btn-sequence-wrapper'], kind: 'tools', origin: '.editor-left' },
+    { id: 'color', title: '색상환', sel: ['.editor-right editor-color'], kind: 'flow', origin: '.container1' },
+    { id: 'brush', title: '브러시', sel: ['.editor-right editor-slots', '.editor-right editor-sliders'], kind: 'flow', origin: '.container2' },
+    { id: 'presets', title: '브러시 목록', sel: ['.editor-right editor-properties-presets-list'], kind: 'fill', origin: '.container2b' },
+    { id: 'layers', title: '레이어', sel: ['.editor-right editor-layers'], kind: 'fill', origin: '.container3' },
+  ];
+  const DK = { on: false, root: null, hold: null, pb: {}, adopted: [], frames: new Map(), splits: [], cfg: null, mode: '', lay: null,
+    drag: null, hl: null, menuBtn: null, menu: null, failed: false, saveT: 0, sig: '', pendingMode: 0 };
+  const dkUid = () => 'g' + Math.random().toString(36).slice(2, 9);
+  function dkLoadCfg() {
+    if (DK.cfg) return DK.cfg;
+    let c = null; try { c = JSON.parse(localStorage.getItem(DOCK_KEY) || 'null'); } catch { c = null; }
+    DK.cfg = c && typeof c === 'object' ? c : { on: true, L: {}, D: {} };
+    DK.cfg.L = DK.cfg.L || {}; DK.cfg.D = DK.cfg.D || {};
+    return DK.cfg;
+  }
+  function dkSave(now) {
+    clearTimeout(DK.saveT);
+    const go = () => { try { if (DK.lay && DK.mode) DK.cfg.L[DK.mode] = DK.lay; localStorage.setItem(DOCK_KEY, JSON.stringify(DK.cfg)); } catch { /* 무시 */ } };
+    if (now) go(); else DK.saveT = setTimeout(go, 300);
+  }
+  // 화면 모드: Magma 설정(settings-sliders, 읽기만) + 오른쪽 칸 모양(브러시 목록·두 줄)
+  function dkModeKey() {
+    const er = document.querySelector('.editor-right');
+    return (localStorage.getItem('settings-sliders') || 'full') + (er && er.classList.contains('has-brush-list') ? '|bl' : '') + (document.querySelector('.has-two-columns') ? '|2c' : '');
+  }
+  // ---- 패널 몸통(옮긴 Magma 요소가 들어가는 상자) ----
+  function dkPBody(p) {
+    let b = DK.pb[p.id];
+    if (!b) { b = document.createElement('div'); b.className = 'mx-pbody mx-' + p.kind; b.dataset.p = p.id; DK.pb[p.id] = b; }
+    return b;
+  }
+  // Magma가 새로 만든(또는 아직 안 옮긴) 요소를 패널로 옮긴다. 원래 자리는 기록해 두었다가 끌 때 되돌린다.
+  function dkAdopt() {
+    for (const p of DOCK_PANELS) {
+      const body = dkPBody(p);
+      for (const s of p.sel) {
+        for (const el of document.querySelectorAll(s)) {
+          if (body.contains(el)) continue;
+          DK.adopted.push({ node: el, parent: el.parentNode, next: el.nextSibling, p });
+          // 정해진 순서대로 (브러시: 칸 줄 → 설정)
+          const order = p.sel.indexOf(s);
+          el.__mxOrder = order;
+          const after = [...body.children].find((c) => (c.__mxOrder ?? 99) > order);
+          body.insertBefore(el, after || null);
+        }
+      }
+    }
+  }
+  function dkHasContent(id) { const b = DK.pb[id]; return !!(b && b.childElementCount); }
+  // 옮긴 요소를 원래 자리로 (뒤에서부터 → 같은 칸 안의 순서도 그대로)
+  function dkRestoreNodes() {
+    for (const r of DK.adopted.splice(0).reverse()) {
+      const n = r.node;
+      if (!n.isConnected && !(n.parentNode && n.parentNode.classList && n.parentNode.classList.contains('mx-pbody'))) continue; // Magma가 없앤 요소
+      let parent = r.parent && r.parent.isConnected ? r.parent : document.querySelector(r.p.origin);
+      if (!parent) continue;
+      parent.insertBefore(n, r.next && r.next.parentNode === parent ? r.next : null);
+    }
+  }
+  // ---- 기본 배치: Magma가 놓은 자리를 잰다 (요소가 원래 칸에 있을 때만 정확) ----
+  function dkMeasureDefault() {
+    const box = document.querySelector('editor-box'), er = document.querySelector('.editor-right'), el = document.querySelector('.editor-left');
+    if (!box) return null;
+    const right = [];
+    for (const p of DOCK_PANELS) {
+      if (p.id === 'tools') continue;
+      const c = er && er.querySelector(p.origin), host = er && er.querySelector(p.sel[0]);
+      if (!c || !host) continue;
+      const r = c.getBoundingClientRect(), hr = host.getBoundingClientRect();
+      if (!(r.width > 0)) continue;
+      right.push({ p, x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(Math.max(r.height, hr.height)) });
+    }
+    const g = (id) => ({ k: 'g', id: dkUid(), t: [id], a: id });
+    const cols = [];
+    for (const it of right.sort((a, b) => a.x - b.x || a.y - b.y)) {
+      let col = cols.find((c) => Math.abs(c.x - it.x) < 12);
+      if (!col) { col = { x: it.x, w: it.w, items: [] }; cols.push(col); }
+      col.items.push(it); col.w = Math.max(col.w, it.w);
+    }
+    const colNode = (col) => {
+      const items = col.items.sort((a, b) => a.y - b.y);
+      if (items.length === 1) return g(items[0].p.id);
+      const fi = Math.max(0, items.findIndex((i) => i.p.id === 'layers'));
+      return { k: 's', d: 'v', c: items.map((i) => g(i.p.id)), z: items.map((i) => i.h + DOCK_HEAD), f: fi >= 0 ? fi : items.length - 1 };
+    };
+    const kids = [], z = [];
+    const ew = el ? Math.round(el.getBoundingClientRect().width) : 0;
+    if (ew > 0 && el.querySelector('editor-tools')) { kids.push(g('tools')); z.push(ew); }
+    kids.push({ k: 'c' }); z.push(0);
+    if (cols.length === 1) { kids.push(colNode(cols[0])); z.push(cols[0].w); }
+    else if (cols.length > 1) { kids.push({ k: 's', d: 'h', c: cols.map(colNode), z: cols.map((c) => c.w), f: cols.length - 1 }); z.push(cols.reduce((s, c) => s + c.w, 0)); }
+    const root = { k: 's', d: 'h', c: kids, z, f: kids.findIndex((k) => k.k === 'c') };
+    // Magma가 이 모드에서 숨긴 조각(요소는 있지만 칸이 안 보임)은 숨김 목록으로
+    const placed = new Set(dkGroups(root).flatMap((x) => x.t));
+    const h = DOCK_PANELS.map((p) => p.id).filter((id) => !placed.has(id));
+    return { root, fl: [], h };
+  }
+  function dkFallbackDefault() {
+    const g = (id) => ({ k: 'g', id: dkUid(), t: [id], a: id });
+    return { root: { k: 's', d: 'h', f: 1, z: [40, 0, 261], c: [g('tools'), { k: 'c' }, { k: 's', d: 'v', f: 3, z: [245, 265, 63, 200], c: [g('color'), g('brush'), g('presets'), g('layers')] }] }, fl: [], h: [] };
+  }
+  // ---- 나무 다루기 ----
+  const dkHasCanvas = (n) => n.k === 'c' || (n.k === 's' && n.c.some(dkHasCanvas));
+  function dkGroups(n, out = []) { if (n.k === 'g') out.push(n); else if (n.k === 's') n.c.forEach((c) => dkGroups(c, out)); return out; }
+  function dkAllGroups() { return [...dkGroups(DK.lay.root), ...DK.lay.fl.map((f) => f.g)]; }
+  function dkParentOf(target, n = DK.lay.root, parent = null) {
+    if (n === target) return { parent, index: parent ? parent.c.indexOf(n) : -1 };
+    if (n.k === 's') for (const c of n.c) { const r = dkParentOf(target, c, n); if (r) return r; }
+    return null;
+  }
+  // 빈 묶음·빈 나누기를 걷어내고, 칸이 하나뿐인 나누기는 그 칸으로 바꾼다
+  function dkNorm(n) {
+    if (n.k === 'g') return n.t.length ? n : null;
+    if (n.k === 'c') return n;
+    const c = [], z = []; let f = -1;
+    n.c.forEach((ch, i) => { const r = dkNorm(ch); if (r) { if (i === n.f) f = c.length; c.push(r); z.push(n.z[i]); } });
+    if (!c.length) return null;
+    if (c.length === 1) return c[0];
+    n.c = c; n.z = z;
+    const ci = c.findIndex(dkHasCanvas);
+    n.f = ci >= 0 ? ci : (f >= 0 ? f : c.length - 1);
+    return n;
+  }
+  function dkValid(lay) {
+    try {
+      if (!lay || !lay.root || !Array.isArray(lay.fl)) return false;
+      let canv = 0; const seen = new Set();
+      const walk = (n) => {
+        if (!n || typeof n !== 'object') throw 0;
+        if (n.k === 'c') { canv++; return; }
+        if (n.k === 'g') { if (!Array.isArray(n.t)) throw 0; for (const t of n.t) { if (seen.has(t)) throw 0; seen.add(t); } return; }
+        if (n.k === 's') { if (!Array.isArray(n.c) || !Array.isArray(n.z) || n.c.length !== n.z.length) throw 0; n.c.forEach(walk); return; }
+        throw 0;
+      };
+      walk(lay.root); lay.fl.forEach((f) => walk(f.g));
+      return canv === 1;
+    } catch { return false; }
+  }
+  // 배치에 없는 패널(새로 생긴 패널 등)은 떠 있는 창으로 더한다
+  function dkEnsureAll() {
+    const have = new Set([...dkAllGroups().flatMap((g) => g.t), ...(DK.lay.h || [])]);
+    let k = 0;
+    for (const p of DOCK_PANELS) if (!have.has(p.id) && dkHasContent(p.id)) { DK.lay.fl.push({ g: { k: 'g', id: dkUid(), t: [p.id], a: p.id }, x: 120 + 30 * k, y: 80 + 30 * k, w: 260, h: 260 }); k++; }
+  }
+  // ---- 그리기 ----
+  function dkGroupVisible(g) { return g.t.some(dkHasContent); }
+  function dkVisible(n) { return n.k === 'c' || (n.k === 'g' ? dkGroupVisible(n) : n.c.some(dkVisible)); }
+  function dkLayoutNode(n, x, y, w, h, out) {
+    if (n.k === 'c') { out.canvas = { x, y, w, h }; return; }
+    if (n.k === 'g') { out.groups.push({ g: n, x, y, w, h }); return; }
+    const H = n.d === 'h', vis = n.c.map((c, i) => (dkVisible(c) ? i : -1)).filter((i) => i >= 0);
+    if (!vis.length) return;
+    const total = (H ? w : h) - DOCK_SPL * (vis.length - 1);
+    let flex = vis.includes(n.f) ? n.f : vis[vis.length - 1];
+    const size = {};
+    let fixed = 0;
+    const minOf = (c) => (c.k === 'g' && c.t.length === 1 && c.t[0] === 'tools' ? 32 : DOCK_MIN); // 도구 막대는 원래처럼 좁게
+    for (const i of vis) if (i !== flex) { size[i] = Math.max(minOf(n.c[i]), n.z[i] || DOCK_MIN); fixed += size[i]; }
+    const minFlex = dkHasCanvas(n.c[flex]) ? 120 : DOCK_MIN;
+    if (total - fixed < minFlex && fixed > 0) { const k = Math.max(0, total - minFlex) / fixed; for (const i of vis) if (i !== flex) size[i] = Math.floor(size[i] * k); fixed = vis.reduce((s, i) => s + (i === flex ? 0 : size[i]), 0); }
+    size[flex] = Math.max(0, total - fixed);
+    let pos = H ? x : y;
+    vis.forEach((i, j) => {
+      const sz = size[i];
+      if (H) dkLayoutNode(n.c[i], pos, y, sz, h, out); else dkLayoutNode(n.c[i], x, pos, w, sz, out);
+      pos += sz;
+      if (j < vis.length - 1) {
+        out.splits.push({ n, a: i, b: vis[j + 1], H, x: H ? pos : x, y: H ? y : pos, w: H ? DOCK_SPL : w, h: H ? h : DOCK_SPL, sizes: size });
+        pos += DOCK_SPL;
+      }
+    });
+  }
+  function dkFrame(g) {
+    let fr = DK.frames.get(g.id);
+    if (!fr) {
+      fr = document.createElement('div'); fr.className = 'mx-frame mw-el'; fr.dataset.g = g.id;
+      const head = document.createElement('div'); head.className = 'mx-head';
+      const body = document.createElement('div'); body.className = 'mx-fbody';
+      fr.append(head, body); fr.__body = body;
+      // 떠 있는 창의 가장자리·꼭짓점 손잡이 (Magma 내용 위에 얹어서, 안쪽 요소의 끌기와 섞이지 않게)
+      for (const s of ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']) { const h = document.createElement('div'); h.className = 'mx-rs mx-rs-' + s; h.dataset.s = s; h.addEventListener('pointerdown', (e) => dkResizeDown(e, fr, s)); fr.appendChild(h); }
+      head.addEventListener('pointerdown', (e) => dkHeadDown(e, fr));
+      fr.addEventListener('pointerdown', () => dkFront(fr), true);
+      DK.root.appendChild(fr); DK.frames.set(g.id, fr);
+    }
+    return fr;
+  }
+  function dkRenderHead(fr, g) {
+    const head = fr.firstChild, sig = g.t.join(',') + '|' + g.a;
+    if (head.dataset.sig === sig) return;
+    head.dataset.sig = sig; head.innerHTML = '';
+    for (const id of g.t) {
+      const p = DOCK_PANELS.find((q) => q.id === id);
+      const t = document.createElement('span'); t.className = 'mx-tab' + (id === g.a ? ' on' : ''); t.textContent = p ? p.title : id; t.dataset.p = id;
+      if (!dkHasContent(id)) t.classList.add('mx-empty');
+      head.appendChild(t);
+    }
+  }
+  function dkRender() {
+    if (!DK.on || !DK.root) return;
+    // Magma가 UI를 숨겼으면(Tab 등) 패널도 숨기고 그림판은 Magma에 맡긴다
+    const er = document.querySelector('.editor-right'), top = document.querySelector('.editor-top');
+    const uiHidden = !er || getComputedStyle(er).display === 'none';
+    if (document.documentElement.classList.contains('mx-uihidden') !== uiHidden) { document.documentElement.classList.toggle('mx-uihidden', uiHidden); DK.sig = ''; }
+    if (uiHidden) return;
+    { const tb = top ? Math.round(top.getBoundingClientRect().bottom - (document.querySelector('editor-box')?.getBoundingClientRect().top || 0)) : 43; const want = Math.max(0, tb) + 'px'; if (DK.root.style.top !== want) DK.root.style.top = want; }
+    const R = DK.root.getBoundingClientRect();
+    if (!(R.width > 0)) return;
+    const out = { canvas: null, groups: [], splits: [] };
+    dkLayoutNode(DK.lay.root, 0, 0, Math.round(R.width), Math.round(R.height), out);
+    DK.splits = out.splits;
+    const live = new Set();
+    const place = (g, x, y, w, h, float, z) => {
+      const fr = dkFrame(g); live.add(g.id);
+      dkRenderHead(fr, g);
+      fr.classList.toggle('mx-float', !!float);
+      Object.assign(fr.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px', display: dkGroupVisible(g) ? '' : 'none', zIndex: float ? String(20 + z) : '' });
+      const body = fr.__body;
+      for (const id of g.t) {
+        const pb = DK.pb[id]; if (!pb) continue;
+        if (pb.parentNode !== body) body.appendChild(pb);
+        pb.style.display = id === g.a ? '' : 'none';
+        if (id === g.a && pb.classList.contains('mx-flow')) pb.classList.toggle('mx-fits', pb.scrollHeight <= pb.clientHeight + 1);
+      }
+    };
+    for (const it of out.groups) place(it.g, it.x, it.y, it.w, it.h, false, 0);
+    DK.lay.fl.forEach((f, i) => {
+      f.x = Math.max(-f.w + 60, Math.min(R.width - 60, f.x)); f.y = Math.max(0, Math.min(R.height - DOCK_HEAD, f.y));
+      place(f.g, f.x, f.y, f.w, f.h, true, i);
+    });
+    // 사라진 묶음의 틀은 걷되, 그 안의 패널 몸통(Magma 요소)은 보관함으로
+    for (const [id, fr] of DK.frames) if (!live.has(id)) { for (const pb of [...fr.__body.children]) DK.hold.appendChild(pb); fr.remove(); DK.frames.delete(id); }
+    // 숨긴 패널·어느 묶음에도 없는 패널 몸통은 보관함으로
+    const shown = new Set(dkAllGroups().flatMap((g) => g.t));
+    for (const p of DOCK_PANELS) { const pb = DK.pb[p.id]; if (pb && !shown.has(p.id) && pb.parentNode !== DK.hold) DK.hold.appendChild(pb); }
+    // 경계선
+    DK.root.querySelectorAll(':scope > .mx-split').forEach((s, i) => { if (i >= out.splits.length) s.remove(); });
+    let ss = [...DK.root.querySelectorAll(':scope > .mx-split')];
+    out.splits.forEach((sp, i) => {
+      let el = ss[i];
+      if (!el) { el = document.createElement('div'); el.className = 'mx-split mw-el'; el.addEventListener('pointerdown', (e) => dkSplitDown(e, el)); DK.root.appendChild(el); }
+      el.classList.toggle('mx-h', sp.H); el.classList.toggle('mx-v', !sp.H); el.__sp = sp;
+      Object.assign(el.style, { left: sp.x + 'px', top: sp.y + 'px', width: sp.w + 'px', height: sp.h + 'px' });
+    });
+    // 그림판 자리 → Magma 그림판(.editor)
+    const c = out.canvas || { x: 0, y: 0, w: R.width, h: R.height };
+    const box = document.querySelector('editor-box'), B = box ? box.getBoundingClientRect() : { left: 0, top: 0, width: innerWidth, height: innerHeight };
+    const t = Math.round(R.top - B.top + c.y), l = Math.round(R.left - B.left + c.x), r = Math.round(B.width - (R.left - B.left + c.x + c.w)), b = Math.round(B.height - (R.top - B.top + c.y + c.h));
+    const sig = [t, r, b, l].join(',');
+    if (sig !== DK.sig) { DK.sig = sig; const st = document.documentElement.style; st.setProperty('--mx-t', t + 'px'); st.setProperty('--mx-r', r + 'px'); st.setProperty('--mx-b', b + 'px'); st.setProperty('--mx-l', l + 'px'); }
+  }
+  // ---- 경계선 끌기 (창 크기는 그대로, 두 칸의 비율만) ----
+  function dkSplitDown(e, el) {
+    if (e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    const sp = el.__sp, n = sp.n;
+    // 지금 보이는 크기를 그대로 기준값으로
+    for (const k of Object.keys(sp.sizes)) n.z[k] = sp.sizes[k];
+    const start = sp.H ? e.clientX : e.clientY, za = n.z[sp.a], zb = n.z[sp.b];
+    el.setPointerCapture(e.pointerId); el.classList.add('mx-act');
+    const mv = (ev) => {
+      let d = (sp.H ? ev.clientX : ev.clientY) - start;
+      if (sp.a === n.f) { d = Math.max(-(zb - 0) + DOCK_MIN, Math.min(d, sp.sizes[sp.a] - DOCK_MIN)); n.z[sp.b] = Math.max(DOCK_MIN, zb - d); }
+      else if (sp.b === n.f) { d = Math.max(-(za - DOCK_MIN), Math.min(d, sp.sizes[sp.b] - DOCK_MIN)); n.z[sp.a] = Math.max(DOCK_MIN, za + d); }
+      else { d = Math.max(-(za - DOCK_MIN), Math.min(d, zb - DOCK_MIN)); n.z[sp.a] = za + d; n.z[sp.b] = zb - d; }
+      dkRender();
+    };
+    const up = () => { el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); el.classList.remove('mx-act'); dkSave(); };
+    el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+  }
+  // ---- 떠 있는 창: 가장자리·꼭짓점 끌어 크기 조절 ----
+  const dkFloatOf = (g) => DK.lay.fl.find((f) => f.g === g);
+  const dkGroupById = (id) => dkAllGroups().find((g) => g.id === id);
+  // 누른 떠 있는 창을 맨 앞으로
+  function dkFront(fr) {
+    const g = dkGroupById(fr.dataset.g), f = g && dkFloatOf(g);
+    if (f && DK.lay.fl[DK.lay.fl.length - 1] !== f) { DK.lay.fl.splice(DK.lay.fl.indexOf(f), 1); DK.lay.fl.push(f); dkRender(); }
+  }
+  function dkResizeDown(e, fr, s) {
+    const g = dkGroupById(fr.dataset.g), f = g && dkFloatOf(g);
+    if (!f || e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    const h = e.currentTarget, sx = e.clientX, sy = e.clientY, o = { x: f.x, y: f.y, w: f.w, h: f.h };
+    h.setPointerCapture(e.pointerId);
+    const mv = (ev) => {
+      const dx = ev.clientX - sx, dy = ev.clientY - sy;
+      if (s.includes('e')) f.w = Math.max(80, o.w + dx);
+      if (s.includes('s')) f.h = Math.max(DOCK_HEAD + 40, o.h + dy);
+      if (s.includes('w')) { f.w = Math.max(80, o.w - dx); f.x = o.x + o.w - f.w; }
+      if (s.includes('n')) { f.h = Math.max(DOCK_HEAD + 40, o.h - dy); f.y = o.y + o.h - f.h; }
+      dkRender();
+    };
+    const up = () => { h.removeEventListener('pointermove', mv); h.removeEventListener('pointerup', up); h.removeEventListener('pointercancel', up); dkSave(); };
+    h.addEventListener('pointermove', mv); h.addEventListener('pointerup', up); h.addEventListener('pointercancel', up);
+  }
+  // ---- 상단바 끌기: 탭 누르기(전환) / 끌어서 옮기기·붙이기·탭으로 합치기 ----
+  function dkHeadDown(e, fr) {
+    if (e.button !== 0 || DK.drag) return;
+    const g = dkGroupById(fr.dataset.g); if (!g) return;
+    e.preventDefault(); e.stopPropagation();
+    const tab = e.target.closest('.mx-tab'), pid = tab ? tab.dataset.p : null;
+    const R = DK.root.getBoundingClientRect(), fr0 = fr.getBoundingClientRect();
+    const d = { g, pid, fr, sx: e.clientX, sy: e.clientY, moved: false, ox: e.clientX - fr0.left, oy: e.clientY - fr0.top, w: fr0.width, h: fr0.height, R, target: null };
+    // 탭이 여럿인 묶음에서 탭을 잡으면 그 패널만, 아니면 묶음 통째로
+    d.single = !!(pid && g.t.length > 1);
+    fr.firstChild.setPointerCapture(e.pointerId);
+    DK.drag = d;
+    const head = fr.firstChild;
+    const mv = (ev) => {
+      if (!d.moved && Math.hypot(ev.clientX - d.sx, ev.clientY - d.sy) < 5) return;
+      if (!d.moved) { d.moved = true; dkGhost(d); }
+      d.target = dkDropTarget(ev, d);
+      dkShowTarget(d, ev);
+    };
+    const up = (ev) => {
+      head.removeEventListener('pointermove', mv); head.removeEventListener('pointerup', up); head.removeEventListener('pointercancel', up);
+      DK.drag = null; DK.hl?.remove(); DK.hl = null; d.ghost?.remove();
+      if (!d.moved) { if (pid && g.a !== pid) { g.a = pid; dkRender(); dkSave(); } return; } // 탭 전환
+      if (ev.type === 'pointercancel' || !d.target) return;
+      try { dkDrop(d, d.target, ev); } catch (err) { console.warn('[MagmaWand] 패널 옮기기', err); }
+      DK.lay.root = dkNorm(DK.lay.root) || { k: 'c' };
+      DK.lay.fl = DK.lay.fl.filter((f) => f.g.t.length);
+      dkRender(); dkSave();
+    };
+    head.addEventListener('pointermove', mv); head.addEventListener('pointerup', up); head.addEventListener('pointercancel', up);
+  }
+  function dkGhost(d) {
+    const gh = document.createElement('div'); gh.className = 'mx-ghost mw-el';
+    gh.textContent = d.single ? (DOCK_PANELS.find((p) => p.id === d.pid) || {}).title : d.g.t.map((t) => (DOCK_PANELS.find((p) => p.id === t) || {}).title).join(' · ');
+    DK.root.appendChild(gh); d.ghost = gh;
+  }
+  // 놓을 곳: 화면 가장자리(전체 기준 상하좌우) / 다른 묶음의 가운데(탭으로 합치기)·가장자리(그 옆에 붙이기) / 그 밖 = 띄우기
+  function dkDropTarget(e, d) {
+    const R = d.R, x = e.clientX - R.left, y = e.clientY - R.top, E = 24;
+    if (x >= 0 && y >= 0 && x <= R.width && y <= R.height) {
+      if (x < E) return { type: 'root', side: 'w' };
+      if (x > R.width - E) return { type: 'root', side: 'e' };
+      if (y > R.height - E) return { type: 'root', side: 's' };
+      if (y < E) return { type: 'root', side: 'n' };
+    }
+    // 위에 떠 있는 창부터
+    const frames = [...DK.frames.values()].filter((f) => f.style.display !== 'none' && f !== d.fr).sort((a, b) => (+b.style.zIndex || 0) - (+a.style.zIndex || 0));
+    for (const fr of frames) {
+      const r = fr.getBoundingClientRect();
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) continue;
+      const g = dkGroupById(fr.dataset.g); if (!g) continue;
+      const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+      if (e.clientY < r.top + DOCK_HEAD + 6 || fr.classList.contains('mx-float')) return { type: 'tab', g, rect: r };
+      const dl = fx, dr = 1 - fx, dt = fy, db = 1 - fy, m = Math.min(dl, dr, dt, db);
+      if (m > 0.28) return { type: 'tab', g, rect: r };
+      const side = m === dl ? 'w' : m === dr ? 'e' : m === dt ? 'n' : 's';
+      return { type: 'side', g, side, rect: r };
+    }
+    return { type: 'float' };
+  }
+  function dkShowTarget(d, e) {
+    const R = d.R, t = d.target;
+    if (d.ghost) Object.assign(d.ghost.style, { left: (e.clientX - R.left - Math.min(d.ox, 120)) + 'px', top: (e.clientY - R.top - d.oy) + 'px', width: Math.min(d.w, 240) + 'px' });
+    if (!DK.hl) { DK.hl = document.createElement('div'); DK.hl.className = 'mx-hl mw-el'; DK.root.appendChild(DK.hl); }
+    let r = null;
+    if (t.type === 'root') { const W = 240, H = 200; r = t.side === 'w' ? [0, 0, W, R.height] : t.side === 'e' ? [R.width - W, 0, W, R.height] : t.side === 'n' ? [0, 0, R.width, H] : [0, R.height - H, R.width, H]; }
+    else if (t.type === 'tab') r = [t.rect.left - R.left, t.rect.top - R.top, t.rect.width, t.rect.height];
+    else if (t.type === 'side') { const q = t.rect, x = q.left - R.left, y = q.top - R.top; r = t.side === 'w' ? [x, y, q.width / 2, q.height] : t.side === 'e' ? [x + q.width / 2, y, q.width / 2, q.height] : t.side === 'n' ? [x, y, q.width, q.height / 2] : [x, y + q.height / 2, q.width, q.height / 2]; }
+    DK.hl.style.display = r ? '' : 'none';
+    DK.hl.classList.toggle('mx-tabhl', t.type === 'tab');
+    if (r) Object.assign(DK.hl.style, { left: r[0] + 'px', top: r[1] + 'px', width: r[2] + 'px', height: r[3] + 'px' });
+  }
+  // 끌던 것을 원래 자리에서 빼서 새 묶음(또는 그 묶음 그대로)으로
+  function dkTake(d) {
+    if (d.single) { d.g.t = d.g.t.filter((t) => t !== d.pid); if (d.g.a === d.pid) d.g.a = d.g.t[0]; return { k: 'g', id: dkUid(), t: [d.pid], a: d.pid }; }
+    const f = dkFloatOf(d.g);
+    if (f) DK.lay.fl.splice(DK.lay.fl.indexOf(f), 1);
+    else { const pi = dkParentOf(d.g); if (pi && pi.parent) { const keep = { k: 'g', id: 'x', t: [], a: null }; pi.parent.c[pi.index] = keep; } }
+    return d.g;
+  }
+  function dkDrop(d, t, e) {
+    if ((t.type === 'tab' || t.type === 'side') && t.g === d.g && !d.single) return; // 자기 자신 위
+    const R = d.R;
+    const size = (H) => Math.round(Math.min(H ? 300 : 260, Math.max(DOCK_MIN + 40, H ? d.w : d.h)));
+    if (t.type === 'float') {
+      const f = dkFloatOf(d.g);
+      if (f && !d.single) { f.x = e.clientX - R.left - d.ox; f.y = e.clientY - R.top - d.oy; return; }
+      const g = dkTake(d);
+      DK.lay.fl.push({ g, x: e.clientX - R.left - Math.min(d.ox, 120), y: e.clientY - R.top - d.oy, w: Math.max(160, Math.round(d.w)), h: Math.max(120, Math.round(d.h)) });
+      return;
+    }
+    if (t.type === 'tab') {
+      if (t.g === d.g) return;
+      const g = dkTake(d);
+      t.g.t.push(...g.t); t.g.a = d.single ? d.pid : g.a;
+      return;
+    }
+    if (t.type === 'side') {
+      if (t.g === d.g) return;
+      const tf = dkFloatOf(t.g);
+      const g = dkTake(d);
+      if (tf) { t.g.t.push(...g.t); t.g.a = g.a; return; } // 떠 있는 창 옆 붙이기 → 탭으로
+      const dir = t.side === 'w' || t.side === 'e' ? 'h' : 'v', first = t.side === 'w' || t.side === 'n';
+      const pi = dkParentOf(t.g);
+      const sz = Math.round((dir === 'h' ? t.rect.width : t.rect.height) / 2);
+      if (pi && pi.parent && pi.parent.d === dir) {
+        const P = pi.parent, i = P.c.indexOf(t.g), at = first ? i : i + 1;
+        P.c.splice(at, 0, g); P.z.splice(at, 0, sz);
+        if (P.f >= at) P.f++;
+        const ti = P.c.indexOf(t.g); if (ti !== P.f) P.z[ti] = Math.max(DOCK_MIN, P.z[ti] - sz);
+      } else {
+        const node = { k: 's', d: dir, c: first ? [g, t.g] : [t.g, g], z: first ? [sz, sz] : [sz, sz], f: first ? 1 : 0 };
+        if (pi && pi.parent) pi.parent.c[pi.index] = node; else DK.lay.root = node;
+      }
+      return;
+    }
+    if (t.type === 'root') {
+      const g = dkTake(d);
+      const dir = t.side === 'w' || t.side === 'e' ? 'h' : 'v', first = t.side === 'w' || t.side === 'n';
+      const root = DK.lay.root, sz = size(dir === 'h');
+      if (root.k === 's' && root.d === dir) {
+        if (first) { root.c.unshift(g); root.z.unshift(sz); root.f++; } else { root.c.push(g); root.z.push(sz); }
+      } else DK.lay.root = { k: 's', d: dir, c: first ? [g, root] : [root, g], z: [sz, sz], f: first ? 1 : 0 };
+    }
+  }
+  // ---- Window 메뉴 (위쪽 막대) ----
+  const WIN_SVG = '<path fill="currentColor" d="M64 64h384a32 32 0 0 1 32 32v320a32 32 0 0 1-32 32H64a32 32 0 0 1-32-32V96a32 32 0 0 1 32-32zm0 96v256h112V160zm144 0v256h240V160zM64 96v32h384V96z"/>';
+  function dkEnsureMenuBtn() {
+    const host = document.querySelector('editor-menu .menu-items');
+    if (!host) return;
+    if (DK.menuBtn && DK.menuBtn.isConnected && DK.menuBtn.parentNode === host) return;
+    DK.menuBtn?.remove();
+    const tpl = host.querySelector('button.dropdown-toggle');
+    const wrap = document.createElement('div'); wrap.className = 'dropdown mx-winbtn mw-el';
+    const b = document.createElement('button'); b.type = 'button';
+    b.className = tpl ? tpl.className.replace(/\b(active|show)\b/g, '') : 'dropdown-toggle no-arrow menu-dropdown md';
+    b.title = 'Window — 패널·화면 배치';
+    b.innerHTML = `<svg viewBox="0 0 512 512" width="19" height="19" class="svg-icon">${WIN_SVG}</svg>`;
+    b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); dkToggleMenu(b); });
+    wrap.appendChild(b); host.appendChild(wrap); DK.menuBtn = wrap;
+  }
+  function dkCloseMenu() { DK.menu?.remove(); DK.menu = null; if (DK.menuClose) { window.removeEventListener('pointerdown', DK.menuClose, true); DK.menuClose = null; } }
+  function dkToggleMenu(btn) {
+    if (DK.menu) { dkCloseMenu(); return; }
+    const m = document.createElement('div'); m.className = 'dropdown-menu show mx-winmenu mw-el';
+    const r = btn.getBoundingClientRect();
+    Object.assign(m.style, { position: 'fixed', left: r.left + 'px', top: (r.bottom + 4) + 'px', right: 'auto', zIndex: 100000 });
+    const head = (t) => { const h = document.createElement('div'); h.className = 'dropdown-header'; h.textContent = t; m.appendChild(h); };
+    const div = () => { const h = document.createElement('div'); h.className = 'dropdown-divider'; m.appendChild(h); };
+    const item = (text, on, fn, disabled) => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'dropdown-item mx-wi';
+      b.innerHTML = `<span class="mx-chk">${on ? '✓' : ''}</span><span></span>`; b.lastChild.textContent = text;
+      if (disabled) { b.disabled = true; b.classList.add('disabled'); }
+      b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); dkCloseMenu(); setTimeout(fn, 60); }); // 이 클릭이 다 끝난 뒤에 (Magma 설정 창이 '바깥 클릭'으로 바로 닫히지 않게)
+      m.appendChild(b);
+    };
+    const cfg = dkLoadCfg();
+    if (DK.on) {
+      head('패널');
+      const shown = new Set(dkAllGroups().flatMap((g) => g.t));
+      for (const p of DOCK_PANELS) item(p.title, shown.has(p.id), () => dkTogglePanel(p.id), !dkHasContent(p.id) && !shown.has(p.id));
+      div();
+    }
+    head('화면 모드');
+    const cur = localStorage.getItem('settings-sliders') || 'full';
+    for (const [v, t] of [['super-simple', 'Super Simple'], ['simple', 'Simple'], ['full', 'Full']]) item(t, cur === v, () => dkLayoutOption(t + ' mode'));
+    const er = document.querySelector('.editor-right');
+    item('브러시 목록', !!(er && er.classList.contains('has-brush-list')), () => dkLayoutOption('Brush list'));
+    item('두 줄', !!document.querySelector('.has-two-columns'), () => dkLayoutOption('Two columns'));
+    head('색상환');
+    let wheel = 'square'; try { wheel = (JSON.parse(localStorage.getItem('settings') || '{}').colorWheelMode) || 'square'; } catch { /* 무시 */ }
+    for (const t of ['Square', 'Triangle']) item(t === 'Square' ? '사각형' : '삼각형', wheel === t.toLowerCase(), () => dkLayoutOption(t));
+    div();
+    if (DK.on) item('배치 처음으로 (이 모드)', false, () => dkResetLayout());
+    item(DK.on ? '사용자 지정 UI 끄기 (원래 화면)' : '사용자 지정 UI 켜기', false, () => { cfg.on = !DK.on; dkSave(true); if (cfg.on) dkStart(); else dkStop(); });
+    document.body.appendChild(m); DK.menu = m;
+    const close = (e) => { if (DK.menu === m && !m.contains(e.target) && !btn.contains(e.target)) dkCloseMenu(); };
+    DK.menuClose = close;
+    setTimeout(() => { if (DK.menuClose === close) window.addEventListener('pointerdown', close, true); }, 0);
+  }
+  // Magma 레이아웃 설정 창(숨긴 ⚙ 버튼)의 항목을 사용자가 누르는 것처럼 대신 누른다
+  async function dkLayoutOption(label) {
+    const cog = document.querySelector('button[tooltip="Layout options"]'); // 모드마다 자리가 다름 (Super Simple은 오른쪽 위 아이콘 막대)
+    if (!cog) { toast('레이아웃 설정 단추를 찾지 못했어요'); return; }
+    cog.click();
+    let it = null;
+    for (let i = 0; i < 20 && !it; i++) { await sleep(30); it = [...document.querySelectorAll('.dropdown-menu.show .dropdown-item')].find((b) => b.textContent.replace(/\s+/g, ' ').trim().startsWith(label)); }
+    if (it) it.click();
+    await sleep(60);
+    if (document.querySelector('.dropdown-menu.show') && cog.getAttribute('aria-expanded') === 'true') cog.click();
+  }
+  function dkTogglePanel(id) {
+    const groups = dkAllGroups(), g = groups.find((x) => x.t.includes(id));
+    DK.lay.h = DK.lay.h || [];
+    if (g) { g.t = g.t.filter((t) => t !== id); if (g.a === id) g.a = g.t[0]; DK.lay.h.push(id); DK.lay.root = dkNorm(DK.lay.root) || { k: 'c' }; DK.lay.fl = DK.lay.fl.filter((f) => f.g.t.length); }
+    else {
+      DK.lay.h = DK.lay.h.filter((t) => t !== id);
+      const R = DK.root.getBoundingClientRect();
+      DK.lay.fl.push({ g: { k: 'g', id: dkUid(), t: [id], a: id }, x: Math.round(R.width / 2 - 130), y: 60, w: 260, h: 300 });
+    }
+    dkRender(); dkSave();
+  }
+  // 이 모드의 처음 배치: 잠깐 원래 자리로 돌려 Magma가 놓은 자리를 다시 잰다
+  async function dkResetLayout() {
+    dkRestoreNodes();
+    await nextFrame(); await nextFrame();
+    const lay = dkMeasureDefault() || dkFallbackDefault();
+    DK.cfg.D[DK.mode] = lay;
+    DK.lay = JSON.parse(JSON.stringify(lay));
+    dkAdopt(); dkEnsureAll(); dkRender(); dkSave(true);
+  }
+  // ---- 켜기·끄기 ----
+  function dkStart() {
+    if (DK.on || DK.failed) return;
+    const box = document.querySelector('editor-box'), top = document.querySelector('.editor-top');
+    if (!box || !document.querySelector('.editor-right') || !document.querySelector('.editor-left')) return;
+    try {
+      dkLoadCfg();
+      DK.mode = dkModeKey();
+      // 처음 켤 때(이 모드의 기본값이 없으면) 요소가 원래 칸에 있을 때 잰다
+      if (!DK.cfg.D[DK.mode]) DK.cfg.D[DK.mode] = dkMeasureDefault() || dkFallbackDefault();
+      const saved = DK.cfg.L[DK.mode];
+      DK.lay = JSON.parse(JSON.stringify(dkValid(saved) ? saved : DK.cfg.D[DK.mode]));
+      DK.lay.fl = DK.lay.fl || []; DK.lay.h = DK.lay.h || [];
+      DK.root = document.createElement('div'); DK.root.className = 'mx-dock mw-el';
+      { const er = document.querySelector('.editor-right'), cs = er && getComputedStyle(er); if (cs) { DK.root.style.setProperty('--mx-bg', cs.backgroundColor); DK.root.style.setProperty('--mx-bd', cs.borderLeftColor); } }
+      DK.root.style.top = (top ? Math.round(top.getBoundingClientRect().height) : 43) + 'px';
+      DK.hold = document.createElement('div'); DK.hold.className = 'mx-hold'; DK.root.appendChild(DK.hold);
+      box.appendChild(DK.root);
+      DK.on = true;
+      dkAdopt();
+      if (!dkHasContent('color') || !dkHasContent('layers') || !dkHasContent('tools')) throw new Error('Magma 화면 조각을 찾지 못함');
+      dkEnsureAll();
+      dkRender();
+      document.documentElement.classList.add('mx-dock-on');
+      window.dispatchEvent(new Event('resize'));
+      dkSave();
+    } catch (e) { dkFail(e); }
+  }
+  function dkStop() {
+    if (!DK.on) return;
+    try { dkSave(true); } catch { /* 무시 */ }
+    DK.on = false;
+    try { dkRestoreNodes(); } catch (e) { console.warn('[MagmaWand] 패널 되돌리기', e); }
+    document.documentElement.classList.remove('mx-dock-on', 'mx-uihidden');
+    for (const k of ['--mx-t', '--mx-r', '--mx-b', '--mx-l']) document.documentElement.style.removeProperty(k);
+    DK.root?.remove(); DK.root = null; DK.hold = null; DK.frames.clear(); DK.sig = ''; DK.pb = {};
+    DK.hl?.remove(); DK.hl = null;
+    window.dispatchEvent(new Event('resize'));
+  }
+  function dkFail(e) {
+    console.warn('[MagmaWand] 사용자 지정 UI 오류 → 원래 화면으로', e);
+    DK.failed = true;
+    try { dkStop(); } catch { /* 무시 */ }
+    toast('사용자 지정 UI에 문제가 생겨 원래 화면으로 돌렸어요 (Window 메뉴에서 다시 켤 수 있어요)');
+  }
+  // 400ms마다: 새로 생긴 Magma 요소 옮기기 · 모드가 바뀌면 그 모드의 배치로 · 다시 그리기
+  function dkTick() {
+    if (!document.querySelector('editor-box')) { if (DK.on) dkStop(); return; }
+    dkEnsureMenuBtn();
+    const cfg = dkLoadCfg();
+    // 오른쪽 기둥·왼쪽 도구 막대가 있는 보통 배치에서만 패널로 다룬다. Super Simple 모드·Tab으로 UI를 숨긴 동안은
+    // 옮긴 조각을 원래 자리로 돌려 Magma 화면을 그대로 쓰고(배치는 저장), 보통 배치로 돌아오면 다시 씌운다.
+    const er = document.querySelector('.editor-right'), el = document.querySelector('.editor-left');
+    const std = !!(er && el && getComputedStyle(er).display !== 'none' && getComputedStyle(el).display !== 'none');
+    if (!DK.on) { if (cfg.on && !DK.failed && std) dkStart(); return; }
+    if (!std) { dkStop(); return; }
+    try {
+      if (!DK.root.isConnected) { const box = document.querySelector('editor-box'); if (box) box.appendChild(DK.root); }
+      const mode = dkModeKey();
+      if (mode !== DK.mode) {
+        // Magma가 화면 모드를 바꿈: 지금 배치는 이전 모드에 저장, 새 모드는 저장된 배치(없으면 다시 재서)로
+        DK.cfg.L[DK.mode] = DK.lay; dkSave(true);
+        DK.mode = mode;
+        if (!DK.cfg.D[mode] || !dkValid(DK.cfg.L[mode])) { dkResetLayout(); return; }
+        DK.lay = JSON.parse(JSON.stringify(DK.cfg.L[mode])); DK.lay.fl = DK.lay.fl || []; DK.lay.h = DK.lay.h || [];
+      }
+      dkAdopt(); dkEnsureAll(); dkRender();
+      // 안전장치: 숨긴 원래 칸에 처음 보는 Magma 조각이 남아 있으면(Magma 업데이트 등) 안 보이게 갇히지 않도록 원래 화면으로
+      const left = [...document.querySelectorAll('.editor-right *, .editor-left *')].filter((el) => el.tagName.includes('-') && !el.closest('.mx-pbody') && !el.closest('.mw-el') && el.getBoundingClientRect().width > 0);
+      if (left.length) dkFail(new Error('처음 보는 화면 조각: ' + left.slice(0, 3).map((x) => x.tagName.toLowerCase()).join(', ')));
+    } catch (e) { dkFail(e); }
+  }
+  on(window, 'resize', () => { if (DK.on) dkRender(); });
+  cleanups.push(() => { dkCloseMenu(); DK.menuBtn?.remove(); dkStop(); });
+
   // Magma는 페이지 이동 없이 화면을 바꾸므로 주기적으로 상태를 맞춘다
   const tick = setInterval(() => {
+    try { dkTick(); } catch (e) { console.warn('[MagmaWand] 사용자 지정 UI', e); }
     if (!getCanvas()) { if (S.active) setActive(false); return; }
     ensureStyle();
     ensureGroups();
@@ -8471,7 +9107,7 @@ void main(){
     getEditor, ensureEditor, docContext, docImage, exactPath, withSpikes, magmaKeep, rasterPath, straightLoop,
     histCheck, histPoints, histCopyLayer, openHistoryDialog, histUsage, getBrushSize, sizeRow,
     openStrokeDialog, fxSet, fxGet, fxKick, fxState: () => FX,
-    advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, parseSut, sqliteTables, parseEffector, getAA, setAA, docToBuffer, selectionExists,
+    advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, dockState: () => DK, parseSut, sqliteTables, parseEffector, getAA, setAA, docToBuffer, selectionExists,
     setAlpha, advEraseCommit, fillSelection, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt,
     ensureGroups, activateMember, selectLayerContent, advNewBrush, setMagmaFont, currentFontName, systemFonts, openTextImageDialog,
     blurDab, blurState: () => BLR, msState: () => MS, guState: () => GU, guRef, clipToggle, clipHitAt, advPutImage, builtinBlob, advSaveBrush, advPrepare, openBrushSettings, openPresetPicker, advNewFromPreset, ADV_PRESETS, advMixColor, setPrimaryHex, advState2: () => ADV, fgConfig, growMaskBy, ensureFillRow, rowLayer, msPick, msReplay, msDecompose, gapBridgeFill, qmState: () => QM, qmApply, msPropsApply, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons, smpRequest, smpState: () => SMP, smpRender, smpRes, smpCanvas, hexRgb, presetBrushObj, advCatOf, ADV_CATS };
