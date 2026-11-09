@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.13.0';
+  const VERSION = '0.14.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -4663,16 +4663,59 @@ void main(){
     press(row.querySelector('.layer-content') || row);
     return waitFor(() => msActive(E) === L, 1200);
   }
-  // 레이어 하나에 같은 변형 H를 다시 한다
-  async function msReplay(L, H) {
+  // ----- 선택 영역이 있을 때 -----
+  // Magma는 변형을 확정하는 순간 선택도 같이 변형한다(실측). 그래서 다음 레이어는 ① 선택 해제(앞 변형 확정) ② 원래 선택을
+  // 올가미로 다시 긋기 ③ 같은 변형 — 레이어마다 되돌리기 3칸. 선택 모양은 user.selection.poly(보드 좌표 외곽선, 읽기만)에서 얻는다.
+  const MS_MAX_SEL = 4;
+  function msSelOf(u) {
+    const se = u.selection, b = se && se.bounds;
+    if (!b || !(b.w > 0) || !(b.h > 0)) return null;
+    const segs = se.poly && se.poly.segments;
+    if (!Array.isArray(segs) || segs.length !== 1 || !(segs[0].size >= 3)) return { bad: true };
+    const it = segs[0].items, pts = [];
+    for (let i = 0; i < segs[0].size; i++) pts.push([se.poly.ox + +it[i * 2], se.poly.oy + +it[i * 2 + 1]]);
+    return { pts, soft: !!se.isSoft, b: { x: b.x, y: b.y, w: b.w, h: b.h } }; // soft = 가장자리가 부드러운 선택(타원 등)
+  }
+  async function msRestoreSel(sel) {
+    const E = getEditor(), u = E.model.user, canvas = getCanvas();
+    // ① 선택 해제 = 앞 레이어의 변형도 이때 확정된다
+    const des = document.querySelector('.selection-tool button[command=deselect]');
+    if (des && !des.disabled && !des.classList.contains('disabled')) {
+      press(des);
+      if (!await waitFor(() => !(u.selection.bounds.w > 0), 1500)) return '선택을 풀지 못함';
+    }
+    // ② 원래 선택을 올가미 선택(새 선택 모드, 손떨림 보정 0)으로 한 번에 긋기
+    if (!await selectTool('lassoSelectionIcon')) return '올가미 선택으로 바꾸지 못함';
+    await nextFrame();
+    const prevMode = getSelectionMode(), prevStab = getStabilizer(), prevAA = getAA();
+    try {
+      if (prevMode !== 'select' && !await setSelectionMode('select')) return '선택 모드를 바꾸지 못함';
+      if (prevStab) await setStabilizer(0);
+      if (prevAA !== null && prevAA !== sel.soft) await setAA(sel.soft); // 원래 선택처럼: 부드러운 선택이면 안티에일리어스 켜기
+      const r = canvas.getBoundingClientRect(), kx = canvas.width / r.width, ky = canvas.height / r.height;
+      const buf = sel.pts.map((p) => { const [x, y] = msScreen(p); return [(x - r.left) * kx, (y - r.top) * ky]; });
+      await drawLasso(canvas, buf, {});
+      const ok = await waitFor(() => { const b = u.selection.bounds; return Math.abs(b.x - sel.b.x) <= 1 && Math.abs(b.y - sel.b.y) <= 1 && Math.abs(b.w - sel.b.w) <= 1 && Math.abs(b.h - sel.b.h) <= 1; }, 1500);
+      if (!ok) return '원래 선택을 다시 긋지 못함';
+    } finally {
+      if (prevStab) await setStabilizer(prevStab);
+      if (prevAA !== null && getAA() !== prevAA) await setAA(prevAA);
+      if (prevMode && prevMode !== 'select') await setSelectionMode(prevMode);
+    }
+    return null;
+  }
+
+  // 레이어 하나에 같은 변형 H를 다시 한다 (sel: 선택 영역이 있었으면 그 모양)
+  async function msReplay(L, H, sel) {
     const E = getEditor(), u = E.model.user;
     if (!await msSelectLayer(L)) return '레이어를 고르지 못함';
+    if (sel) { const e = await msRestoreSel(sel); if (e) return e; }
     if (currentTool() === 'faVectorSquare') await selectTool('moveIcon');
     await selectTool('faVectorSquare');
-    // 변형 상자 = 레이어 그림 사각형(L.rect, 실측). Magma는 손잡이를 처음 건드릴 때 이 레이어의 변형을 시작하고,
-    // 그때 앞 레이어의 변형을 확정한다. 그래서 여기서는 변형 칸 숫자가 이 레이어 상자로 바뀌기를 기다린다.
-    if (!L.rect || !(L.rect.w > 0) || !(L.rect.h > 0)) return '빈 레이어';
-    let B = { x: L.rect.x, y: L.rect.y, w: L.rect.w, h: L.rect.h };
+    // 변형 상자 = 레이어 그림 사각형(L.rect, 실측), 선택이 있으면 선택 사각형. Magma는 손잡이를 처음 건드릴 때 이 레이어의
+    // 변형을 시작하고, 그때 앞 레이어의 변형을 확정한다. 그래서 여기서는 변형 칸 숫자가 이 상자로 바뀌기를 기다린다.
+    if (!sel && (!L.rect || !(L.rect.w > 0) || !(L.rect.h > 0))) return '빈 레이어';
+    let B = sel ? { ...sel.b } : { x: L.rect.x, y: L.rect.y, w: L.rect.w, h: L.rect.h };
     const shown = () => { const v = trfInputs().map((i) => +i.value); return v.length === 5 && Math.abs(v[2] - B.w) < 1.5 && Math.abs(v[3] - B.h) < 1.5 && Math.abs(v[0] - (B.x + B.w / 2)) < 1.5; };
     if (!await waitFor(shown, 1500)) return '변형을 시작하지 못함';
     if (MS.mode0 === null) { const b = trfModeButtons().find(trfIsOn); MS.mode0 = b ? tipOf(b) : ''; } // 사용자가 쓰던 변형 모드 (끝나면 되돌림)
@@ -4757,12 +4800,22 @@ void main(){
       let img = null;
       try { img = E.renderer.getLayerImageData(L, r); } catch { }
       if (!img) continue;
-      const cv = document.createElement('canvas'); cv.width = r.w; cv.height = r.h; cv.className = 'mw-mscv';
+      const mk = () => { const c = document.createElement('canvas'); c.width = r.w; c.height = r.h; c.className = 'mw-mscv';
+        c.style.opacity = String(Math.max(0, Math.min(1, L.opacity == null ? 1 : L.opacity))); if (L.visible === false) c.style.display = 'none'; return c; };
+      const cv = mk();
       cv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(img.data), r.w, r.h), 0, 0);
-      cv.style.opacity = String(Math.max(0, Math.min(1, L.opacity == null ? 1 : L.opacity)));
-      if (L.visible === false) cv.style.display = 'none';
+      let rest = null;
+      if (ss.sel) { // 선택 안쪽(cv)만 변형되고 바깥(rest)은 제자리
+        const path = new Path2D();
+        ss.sel.pts.forEach(([x, y], i) => (i ? path.lineTo(x - r.x, y - r.y) : path.moveTo(x - r.x, y - r.y)));
+        path.closePath();
+        rest = mk(); const gr = rest.getContext('2d'); gr.drawImage(cv, 0, 0);
+        gr.globalCompositeOperation = 'destination-out'; gr.fill(path);
+        const gc = cv.getContext('2d'); gc.globalCompositeOperation = 'destination-in'; gc.fill(path);
+        wrap.appendChild(rest);
+      }
       wrap.appendChild(cv);
-      ss.items.push({ L, r, cv });
+      ss.items.push({ L, r, cv, rest });
     }
     const loop = () => {
       if (MS.sess !== ss) return;
@@ -4791,8 +4844,10 @@ void main(){
     const mul = (A, B) => [0, 1, 2].flatMap((i) => [0, 1, 2].map((j) => A[i * 3] * B[j] + A[i * 3 + 1] * B[3 + j] + A[i * 3 + 2] * B[6 + j]));
     const VH = mul(V3, H);
     for (const it of ss.items) {
-      const M = mul(VH, [1, 0, it.r.x, 0, 1, it.r.y, 0, 0, 1]);
-      it.cv.style.transform = `matrix3d(${M[0]},${M[3]},0,${M[6]},${M[1]},${M[4]},0,${M[7]},0,0,1,0,${M[2]},${M[5]},0,${M[8]})`;
+      const css = (M) => `matrix3d(${M[0]},${M[3]},0,${M[6]},${M[1]},${M[4]},0,${M[7]},0,0,1,0,${M[2]},${M[5]},0,${M[8]})`;
+      const T = [1, 0, it.r.x, 0, 1, it.r.y, 0, 0, 1];
+      it.cv.style.transform = css(mul(VH, T));
+      if (it.rest) it.rest.style.transform = css(mul(V3, T));
     }
   }
   function msGuard(on, msg) {
@@ -4836,12 +4891,13 @@ void main(){
     if (!kind || MS.skip === act) return;
     const others = msOthers(E);
     if (!others.length) return;
-    const sel = u.selection && u.selection.bounds;
-    if (sel && sel.w > 0 && sel.h > 0) { MS.skip = act; toast('선택 영역이 있으면 지금 레이어만 바뀌어요 (여러 레이어 함께 변형은 선택 없이 해 주세요)'); return; }
+    const sel = msSelOf(u);
+    if (sel && sel.bad) { MS.skip = act; toast('여러 조각(또는 구멍)으로 된 선택은 지금 레이어만 바뀌어요'); return; }
+    if (sel && others.length > MS_MAX_SEL) { MS.skip = act; toast(`선택 영역이 있을 때는 함께 고른 레이어 ${MS_MAX_SEL}개까지만 같이 바뀌어요(레이어마다 되돌리기 3칸) — 지금 레이어만 바뀌어요`); return; }
     const locked = others.filter((L) => L.locked);
     if (locked.length) { MS.skip = act; toast(`잠긴 레이어(${locked.map((L) => L.name).join(', ')})가 있어 지금 레이어만 바뀌어요`); return; }
     MS.arm = false;
-    const nss = { kind, tool, L: act, H: msMat(s), others };
+    const nss = { kind, tool, L: act, H: msMat(s), others, sel };
     MS.sess = nss;
     nss.hiding = msPreviewStart(nss).catch((err) => console.warn('[MagmaWand] 함께 변형 미리보기', err));
   }
@@ -4861,10 +4917,14 @@ void main(){
       const todo = ss.others.filter((L) => E.drawing.layers.includes(L) && msMine(E, L) && !L.locked);
       msGuard(true, `레이어 ${todo.length}개에 같은 ${ss.kind === 'move' ? '이동' : '변형'}을 하는 중…`);
       for (const L of todo) {
-        const err = await msReplay(L, H);
+        const err = await msReplay(L, H, ss.sel);
         results.push([L, err]);
+        if (err && ss.sel) { // 선택을 되살리지 못했으면 다음 레이어도 틀릴 수 있으니 멈춘다
+          for (const M of todo.slice(todo.indexOf(L) + 1)) results.push([M, '앞 레이어에서 멈춤']);
+          break;
+        }
         const it = (ss.items || []).find((x) => x.L === L);
-        if (it) it.cv.remove();
+        if (it) { it.cv.remove(); it.rest?.remove(); }
       }
       // 마지막 레이어 변형을 끝내고 원래 모드·레이어·도구로
       if (MS.mode0) { const b = trfModeButtons().find((x) => tipOf(x) === MS.mode0); if (b && !trfIsOn(b)) { press(b); await nextFrame(); } }
@@ -4883,7 +4943,7 @@ void main(){
     const bad = results.filter(([, e]) => e);
     if (!results.length) return;
     toast(bad.length ? `${results.length - bad.length}개는 함께 바꿨지만 ${bad.map(([L, e]) => `"${L.name}"(${e})`).join(', ')}은 못 바꿨어요`
-      : `레이어 ${results.length + 1}개를 함께 ${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} (되돌리기는 레이어마다 한 칸)`);
+      : `레이어 ${results.length + 1}개를 함께 ${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} (되돌리기는 레이어마다 ${ss.sel ? '3칸: 선택 해제·선택·변형' : '한 칸'})`);
   }
   const msTimer = setInterval(() => { try { msTick(); } catch (err) { console.warn('[MagmaWand] 함께 고르기', err); } }, 60);
   cleanups.push(() => { clearInterval(msTimer); MS.sess?.wrap?.remove(); MS.guard?.remove(); document.querySelectorAll('.mw-msel').forEach((r) => r.classList.remove('mw-msel')); });
