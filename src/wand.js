@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.27.1';
+  const VERSION = '0.28.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -23,6 +23,18 @@
 
   // 나중에 깨끗하게 걷어낼 수 있도록 등록한 것들을 모아 둔다
   const cleanups = [];
+  // ----- 언어: Magma 계정 언어가 영어면 확장 문구도 영어로 (한국어가 기본) -----
+  let LANG = null, LANG_AT = 0;
+  // 확장 언어: Window 메뉴에서 고른 값(magmaWand.settings의 lang: 'ko'|'en'), 없으면(자동) Magma 계정 언어를 따른다.
+  // Magma는 계정 언어를 <html lang>에 넣는다(한국어 = ko-KR, 영어 = en). 한국어가 아니면 영어로.
+  function detectLang() {
+    try { const o = JSON.parse(localStorage.getItem('magmaWand.settings') || '{}').lang; if (o === 'ko' || o === 'en') return o; } catch { /* 무시 */ }
+    const v = document.documentElement.getAttribute('lang') || '';
+    if (v) return /^ko/i.test(v) ? 'ko' : 'en';
+    return 'ko';
+  }
+  const LANG_EN = () => { const t = Date.now(); if (!LANG || t - LANG_AT > 3000) { LANG = detectLang(); LANG_AT = t; } return LANG === 'en'; };
+  const L = (ko, en) => (LANG_EN() ? en : ko);
   let destroyed = false; // 새 버전으로 바뀐 뒤에는 화면 요소를 다시 만들지 않음
   function on(target, type, fn, opts) {
     target.addEventListener(type, fn, opts);
@@ -64,9 +76,9 @@
   }
   function saveSettings() {
     try {
-      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys } = S;
+      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang } = S;
       localStorage.setItem('magmaWand.settings',
-        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys }));
+        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang }));
     } catch { /* 저장 못 해도 동작에는 지장 없음 */ }
   }
 
@@ -3823,7 +3835,7 @@ void main(){
       }
       grid.innerHTML = '';
       SMP.q = SMP.q.filter((it) => it.cv && it.cv.isConnected && !grid.contains(it.cv));
-      const list = q ? ADV_PRESETS.filter((p) => (p.name + ' ' + p.cat + ' ' + (p.desc || '')).toLowerCase().includes(q)) : cat === '전체' ? ADV_PRESETS : ADV_PRESETS.filter((p) => p.cat === cat);
+      const list = q ? ADV_PRESETS.filter((p) => { const t = p.name + ' ' + p.cat + ' ' + (p.desc || ''); return (t + ' ' + i18nText(p.name) + ' ' + i18nText(p.cat) + ' ' + i18nText(p.desc || '')).toLowerCase().includes(q); }) : cat === '전체' ? ADV_PRESETS : ADV_PRESETS.filter((p) => p.cat === cat);
       if (!list.length) { grid.innerHTML = '<div class="mw-advempty">찾는 프리셋이 없어요</div>'; return; }
       let last = null;
       for (const pr of list) {
@@ -5387,22 +5399,29 @@ void main(){
   function ensureAlphaSwatch() {
     if (destroyed) return;
     const sw = document.querySelector('svg.icon-switchColorsIcon');
+    // 색상환이 접혀 있거나 탭 뒤에 숨어 있으면 견본도 숨긴다 (다른 곳의 작은 네모를 잘못 잡지 않게)
+    const ec = sw && sw.closest('editor-color');
+    if (ec && !(ec.getBoundingClientRect().width > 0)) { if (ALPHA.el) ALPHA.el.style.display = 'none'; return; }
+    if (ALPHA.el) ALPHA.el.style.display = '';
     const area = sw && sw.closest('div');
     let prim = null;
     if (area) for (let p = area; p && !prim; p = p.parentElement) {
       prim = [...p.querySelectorAll('div')].filter((d) => { const r = d.getBoundingClientRect(); return r.width >= 14 && r.width <= 30 && Math.abs(r.width - r.height) < 2 && !d.querySelector('*') && !d.classList.contains('mw-alpha'); })
         .sort((x, y) => x.getBoundingClientRect().left - y.getBoundingClientRect().left || x.getBoundingClientRect().top - y.getBoundingClientRect().top)[0] || null; // 맨 왼쪽 위 = 주 색
-      if (p.tagName === 'EDITOR-SLIDERS' || p === document.body) break;
+      if (p.tagName === 'EDITOR-SLIDERS' || p.tagName === 'EDITOR-COLOR' || p === document.body) break;
     }
     if (!prim) { ALPHA.el?.remove(); ALPHA.el = null; return; }
     if (!ALPHA.el || !ALPHA.el.isConnected) {
       ALPHA.el = document.createElement('div');
       ALPHA.el.className = 'mw-alpha mw-el';
       ALPHA.el.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); setAlpha(!S.alpha); });
-      document.body.appendChild(ALPHA.el);
     }
+    // 색상환 안에 넣는다 → 색상환 패널을 옮기거나 넘겨도 한 몸으로 움직임 (예전: 화면 좌표를 따라 다시 놓아 늦게 따라옴)
+    const host = prim.closest('editor-color') || document.body;
+    if (ALPHA.el.parentNode !== host) host.appendChild(ALPHA.el);
     const r = prim.getBoundingClientRect();
-    Object.assign(ALPHA.el.style, { left: r.left + 'px', top: (r.top + 44) + 'px' });
+    if (host === document.body) Object.assign(ALPHA.el.style, { position: 'fixed', left: r.left + 'px', top: (r.top + 44) + 'px' });
+    else { const h = host.getBoundingClientRect(); if (h.width > 0 && r.width > 0) Object.assign(ALPHA.el.style, { position: 'absolute', left: Math.round(r.left - h.left) + 'px', top: Math.round(r.top - h.top + 44) + 'px' }); }
     ALPHA.el.classList.toggle('on', !!S.alpha);
     ALPHA.el.title = (S.alpha ? '투명색 사용 중' : '투명색') + ` (${(S.akeys || []).map(comboText).join(', ') || '단축키 없음'}) — 누르면 지금 색과 바꿔요`;
     document.documentElement.classList.toggle('mw-alpha-on', !!S.alpha);
@@ -8199,10 +8218,16 @@ void main(){
     .mx-rs-ne, .mx-rs-nw, .mx-rs-se, .mx-rs-sw { width: 10px; height: 10px; }
     .mx-rs-ne { top: -2px; right: -2px; cursor: nesw-resize; } .mx-rs-sw { bottom: -2px; left: -2px; cursor: nesw-resize; }
     .mx-rs-nw { top: -2px; left: -2px; cursor: nwse-resize; } .mx-rs-se { bottom: -2px; right: -2px; cursor: nwse-resize; }
-    .mx-head { position: relative; z-index: 2; flex: 0 0 18px; height: 18px; display: flex; align-items: stretch; overflow: hidden; cursor: grab; user-select: none;
-      font: 600 10.5px/18px system-ui, sans-serif; color: rgba(255,255,255,.5); background: rgba(255,255,255,.035); border-bottom: 1px solid rgba(255,255,255,.05); }
+    .mx-head { position: relative; z-index: 2; flex: 0 0 14px; height: 14px; display: flex; align-items: stretch; overflow: hidden; cursor: grab; user-select: none;
+      font: 600 9.5px/14px system-ui, sans-serif; color: rgba(255,255,255,.5); background: rgba(255,255,255,.035); border-bottom: 1px solid rgba(255,255,255,.05); }
+    .mx-btns { margin-left: auto; display: flex; flex: 0 0 auto; }
+    .mx-hb { width: 16px; height: 14px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: rgba(255,255,255,.45); }
+    .mx-hb svg { width: 9px; height: 9px; }
+    .mx-hb:hover { color: #fff; background: rgba(255,255,255,.1); }
+    .mx-hclose:hover { background: rgba(232,72,72,.75); }
+    .mx-frame.mx-min .mx-fbody { display: none; }
     .mx-head:active { cursor: grabbing; }
-    .mx-tab { padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .mx-tab { padding: 0 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     .mx-tab.on { color: rgba(255,255,255,.88); background: rgba(255,255,255,.06); }
     .mx-head .mx-tab:only-child { background: transparent; }
     .mx-tab.mx-empty { opacity: .45; }
@@ -8211,9 +8236,14 @@ void main(){
     .mx-pbody.mx-flow { overflow: hidden auto; }
     .mx-pbody.mx-flow.mx-fits { overflow: visible; }
     .mx-pbody > editor-layers, .mx-pbody > editor-properties-presets-list { position: absolute !important; inset: 0 !important; height: auto !important; width: auto !important; }
-    .mx-pbody.mx-tools { display: flex; flex-direction: column; align-items: center; overflow: hidden; }
-    .mx-pbody.mx-tools > .editor-left-scroll { flex: 1 1 auto; min-height: 0; }
-    .mx-pbody.mx-tools > .btn-sequence-wrapper { flex: 0 0 auto; }
+    .mx-pbody.mx-tools { display: flex; flex-direction: column; align-items: stretch; overflow: hidden; }
+    .mx-pbody.mx-tools > .editor-left-scroll { flex: 1 1 auto; min-height: 0; width: auto !important; overflow: hidden auto !important; }
+    .mx-pbody.mx-tools > .btn-sequence-wrapper { flex: 0 0 auto; align-self: center; }
+    /* 도구 막대를 넓히면 열이 늘고(격자), 위·아래에 얇게 붙이면 가로로 늘어선다 */
+    .mx-pbody.mx-tools editor-tools { display: grid !important; grid-template-columns: repeat(auto-fill, 32px); grid-auto-rows: 32px; gap: 2px; justify-content: center; align-content: start; width: 100% !important; height: auto !important; }
+    .mx-pbody.mx-tools.mx-wide { flex-direction: row; align-items: stretch; }
+    .mx-pbody.mx-tools.mx-wide > .editor-left-scroll { overflow: auto hidden !important; height: 100%; }
+    .mx-pbody.mx-tools.mx-wide editor-tools { grid-template-columns: none; grid-auto-flow: column; grid-template-rows: repeat(auto-fill, 32px); grid-auto-columns: 32px; height: 100% !important; width: max-content !important; align-content: center; }
     .mx-split { position: absolute; pointer-events: auto; z-index: 3; background: var(--mx-bd, rgb(53,53,53)); }
     .mx-split.mx-h { cursor: col-resize; } .mx-split.mx-v { cursor: row-resize; }
     .mx-split:hover, .mx-split.mx-act { background: rgba(77,140,255,.55); }
@@ -8472,14 +8502,15 @@ void main(){
   //  - 끄기(Window 메뉴) = 옮긴 요소를 원래 자리로 되돌리고 덧붙인 것을 모두 걷어낸다. 문제가 생기면 저절로 꺼진다.
   // 새 패널을 더할 때: DOCK_PANELS에 한 줄(id·제목·Magma 요소 선택자·원래 칸) 넣으면 같은 방식으로 붙이고 묶을 수 있다.
   const DOCK_KEY = 'magmaWand.dock';
-  const DOCK_HEAD = 18, DOCK_SPL = 4, DOCK_MIN = 48;
+  const DOCK_HEAD = 14, DOCK_SPL = 4, DOCK_MIN = 48;
   const DOCK_PANELS = [
-    { id: 'tools', title: '도구', sel: ['.editor-left > .editor-left-scroll', '.editor-left > .btn-sequence-wrapper'], kind: 'tools', origin: '.editor-left' },
-    { id: 'color', title: '색상환', sel: ['.editor-right editor-color'], kind: 'flow', origin: '.container1' },
-    { id: 'brush', title: '브러시', sel: ['.editor-right editor-slots', '.editor-right editor-sliders'], kind: 'flow', origin: '.container2' },
-    { id: 'presets', title: '브러시 목록', sel: ['.editor-right editor-properties-presets-list'], kind: 'fill', origin: '.container2b' },
-    { id: 'layers', title: '레이어', sel: ['.editor-right editor-layers'], kind: 'fill', origin: '.container3' },
+    { id: 'tools', title: '도구', en: 'Tools', sel: ['.editor-left > .editor-left-scroll', '.editor-left > .btn-sequence-wrapper'], kind: 'tools', origin: '.editor-left' },
+    { id: 'color', title: '색상환', en: 'Color', sel: ['.editor-right editor-color'], kind: 'flow', origin: '.container1' },
+    { id: 'brush', title: '브러시', en: 'Brush', sel: ['.editor-right editor-slots', '.editor-right editor-sliders'], kind: 'flow', origin: '.container2' },
+    { id: 'presets', title: '브러시 목록', en: 'Brush list', sel: ['.editor-right editor-properties-presets-list'], kind: 'fill', origin: '.container2b' },
+    { id: 'layers', title: '레이어', en: 'Layers', sel: ['.editor-right editor-layers'], kind: 'fill', origin: '.container3' },
   ];
+  const dkTitle = (p) => (p ? (LANG_EN() ? p.en || p.title : p.title) : '');
   const DK = { on: false, root: null, hold: null, pb: {}, adopted: [], frames: new Map(), splits: [], cfg: null, mode: '', lay: null,
     drag: null, hl: null, menuBtn: null, menu: null, failed: false, saveT: 0, sig: '', pendingMode: 0 };
   const dkUid = () => 'g' + Math.random().toString(36).slice(2, 9);
@@ -8488,11 +8519,12 @@ void main(){
     let c = null; try { c = JSON.parse(localStorage.getItem(DOCK_KEY) || 'null'); } catch { c = null; }
     DK.cfg = c && typeof c === 'object' ? c : { on: true, L: {}, D: {} };
     DK.cfg.L = DK.cfg.L || {}; DK.cfg.D = DK.cfg.D || {};
+    if (DK.cfg.v !== 2) { DK.cfg.L = {}; DK.cfg.D = {}; DK.cfg.v = 2; } // v2: 브러시+브러시 목록 탭 기본 배치
     return DK.cfg;
   }
   function dkSave(now) {
     clearTimeout(DK.saveT);
-    const go = () => { try { if (DK.lay && DK.mode) DK.cfg.L[DK.mode] = DK.lay; localStorage.setItem(DOCK_KEY, JSON.stringify(DK.cfg)); } catch { /* 무시 */ } };
+    const go = () => { try { if (DK.lay && DK.mode && !DK.failed) DK.cfg.L[DK.mode] = DK.lay; localStorage.setItem(DOCK_KEY, JSON.stringify(DK.cfg)); } catch { /* 무시 */ } };
     if (now) go(); else DK.saveT = setTimeout(go, 300);
   }
   // 화면 모드: Magma 설정(settings-sliders, 읽기만) + 오른쪽 칸 모양(브러시 목록·두 줄)
@@ -8503,7 +8535,7 @@ void main(){
   // ---- 패널 몸통(옮긴 Magma 요소가 들어가는 상자) ----
   function dkPBody(p) {
     let b = DK.pb[p.id];
-    if (!b) { b = document.createElement('div'); b.className = 'mx-pbody mx-' + p.kind; b.dataset.p = p.id; DK.pb[p.id] = b; }
+    if (!b) { b = document.createElement('div'); b.className = 'mx-pbody mx-' + p.kind + ' thin-dark-scrollbar'; b.dataset.p = p.id; DK.pb[p.id] = b; } // 스크롤바 = Magma 레이어 목록과 같은 얇은 어두운 모양
     return b;
   }
   // Magma가 새로 만든(또는 아직 안 옮긴) 요소를 패널로 옮긴다. 원래 자리는 기록해 두었다가 끌 때 되돌린다.
@@ -8555,10 +8587,14 @@ void main(){
       col.items.push(it); col.w = Math.max(col.w, it.w);
     }
     const colNode = (col) => {
-      const items = col.items.sort((a, b) => a.y - b.y);
-      if (items.length === 1) return g(items[0].p.id);
-      const fi = Math.max(0, items.findIndex((i) => i.p.id === 'layers'));
-      return { k: 's', d: 'v', c: items.map((i) => g(i.p.id)), z: items.map((i) => i.h + DOCK_HEAD), f: fi >= 0 ? fi : items.length - 1 };
+      let items = col.items.sort((a, b) => a.y - b.y);
+      // 브러시와 브러시 목록은 같은 탭 묶음으로 (브러시 칸 크기 그대로, 목록은 탭을 눌러 같은 자리에서)
+      const bi = items.findIndex((i) => i.p.id === 'brush'), pi = items.findIndex((i) => i.p.id === 'presets');
+      if (bi >= 0 && pi >= 0) { items[bi] = { ...items[bi], tabs: ['brush', 'presets'] }; items = items.filter((_, k) => k !== pi); }
+      const grp = (i) => (i.tabs ? { k: 'g', id: dkUid(), t: i.tabs, a: i.tabs[0] } : g(i.p.id));
+      if (items.length === 1) return grp(items[0]);
+      const fi = items.findIndex((i) => i.p.id === 'layers');
+      return { k: 's', d: 'v', c: items.map(grp), z: items.map((i) => i.h + DOCK_HEAD), f: fi >= 0 ? fi : items.length - 1 };
     };
     const kids = [], z = [];
     const ew = el ? Math.round(el.getBoundingClientRect().width) : 0;
@@ -8574,7 +8610,7 @@ void main(){
   }
   function dkFallbackDefault() {
     const g = (id) => ({ k: 'g', id: dkUid(), t: [id], a: id });
-    return { root: { k: 's', d: 'h', f: 1, z: [40, 0, 261], c: [g('tools'), { k: 'c' }, { k: 's', d: 'v', f: 3, z: [245, 265, 63, 200], c: [g('color'), g('brush'), g('presets'), g('layers')] }] }, fl: [], h: [] };
+    return { root: { k: 's', d: 'h', f: 1, z: [40, 0, 261], c: [g('tools'), { k: 'c' }, { k: 's', d: 'v', f: 2, z: [241, 261, 200], c: [g('color'), { k: 'g', id: dkUid(), t: ['brush', 'presets'], a: 'brush' }, g('layers')] }] }, fl: [], h: [] };
   }
   // ---- 나무 다루기 ----
   const dkHasCanvas = (n) => n.k === 'c' || (n.k === 's' && n.c.some(dkHasCanvas));
@@ -8622,27 +8658,30 @@ void main(){
   // ---- 그리기 ----
   function dkGroupVisible(g) { return g.t.some(dkHasContent); }
   function dkVisible(n) { return n.k === 'c' || (n.k === 'g' ? dkGroupVisible(n) : n.c.some(dkVisible)); }
+  const dkMinOf = (c) => (dkHasCanvas(c) ? 120 : c.k === 'g' && c.t.length === 1 && c.t[0] === 'tools' ? 32 : DOCK_MIN);
   function dkLayoutNode(n, x, y, w, h, out) {
     if (n.k === 'c') { out.canvas = { x, y, w, h }; return; }
-    if (n.k === 'g') { out.groups.push({ g: n, x, y, w, h }); return; }
+    if (n.k === 'g') { out.groups.push({ g: n, x, y, w, h: n.m ? DOCK_HEAD : h }); return; }
     const H = n.d === 'h', vis = n.c.map((c, i) => (dkVisible(c) ? i : -1)).filter((i) => i >= 0);
     if (!vis.length) return;
     const total = (H ? w : h) - DOCK_SPL * (vis.length - 1);
-    let flex = vis.includes(n.f) ? n.f : vis[vis.length - 1];
+    // 세로로 쌓인 칸에서 접은(최소화) 묶음은 상단바 높이만 차지한다
+    const isMin = (i) => !H && n.c[i].k === 'g' && !!n.c[i].m;
+    const open = vis.filter((i) => !isMin(i));
+    const flex = open.includes(n.f) ? n.f : (open.length ? open[open.length - 1] : -1);
     const size = {};
     let fixed = 0;
-    const minOf = (c) => (c.k === 'g' && c.t.length === 1 && c.t[0] === 'tools' ? 32 : DOCK_MIN); // 도구 막대는 원래처럼 좁게
-    for (const i of vis) if (i !== flex) { size[i] = Math.max(minOf(n.c[i]), n.z[i] || DOCK_MIN); fixed += size[i]; }
-    const minFlex = dkHasCanvas(n.c[flex]) ? 120 : DOCK_MIN;
-    if (total - fixed < minFlex && fixed > 0) { const k = Math.max(0, total - minFlex) / fixed; for (const i of vis) if (i !== flex) size[i] = Math.floor(size[i] * k); fixed = vis.reduce((s, i) => s + (i === flex ? 0 : size[i]), 0); }
-    size[flex] = Math.max(0, total - fixed);
+    for (const i of vis) if (i !== flex) { size[i] = isMin(i) ? DOCK_HEAD : Math.max(dkMinOf(n.c[i]), n.z[i] || DOCK_MIN); fixed += size[i]; }
+    const minFlex = flex < 0 ? 0 : dkHasCanvas(n.c[flex]) ? 120 : DOCK_MIN;
+    if (total - fixed < minFlex && fixed > 0) { const k = Math.max(0, total - minFlex) / fixed; for (const i of vis) if (i !== flex && !isMin(i)) size[i] = Math.floor(size[i] * k); fixed = vis.reduce((s, i) => s + (i === flex ? 0 : size[i]), 0); }
+    if (flex >= 0) size[flex] = Math.max(0, total - fixed);
     let pos = H ? x : y;
     vis.forEach((i, j) => {
       const sz = size[i];
       if (H) dkLayoutNode(n.c[i], pos, y, sz, h, out); else dkLayoutNode(n.c[i], x, pos, w, sz, out);
       pos += sz;
       if (j < vis.length - 1) {
-        out.splits.push({ n, a: i, b: vis[j + 1], H, x: H ? pos : x, y: H ? y : pos, w: H ? DOCK_SPL : w, h: H ? h : DOCK_SPL, sizes: size });
+        if (!isMin(i) && !isMin(vis[j + 1])) out.splits.push({ n, a: i, b: vis[j + 1], H, flex, x: H ? pos : x, y: H ? y : pos, w: H ? DOCK_SPL : w, h: H ? h : DOCK_SPL, sizes: size });
         pos += DOCK_SPL;
       }
     });
@@ -8663,17 +8702,33 @@ void main(){
     return fr;
   }
   function dkRenderHead(fr, g) {
-    const head = fr.firstChild, sig = g.t.join(',') + '|' + g.a;
+    const head = fr.firstChild, sig = g.t.join(',') + '|' + g.a + '|' + (g.m ? 1 : 0) + '|' + (LANG_EN() ? 'en' : 'ko');
     if (head.dataset.sig === sig) return;
     head.dataset.sig = sig; head.innerHTML = '';
     for (const id of g.t) {
       const p = DOCK_PANELS.find((q) => q.id === id);
-      const t = document.createElement('span'); t.className = 'mx-tab' + (id === g.a ? ' on' : ''); t.textContent = p ? p.title : id; t.dataset.p = id;
+      const t = document.createElement('span'); t.className = 'mx-tab' + (id === g.a ? ' on' : ''); t.textContent = p ? dkTitle(p) : id; t.dataset.p = id;
       if (!dkHasContent(id)) t.classList.add('mx-empty');
       head.appendChild(t);
     }
+    // 오른쪽 끝: 접기(최소화) · 닫기
+    const btns = document.createElement('span'); btns.className = 'mx-btns';
+    const mk = (cls, title, svg, fn) => {
+      const b = document.createElement('span'); b.className = 'mx-hb ' + cls; b.title = title; b.innerHTML = svg;
+      b.addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); });
+      b.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); fn(); });
+      return b;
+    };
+    btns.append(
+      mk('mx-hmin', g.m ? L('펼치기', 'Expand') : L('접기', 'Minimize'),
+        g.m ? '<svg viewBox="0 0 10 10"><path d="M2 2.5h6v5H2z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>' : '<svg viewBox="0 0 10 10"><path d="M2 6.5h6" stroke="currentColor" stroke-width="1.4"/></svg>',
+        () => { g.m = !g.m; dkRender(); dkSave(); }),
+      mk('mx-hclose', L('닫기 (Window 메뉴에서 다시 열기)', 'Close (reopen from the Window menu)'),
+        '<svg viewBox="0 0 10 10"><path d="M2.5 2.5l5 5M7.5 2.5l-5 5" stroke="currentColor" stroke-width="1.3"/></svg>', () => dkTogglePanel(g.a)));
+    head.appendChild(btns);
   }
-  function dkRender() {
+  function dkRender() { try { dkRenderInner(); } catch (e) { dkFail(e); } }
+  function dkRenderInner() {
     if (!DK.on || !DK.root) return;
     // Magma가 UI를 숨겼으면(Tab 등) 패널도 숨기고 그림판은 Magma에 맡긴다
     const er = document.querySelector('.editor-right'), top = document.querySelector('.editor-top');
@@ -8691,7 +8746,11 @@ void main(){
       const fr = dkFrame(g); live.add(g.id);
       dkRenderHead(fr, g);
       fr.classList.toggle('mx-float', !!float);
+      if (g.m) h = DOCK_HEAD;
+      fr.classList.toggle('mx-min', !!g.m);
       Object.assign(fr.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px', display: dkGroupVisible(g) ? '' : 'none', zIndex: float ? String(20 + z) : '' });
+      // 도구 막대: 위·아래로 얇게(가로로 길게) 붙이면 가로로 늘어놓는다
+      if (g.a === 'tools' && DK.pb.tools) DK.pb.tools.classList.toggle('mx-wide', w > (h - DOCK_HEAD) * 1.4);
       const body = fr.__body;
       for (const id of g.t) {
         const pb = DK.pb[id]; if (!pb) continue;
@@ -8733,13 +8792,15 @@ void main(){
     const sp = el.__sp, n = sp.n;
     // 지금 보이는 크기를 그대로 기준값으로
     for (const k of Object.keys(sp.sizes)) n.z[k] = sp.sizes[k];
-    const start = sp.H ? e.clientX : e.clientY, za = n.z[sp.a], zb = n.z[sp.b];
+    const start = sp.H ? e.clientX : e.clientY, A = sp.sizes[sp.a], B = sp.sizes[sp.b];
+    const minA = dkMinOf(n.c[sp.a]), minB = dkMinOf(n.c[sp.b]);
     el.setPointerCapture(e.pointerId); el.classList.add('mx-act');
     const mv = (ev) => {
-      let d = (sp.H ? ev.clientX : ev.clientY) - start;
-      if (sp.a === n.f) { d = Math.max(-(zb - 0) + DOCK_MIN, Math.min(d, sp.sizes[sp.a] - DOCK_MIN)); n.z[sp.b] = Math.max(DOCK_MIN, zb - d); }
-      else if (sp.b === n.f) { d = Math.max(-(za - DOCK_MIN), Math.min(d, sp.sizes[sp.b] - DOCK_MIN)); n.z[sp.a] = Math.max(DOCK_MIN, za + d); }
-      else { d = Math.max(-(za - DOCK_MIN), Math.min(d, zb - DOCK_MIN)); n.z[sp.a] = za + d; n.z[sp.b] = zb - d; }
+      // 경계선이 d만큼 움직이면 앞 칸 A+d, 뒤 칸 B−d (남는 공간을 받는 칸도 같은 규칙) — 각 칸의 최소 크기까지만
+      const d = Math.max(-(A - minA), Math.min((sp.H ? ev.clientX : ev.clientY) - start, B - minB));
+      if (sp.a === sp.flex) n.z[sp.b] = B - d;
+      else if (sp.b === sp.flex) n.z[sp.a] = A + d;
+      else { n.z[sp.a] = A + d; n.z[sp.b] = B - d; }
       dkRender();
     };
     const up = () => { el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); el.classList.remove('mx-act'); dkSave(); };
@@ -8803,7 +8864,7 @@ void main(){
   }
   function dkGhost(d) {
     const gh = document.createElement('div'); gh.className = 'mx-ghost mw-el';
-    gh.textContent = d.single ? (DOCK_PANELS.find((p) => p.id === d.pid) || {}).title : d.g.t.map((t) => (DOCK_PANELS.find((p) => p.id === t) || {}).title).join(' · ');
+    gh.textContent = d.single ? dkTitle(DOCK_PANELS.find((p) => p.id === d.pid)) : d.g.t.map((t) => dkTitle(DOCK_PANELS.find((p) => p.id === t))).join(' · ');
     DK.root.appendChild(gh); d.ghost = gh;
   }
   // 놓을 곳: 화면 가장자리(전체 기준 상하좌우) / 다른 묶음의 가운데(탭으로 합치기)·가장자리(그 옆에 붙이기) / 그 밖 = 띄우기
@@ -8906,7 +8967,7 @@ void main(){
     const wrap = document.createElement('div'); wrap.className = 'dropdown mx-winbtn mw-el';
     const b = document.createElement('button'); b.type = 'button';
     b.className = tpl ? tpl.className.replace(/\b(active|show)\b/g, '') : 'dropdown-toggle no-arrow menu-dropdown md';
-    b.title = 'Window — 패널·화면 배치';
+    b.title = L('Window — 패널·화면 배치', 'Window — panels & layout');
     b.innerHTML = `<svg viewBox="0 0 512 512" width="19" height="19" class="svg-icon">${WIN_SVG}</svg>`;
     b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); dkToggleMenu(b); });
     wrap.appendChild(b); host.appendChild(wrap); DK.menuBtn = wrap;
@@ -8928,23 +8989,28 @@ void main(){
     };
     const cfg = dkLoadCfg();
     if (DK.on) {
-      head('패널');
+      head(L('패널', 'Panels'));
       const shown = new Set(dkAllGroups().flatMap((g) => g.t));
-      for (const p of DOCK_PANELS) item(p.title, shown.has(p.id), () => dkTogglePanel(p.id), !dkHasContent(p.id) && !shown.has(p.id));
+      for (const p of DOCK_PANELS) item(dkTitle(p), shown.has(p.id), () => dkTogglePanel(p.id), !dkHasContent(p.id) && !shown.has(p.id));
       div();
     }
-    head('화면 모드');
+    head(L('화면 모드', 'Screen mode'));
     const cur = localStorage.getItem('settings-sliders') || 'full';
     for (const [v, t] of [['super-simple', 'Super Simple'], ['simple', 'Simple'], ['full', 'Full']]) item(t, cur === v, () => dkLayoutOption(t + ' mode'));
     const er = document.querySelector('.editor-right');
-    item('브러시 목록', !!(er && er.classList.contains('has-brush-list')), () => dkLayoutOption('Brush list'));
-    item('두 줄', !!document.querySelector('.has-two-columns'), () => dkLayoutOption('Two columns'));
-    head('색상환');
+    item(L('브러시 목록', 'Brush list'), !!(er && er.classList.contains('has-brush-list')), () => dkLayoutOption('Brush list'));
+    item(L('두 줄', 'Two columns'), !!document.querySelector('.has-two-columns'), () => dkLayoutOption('Two columns'));
+    head(L('색상환', 'Color wheel'));
     let wheel = 'square'; try { wheel = (JSON.parse(localStorage.getItem('settings') || '{}').colorWheelMode) || 'square'; } catch { /* 무시 */ }
-    for (const t of ['Square', 'Triangle']) item(t === 'Square' ? '사각형' : '삼각형', wheel === t.toLowerCase(), () => dkLayoutOption(t));
+    for (const t of ['Square', 'Triangle']) item(t === 'Square' ? L('사각형', 'Square') : L('삼각형', 'Triangle'), wheel === t.toLowerCase(), () => dkLayoutOption(t));
+    head(L('확장 언어', 'Extension language'));
+    let lv = 'auto'; try { lv = JSON.parse(localStorage.getItem('magmaWand.settings') || '{}').lang || 'auto'; } catch { /* 무시 */ }
+    item(L('자동 (Magma 계정 언어)', 'Auto (Magma account language)'), lv === 'auto', () => setExtLang('auto'));
+    item('한국어', lv === 'ko', () => setExtLang('ko'));
+    item('English', lv === 'en', () => setExtLang('en'));
     div();
-    if (DK.on) item('배치 처음으로 (이 모드)', false, () => dkResetLayout());
-    item(DK.on ? '사용자 지정 UI 끄기 (원래 화면)' : '사용자 지정 UI 켜기', false, () => { cfg.on = !DK.on; dkSave(true); if (cfg.on) dkStart(); else dkStop(); });
+    if (DK.on) item(L('배치 처음으로 (이 모드)', 'Reset layout (this mode)'), false, () => dkResetLayout());
+    item(DK.on ? L('사용자 지정 UI 끄기 (원래 화면)', 'Turn off custom UI (original layout)') : L('사용자 지정 UI 켜기', 'Turn on custom UI'), false, () => { cfg.on = !DK.on; if (cfg.on) DK.failed = false; dkSave(true); if (cfg.on) dkStart(); else dkStop(); });
     document.body.appendChild(m); DK.menu = m;
     const close = (e) => { if (DK.menu === m && !m.contains(e.target) && !btn.contains(e.target)) dkCloseMenu(); };
     DK.menuClose = close;
@@ -9020,11 +9086,18 @@ void main(){
     DK.hl?.remove(); DK.hl = null;
     window.dispatchEvent(new Event('resize'));
   }
+  // 오류(Magma 업데이트·드물게 쓰는 화면과 충돌 등) → 화면 배치만 원래 Magma로 되돌린다. 확장의 다른 기능은 그대로 쓴다.
+  // 이 모드의 저장된 배치가 원인일 수 있으니 기본 배치로 비워 두고, 이번 화면에서는 다시 켜지 않는다(Window 메뉴로 다시 켤 수 있음).
   function dkFail(e) {
+    if (DK.failed) return;
     console.warn('[MagmaWand] 사용자 지정 UI 오류 → 원래 화면으로', e);
     DK.failed = true;
+    try { if (DK.cfg && DK.mode) { delete DK.cfg.L[DK.mode]; delete DK.cfg.D[DK.mode]; } } catch { /* 무시 */ }
+    const lay = DK.lay; DK.lay = null;
     try { dkStop(); } catch { /* 무시 */ }
-    toast('사용자 지정 UI에 문제가 생겨 원래 화면으로 돌렸어요 (Window 메뉴에서 다시 켤 수 있어요)');
+    try { localStorage.setItem(DOCK_KEY, JSON.stringify(DK.cfg)); } catch { /* 무시 */ }
+    DK.lay = lay && null;
+    toast(L('화면 배치에 문제가 생겨 원래 Magma 화면으로 돌렸어요. 다른 기능은 그대로 쓸 수 있어요 (Window 메뉴에서 다시 켜기)', 'The custom layout hit a problem, so the original Magma layout is back. Everything else still works (turn it on again from the Window menu).'));
   }
   // 400ms마다: 새로 생긴 Magma 요소 옮기기 · 모드가 바뀌면 그 모드의 배치로 · 다시 그리기
   function dkTick() {
@@ -9056,8 +9129,107 @@ void main(){
   on(window, 'resize', () => { if (DK.on) dkRender(); });
   cleanups.push(() => { dkCloseMenu(); DK.menuBtn?.remove(); dkStop(); });
 
+
+  // ---------- 영어 화면: 확장이 만든 화면의 한국어 글자를 영어로 바꿔 끼운다 ----------
+  // 확장이 만든 요소(.mw-…, .mx-…) 안의 글자·title·placeholder만 바꾸고, 원문은 기억해 두었다가 한국어로 돌아가면 되돌린다.
+  // 저장되는 값(브러시 분류·프리셋 이름 등)은 그대로 한국어라서 기능에는 영향이 없다.
+  const I18N_EN = /*I18N_EN*/{"현재 레이어를 찾지 못했어요":"Couldn't find the current layer","화면을 읽지 못했어요 (Magma 창이 가려져 있지 않은지 확인해 주세요)":"Couldn't read the screen (make sure the Magma window isn't covered)","그림판 밖을 눌렀어요":"You clicked outside the canvas","보드 바깥을 눌렀어요":"You clicked outside the board","영역을 만들지 못했어요":"Couldn't create the area","클립보드 기능을 쓸 수 없어요":"Clipboard isn't available","현재 레이어 참조: 선택이 있는 상태에서는 레이어를 새로 읽을 수 없어요. 선택을 해제하고 한 번 클릭한 뒤 이어서 쓰세요":"Current layer reference: the layer can't be re-read while there's a selection. Deselect, click once, then continue","현재 레이어를 읽지 못했어요":"Couldn't read the current layer","현재 레이어가 비어 있어요":"The current layer is empty","현재 레이어 위치를 읽지 못했어요":"Couldn't read the current layer's position","현재 레이어 크기가 맞지 않아요":"The current layer's size doesn't match","화면 위치 정보를 읽지 못했어요":"Couldn't read the screen position info","화면을 회전하거나 뒤집은 상태에서는 현재 레이어 참조를 쓸 수 없어요":"Current layer reference doesn't work while the view is rotated or flipped"," · 작은 조각 ${P.dropped}개는 점이 너무 많아 뺐어요":" · Left out ${P.dropped} small pieces that had too many points"," · 테두리가 복잡해 조금 매끈하게 그었어요":" · The outline was complex, so it was smoothed a little"," · 선 위를 눌러 빈틈 닫기 없이 했어요":" · You clicked on a line, so gap closing was skipped","그림판 화면을 찾지 못했어요":"Couldn't find the canvas view","영역 계산 중…":"Calculating area…","올가미 채우기 도구로 바꾸지 못했어요":"Couldn't switch to the Lasso fill tool","안전을 위해 멈췄어요: 올가미 채우기를 그리기 모드로 바꾸지 못했어요":"Stopped for safety: couldn't switch Lasso fill to draw mode","마법봉 선택":"Magic Wand selection",", 테두리 ${R.pieces}개":", ${R.pieces} outlines",", 구멍 ${holes}개":", ${holes} holes","${fill ? '채움' : '선택'}: ${count.toLocaleString()}픽셀${parts} (${(ms / 1000).toFixed(1)}초)":"${fill ? '채움' : '선택'}: ${count.toLocaleString()} px${parts} (${(ms / 1000).toFixed(1)}s)"," · 화면 기준":" · based on screen","오류: ":"Error: ","화면을 회전·뒤집은 상태에서는 현재 레이어 참조를 쓸 수 없어요":"Current layer reference doesn't work while the view is rotated/flipped","빼는 중… (손을 떼면 확정)":"Subtracting… (release to confirm)","선택 중… (손을 떼면 확정)":"Selecting… (release to confirm)","취소했어요":"Canceled","${Q.subtract ? '뺌' : '선택'}: ${count.toLocaleString()}픽셀":"${Q.subtract ? '뺌' : '선택'}: ${count.toLocaleString()} px","브러시 크기 ${BSZ.size}":"Brush size ${BSZ.size}","클립 스튜디오 브러시(.sut) 파일이 아니에요":"This isn't a Clip Studio brush (.sut) file","브러시 설정을 찾지 못했어요":"Couldn't find the brush settings","브러시":"Brush","합성 모드(${num(v.CompositeMode, 0)}번)는 '보통'으로 그려요 — 지우개 브러시면 ⚙ 설정 → 잉크 → 합성 모드에서 '지우기'":"Blend mode #${num(v.CompositeMode, 0)} draws as 'Normal' — for an eraser brush, set ⚙ Settings → Ink → Blend mode to 'Erase'","셰이더: ":"Shader: ","셰이더 연결: ":"Shader link: ","WebGL2를 쓸 수 없어요":"WebGL2 isn't available","'${brush.name}'의 필압·속도 곡선을 예전 버전이 잘못 읽었어요 — 지금은 곧은 곡선으로 그려요. .sut를 다시 가져오면 원래 곡선대로 돼요":"An older version misread the pressure/speed curves of '${brush.name}' — it now draws with straight curves. Re-import the .sut to get the original curves","수채":"Watercolor","숨겨진 레이어에는 그릴 수 없어요 — 레이어의 눈 아이콘을 켜 주세요":"You can't draw on a hidden layer — turn on the layer's eye icon","잠긴 레이어에는 그릴 수 없어요 — 레이어 잠금을 풀어 주세요":"You can't draw on a locked layer — unlock the layer","지우지 못했어요: ":"Couldn't erase: ","획을 보드에 넣지 못했어요: ":"Couldn't add the stroke to the board: ","칠하지":"Paint","브러시를 준비하지 못했어요: ":"Couldn't prepare the brush: ","먼저 오른쪽 설정 칸에서 브러시(.sut)를 가져와 주세요":"First import a brush (.sut) in the settings panel on the right","이 브러시는 지우개·특수 합성이라 아직 쓸 수 없어요":"This brush is an eraser/special blend, so it can't be used yet","이 브러시는 끝 모양 PNG가 필요해요 — 설정 칸의 \"끝 모양 PNG 넣기\"를 눌러 주세요":"This brush needs a tip shape PNG — click \"Add tip shape PNG\" in the settings panel","그릴 레이어를 먼저 골라 주세요":"Pick a layer to draw on first","글자 레이어에는 그릴 수 없어요 — 그림 레이어를 골라 주세요":"You can't draw on a text layer — pick a drawing layer","주의: Magma 설정 \"붙여넣기를 새 레이어로\"가 켜져 있어 획마다 새 레이어가 생겨요":"Note: Magma's \"Paste as new layer\" setting is on, so every stroke creates a new layer","＋ 브러시 가져오기 (.sut)":"＋ Import Brush (.sut)","＋ 기본 브러시":"＋ Basic Brush","클립 스튜디오 파일 없이, 기본 끝 모양으로 새 브러시를 만들어요":"Create a new brush with a basic tip shape — no Clip Studio file needed","끝 모양 바꾸기":"Change Tip Shape","⚙ 브러시 설정":"⚙ Brush Settings","크기·잉크·색 혼합(물감 섞기)·끝 모양·획·스프레이·텍스처·색 흔들기를 하나하나 바꿔요":"Adjust size, ink, color mixing (paint mixing), tip shape, stroke, spray, texture and color jitter one by one","지우기":"Delete","＋ 새 브러시 (프리셋)":"＋ New Brush (Preset)","연필·G펜·수채·유화(물감 섞기)·손끝·에어브러시·스프레이 등 프리셋으로 새 브러시를 만들어요":"Create a new brush from presets like pencil, G-Pen, watercolor, oil (paint mixing), finger blend, airbrush, spray and more","브러시 ${files.length - fails}개를 가져왔어요":"Imported ${files.length - fails} brushes"," — 끝 모양 PNG가 필요한 브러시가 있어요":" — some brushes need a tip shape PNG","한 번 더 누르면 지워요":"Click again to delete","브러시가 없어요. \"＋ 새 브러시 (프리셋)\"으로 만들거나 클립 스튜디오 브러시 파일(.sut)을 가져오세요.":"No brushes yet. Make one with \"＋ New Brush (Preset)\" or import a Clip Studio brush file (.sut).","⚠ 보호된 소재 ${need}개: \"끝 모양 바꾸기\"에서 기본 모양을 고르거나, CSP에서 PNG로 저장해 넣어 주세요":"⚠ ${need} protected materials: pick a basic shape in \"Change Tip Shape\", or save them as PNG in CSP and add them","아직 안 되는 기능: ${cur.unsupported.join(', ')} (나머지 설정으로 그려요)":"Not supported yet: ${cur.unsupported.join(', ')} (drawing with the other settings)","끝 모양·텍스처":"Tip Shape & Texture","기본 모양":"Basic shapes","을 누르면 준비된 모양 중에서 고를 수 있어요. 내 그림을 쓰려면":"lets you pick from ready-made shapes. To use your own image, add it with","PNG 고르기":"Choose PNG","로 넣어요(검은 그림 + 투명 배경).\n        클립 스튜디오의 보호된 소재는 CSP에서 캔버스에 붙여 PNG로 저장한 뒤 넣으면 똑같이 쓸 수 있어요.":"(black drawing + transparent background).\n        Protected Clip Studio materials work the same way: paste them onto a canvas in CSP, save as PNG, then add them.","닫기":"Close","끝 모양 ${i + 1}":"Tip shape ${i + 1}","2중 브러시 끝 모양":"Dual brush tip shape","텍스처":"Texture","없음":"None","모양 필요 (미리보기는 소재 썸네일)":"Shape needed (preview is the material thumbnail)","준비됨":"Ready","기본 모양: ":"Basic shape: ","모양을 넣지 못했어요: ":"Couldn't add the shape: ","바꾸기":"Change","그림을 열지 못했어요: ":"Couldn't open the image: ","필압":"Pressure","속도":"Speed","무작위":"Random","먼저 브러시를 골라 주세요":"Pick a brush first","브러시 설정 — ":"Brush Settings — ","  ${t} 최소":"  ${t} min","크기":"Size","브러시 크기":"Brush size","크기 효과":"Size dynamics","필압 곡선":"Pressure curve","필압 곡선: 100보다 작으면 살살 눌러도 굵고 진하게, 크면 세게 눌러야 굵어져요(펜에만 적용).":"Pressure curve: below 100, light pressure gives thick, dark lines; above 100, you have to press harder to get thick lines (pen only).","잉크":"Ink","불투명도":"Opacity","불투명도 효과":"Opacity dynamics","흐름(밀도)":"Flow (density)","흐름 효과":"Flow dynamics","안티에일리어스":"Anti-aliasing","합성 모드":"Blend mode","보통":"Normal","물감 겹치기":"Glaze","곱하기":"Multiply","물감 겹치기: 투명한 물감을 덧칠한 것처럼 감산 혼합돼요(노랑 위에 파랑 = 초록, 수채). 곱하기: 화면 곱하기라 겹칠수록 어둡고 탁해요(마커). 지우기: 이 브러시 모양 그대로 지우개가 돼요. 같은 레이어 안의 그림과 섞여요.":"Glaze: blends subtractively, like layering transparent paint (blue over yellow = green, watercolor). Multiply: screen multiply, so overlaps get darker and muddier (marker). Erase: the brush becomes an eraser with this exact shape. Mixes with the drawing on the same layer.","수채 경계":"Watercolor edge","수채 경계 켜기":"Enable watercolor edge","범위":"Range","투명도 영향":"Opacity influence","명도 영향":"Brightness influence","물이 마르면서 가장자리에 물감이 고인 것처럼 획 테두리 안쪽을 진하게 해요. 그리는 동안에도 결과와 똑같이 보여요.":"Darkens the inside of the stroke's edge, as if paint pooled at the rim while drying. Looks the same while you draw as in the final result.","물감":"Paint","붓털 켜기":"Enable bristles","붓 모양":"Brush shape","둥근 붓":"Round brush","평붓":"Flat brush","털 수":"Bristle count","털 결 세기":"Bristle texture strength","털마다 색 차이":"Per-bristle color variation","붓털: 털마다 물감을 따로 묻혀 끊김 없는 결이 남아요. 획 탭의 \\'물감 마름\\'을 같이 쓰면 길게 그을수록 털이 하나씩 말라 갈라져요. 끝 모양·각도 설정 대신 쓰여요.":"Bristles: each bristle carries its own paint, leaving a continuous texture. Combine with \\'Paint dry-out\\' in the Stroke tab and the bristles dry and split one by one the longer you drag. Used instead of the tip shape and angle settings.","두께감":"Impasto","광택":"Gloss","두께감: 물감이 두껍게 올라온 것처럼 붓 자국 굴곡에 왼쪽 위 빛과 그림자를 넣어요(0 = 끔). 광택이 높을수록 유화처럼 반짝여요.":"Impasto: adds light from the upper left and shadows to the brushstroke ridges, as if the paint is built up thick (0 = off). Higher gloss makes it shine like oil paint.","젖은 물감(수채)":"Wet paint (watercolor)","가장자리 흔들림":"Edge wobble","가장자리 풀림":"Edge bleed","안료 알갱이":"Pigment granulation","젖은 물감: 물이 닿은 경계가 또렷하고 구불구불해져요. 풀림을 올리면 젖은 종이처럼 번지고, 알갱이는 종이 골에 안료가 가라앉은 오돌토돌함이에요. 수채 경계와 함께 쓰면 좋아요.":"Wet paint: edges where the water reaches become crisp and wavy. Raise bleed to spread like wet paper; granulation is the bumpy look of pigment settling into the paper grooves. Works well with watercolor edge.","색 혼합":"Color mixing","블렌드":"Blend","물감 섞기":"Paint mixing","물감량":"Paint amount","물감량 효과":"Paint amount dynamics","물감 농도":"Paint density","물감 농도 효과":"Paint density dynamics","색 늘이기":"Color stretch","섞을 밑색":"Mix with","현재 레이어":"Current layer","보이는 그림":"Visible image","물감량 100 = 메인 색만 · 0 = 밑색만 끌고 다님(손끝). 물감 농도가 낮을수록 묽게, 색 늘이기가 클수록 끌고 온 색이 길게 남아요.":"Paint amount 100 = main color only · 0 = drags only the underlying color (finger blend). Lower paint density = thinner paint; higher color stretch = the dragged color lasts longer.","끝 모양":"Tip shape","경도(원형일 때)":"Hardness (round tip)","두께":"Thickness","두께 방향":"Thickness direction","가로":"Horizontal","세로":"Vertical","두께 효과":"Thickness dynamics","각도":"Angle","각도: 필압":"Angle: pressure","각도: 진행 방향":"Angle: direction","각도: 무작위":"Angle: random","  무작위 정도":"  Randomness","좌우 반전":"Flip horizontal","반전":"Flip","상하 반전":"Flip vertical","여러 모양 순서":"Multiple tip order","차례":"Sequential","왕복":"Back and forth","획":"Stroke","간격":"Spacing","간격 효과":"Spacing dynamics","손떨림 보정":"Stabilizer","입(시작 가늘게)":"Start taper","출(끝 가늘게)":"End taper","리본(끝 모양을 띠처럼 늘이기)":"Ribbon (stretch the tip like a band)","흩어짐":"Scatter","물감 마름(길이)":"Paint dry-out (length)","  마른 뒤 남는 양":"  Amount left when dry","물감 마름: 그 길이만큼 그으면 붓의 물감이 줄어 획이 갈라져요(갈필). 0이면 꺼짐.":"Paint dry-out: after dragging this far, the brush runs low on paint and the stroke splits (dry brush). 0 = off.","스프레이":"Spray","스프레이 켜기":"Enable spray","입자 크기":"Particle size","입자 크기를 브러시 크기에 맞춤":"Match particle size to brush size","입자 크기 효과":"Particle size dynamics","입자 수":"Particle count","입자 수 효과":"Particle count dynamics","가운데로 모임":"Gather to center","텍스처를 쓰고 있어요":"Using a texture","텍스처 없음 — 아래 단추로 고르세요":"No texture — pick one with the button below","농도":"Density","배율":"Scale","농도 강조":"Density boost","결 방식":"Grain mode","무늬 덮기":"Overlay pattern","깊이":"Depth","골에 남는 가루(깊이)":"Powder left in grooves (depth)","깊이: 종이 결을 높낮이로 써요. 살살 칠하면 높은 곳에만 묻고, 세게·여러 번 칠할수록 골까지 채워져요(연필·목탄·파스텔). 농도 = 골 깊이.":"Depth: uses the paper grain as height. Light strokes only touch the high spots; pressing harder or layering fills the grooves too (pencil, charcoal, pastel). Density = groove depth.","도장마다 적용(끄면 획 전체에, 깊이 방식은 늘 획 전체)":"Apply per stamp (off = whole stroke; depth mode always applies to the whole stroke)","2중 브러시":"Dual brush","이 브러시에는 2중 브러시가 없어요. 클립 스튜디오 브러시(.sut)에 2중 브러시가 있으면 여기서 바꿀 수 있어요.":"This brush has no dual brush. If a Clip Studio brush (.sut) has one, you can change it here.","2중 브러시 쓰기":"Use dual brush","흐름":"Flow","흩뿌리기":"Scatter","두 번째 끝 모양으로 찍은 무늬 안쪽만 남겨서 거친 질감을 만들어요.":"Keeps only the inside of the pattern stamped with the second tip shape, for a rough texture.","색 흔들기":"Color jitter","색상":"Hue","채도":"Saturation","명도":"Brightness","도장마다 색을 이만큼 흔들어요(반짝이·잎 같은 브러시에 좋아요).":"Jitters the color this much per stamp (great for brushes like glitter or leaves).","이름·관리":"Name & Manage","이름":"Name","분류":"Category","끝 모양·텍스처 바꾸기…":"Change tip shape & texture…","이 브러시 복제":"Duplicate this brush"," 사본":" copy","연필·스케치":"Pencil & Sketch","잉크·펜":"Ink & Pen","마커":"Marker","드라이 (목탄·파스텔)":"Dry (Charcoal & Pastel)","물감 (유화·구아슈)":"Paint (Oil & Gouache)","섞기·문지르기":"Blend & Smudge","에어브러시":"Airbrush","질감·특수":"Texture & Special","장식·자연":"Decoration & Nature","HB 연필":"HB Pencil","단단하고 옅은 선. 살살 그으면 종이 이에만 걸려요":"Hard, light lines. Light strokes catch only the paper's tooth","4B 연필":"4B Pencil","부드럽고 진한 흑연. 눌러 칠하면 결이 메워져요":"Soft, dark graphite. Press hard to fill in the grain","8B 연필":"8B Pencil","아주 무른 연필. 진하고 번들거리는 검정":"A very soft pencil. Dark, shiny black","샤프":"Mechanical Pencil","가늘고 일정한 밑그림 선":"Thin, even sketch lines","색연필":"Colored Pencil","색이 종이 결에 걸리는 밀랍 질감, 겹쳐 칠해 진하게":"Waxy texture where color catches the paper grain; layer it to darken","연필 눕혀 칠하기":"Pencil (side)","연필을 눕혀 넓게 음영 넣기":"Lay the pencil on its side for broad shading","목탄 연필":"Charcoal Pencil","거칠고 깊은 검정, 결이 가로로 비쳐요":"Rough, deep black with horizontal grain showing through","G펜":"G-Pen","필압으로 굵기가 바뀌는 매끈한 펜 선":"Smooth pen lines whose width changes with pressure","마루펜":"Maru Pen","가늘고 단단한 펜. 세밀한 선":"Thin, firm pen for fine lines","테크니컬 펜":"Technical Pen","굵기가 일정한 제도 펜":"Drafting pen with a constant width","붓펜":"Brush Pen","끝이 날렵한 붓펜":"Brush pen with a sharp tip","먹 붓":"Ink Brush","누르는 만큼 확 굵어지는 먹선":"Ink lines that swell sharply with pressure","마른 먹":"Dry Ink","그을수록 먹이 말라 갈라지는 붓 선":"Brush lines where the ink dries and splits as you drag","캘리그래피 펜":"Calligraphy Pen","각도가 고정된 납작 펜촉 (가로획 굵고 세로획 가늘게)":"Flat nib at a fixed angle (thick horizontal, thin vertical strokes)","펠트펜":"Felt Pen","가장자리가 살짝 번진 사인펜":"Felt-tip pen with slightly bleeding edges","사각 마커":"Chisel Marker","겹칠수록 진해지는 납작 마커":"Flat marker that darkens where strokes overlap","알코올 마커":"Alcohol Marker","부드러운 가장자리, 덧칠하면 한 단계씩 진해짐":"Soft edges; each layer darkens it one step","형광펜":"Highlighter","아래 그림이 비치는 형광 띠":"Highlighter band that lets the drawing below show through","버드나무 목탄":"Willow Charcoal","가볍고 부드러운 목탄. 손에 묻어나듯 결이 많이 남아요":"Light, soft charcoal. Leaves lots of grain, like it rubs off on your hand","압축 목탄":"Compressed Charcoal","진하고 무거운 검정, 세게 누르면 꽉 메워짐":"Dark, heavy black; fills in solid when you press hard","목탄 옆면":"Charcoal (side)","목탄을 눕혀 넓게 끌기 — 큰 면과 음영":"Drag charcoal on its side — big areas and shading","콩테":"Conté","단단한 사각 스틱, 또렷한 결":"Hard square stick with crisp grain","소프트 파스텔":"Soft Pastel","가루가 날리는 부드러운 파스텔, 큰 종이 결":"Soft, dusty pastel with large paper grain","오일 파스텔":"Oil Pastel","끈적하게 밀리며 밑색과 살짝 섞이는 밀랍 파스텔":"Waxy pastel that drags stickily and mixes slightly with the color below","크레용":"Crayon","어린이 크레용처럼 오돌토돌하게":"Bumpy, like kids' crayons","분필":"Chalk","칠판 분필, 가루와 끊김":"Blackboard chalk, dusty and broken","갈필 (마른 붓)":"Dry Brush","물감이 마르며 털 자국이 갈라지는 붓 — 길게 그어 보세요":"A brush whose bristle marks split as the paint dries — try a long stroke","스펀지":"Sponge","스펀지로 두드린 구멍 숭숭한 자국":"Porous marks dabbed with a sponge","점묘":"Stippling","펜 끝으로 콕콕 찍은 점 음영":"Dot shading tapped with a pen tip","수채 둥근 붓":"Round Watercolor","가장자리에 물감이 고이는 맑은 수채":"Clear watercolor with paint pooling at the edges","수채 세필":"Fine Watercolor","작은 붓으로 그리는 가는 수채 선":"Thin watercolor lines with a small brush","수채 번짐":"Watercolor Bleed","젖은 종이에 떨어뜨린 듯 가장자리가 풀리는 수채":"Watercolor whose edges spread, as if dropped on wet paper","수채 글레이즈":"Watercolor Glaze","넓고 고르게 까는 투명한 막 — 덧칠할수록 한 겹씩 진해져요":"A wide, even transparent wash — each layer darkens it one step","수채 알갱이":"Granulating Watercolor","울트라마린처럼 안료가 종이 골에 가라앉아 오돌토돌":"Pigment settles into the paper grooves for a bumpy look, like ultramarine","마른 수채":"Dry Watercolor","물기 적은 붓이 종이 결 위로 스치는 거친 수채":"Rough watercolor from a dry brush skimming the paper grain","수채 평붓":"Flat Watercolor","넓은 면을 고르게 바르는 납작 수채 붓, 옅은 털 결":"Flat watercolor brush for even, wide areas, with faint bristle grain","수채 물 번지기":"Watercolor Water Blend","밑색을 끌어와 물로 풀어 주는 붓":"A brush that pulls the underlying color and loosens it with water","유화 둥근 붓":"Round Oil Brush","털 결이 남고 밑색과 섞이는 유화, 길게 그으면 갈라져요":"Oil paint that leaves bristle grain and mixes with the color below; splits on long strokes","유화 평붓":"Flat Oil Brush","넓은 평붓으로 물감을 밀어 바르기":"Push paint on with a wide flat brush","유화 임파스토":"Oil Impasto","물감을 두껍게 올려 붓 자국이 도드라지는 유화":"Oil paint laid on thick so the brushstrokes stand out","마른 붓 (스컴블)":"Dry Brush (Scumble)","물감 적은 붓을 문질러 털 자국만 거칠게 남기기":"Rub a brush with little paint to leave only rough bristle marks","구아슈":"Gouache","불투명하고 무광으로 고르게 덮이는 물감":"Opaque, matte paint that covers evenly","구아슈 둥근 붓":"Round Gouache","작은 면과 디테일을 납작하게 메우는 구아슈":"Gouache for filling small areas and details flat","아크릴":"Acrylic","빨리 마르는 진한 물감, 끝으로 갈수록 털 자국":"Fast-drying rich paint, with bristle marks toward the end","팔레트 나이프":"Palette Knife","칼날로 물감을 펴 바르면 가장자리에 물감 둑이 생겨요":"Spread paint with the blade and ridges of paint form at the edges","색 섞기 붓":"Color Blender","밑색을 끌며 부드럽게 섞기":"Pull the underlying color and blend softly","유화 블렌더":"Oil Blender","마른 붓으로 물감 경계를 털 결 따라 풀어 주기":"Loosen paint edges along the bristle grain with a dry brush","손끝 (문지르기)":"Finger Blend (Smudge)","색 없이 손가락으로 문지르기":"Smudge with your finger, no color","거친 문지르기":"Rough Smudge","결이 남게 문질러 펴기 (목탄·파스텔 문지르기)":"Smudge and spread while keeping the grain (for charcoal/pastel)","붓털 문지르기":"Bristle Smudge","털 결을 따라 색을 끌어 늘이기":"Drag and stretch color along the bristle grain","부드러운 에어브러시":"Soft Airbrush","아주 부드러운 그러데이션":"Very soft gradient","단단한 에어브러시":"Hard Airbrush","가장자리가 조금 더 또렷한 에어브러시":"Airbrush with slightly crisper edges","거친 에어브러시":"Rough Airbrush","알갱이가 보이는 그러데이션 (노이즈 음영)":"Gradient with visible grain (noise shading)","흩뿌린 물감 입자":"Scattered paint particles","종이결 칠":"Paper Texture","종이 결이 살아 있는 넓은 음영":"Broad shading with lively paper grain","캔버스결 칠":"Canvas Texture","캔버스 천 결이 비치는 칠":"Fill with the canvas weave showing through","그런지":"Grunge","낡고 얼룩진 질감 칠하기":"Paint a worn, stained texture","물감 튀김":"Paint Splatter","튀긴 물감 방울":"Splattered paint drops","빗금 칠":"Hatching","칠한 곳에 빗금 무늬":"Hatching pattern where you paint","망점 (스크린톤)":"Halftone (Screentone)","칠한 곳에 망점 무늬":"Halftone pattern where you paint","풀":"Grass","풀잎 무더기를 이어 찍기":"Stamp clumps of grass in a row","털 (레이크)":"Fur (Rake)","나란한 털 결을 한 번에":"Parallel fur strands in one go","털 가닥":"Hair Strands","짐승 털·머리카락 뭉치":"Clumps of animal fur or hair","잎 뿌리기":"Leaf Scatter","흩날리는 잎":"Drifting leaves","구름":"Clouds","뭉게구름 덩이":"Puffy cloud clumps","반짝이":"Sparkle","반짝이는 십자 빛":"Sparkling cross-shaped light","별 뿌리기":"Star Scatter","크기·색이 조금씩 다른 별":"Stars of slightly varying size and color","눈송이":"Snowflakes","흩날리는 눈송이":"Drifting snowflakes","연필":"Pencil","진한 연필":"Dark Pencil","유화 (물감 섞기)":"Oil (Paint Mixing)","수채 번짐 (곱하기)":"Watercolor Bleed (Multiply)","망점(스크린톤)":"Halftone (Screentone)","가져온 브러시":"Imported Brushes","내 브러시":"My Brushes","새 브러시 — 프리셋 ${ADV_PRESETS.length}종":"New Brush — ${ADV_PRESETS.length} presets","고르면 지금 색으로 새 브러시가 만들어져요":"Pick one to create a new brush in the current color","빈 브러시 (끝 모양만 고르기)":"Blank Brush (choose tip shape only)","찾기 — 예: 연필, 목탄, 수채, 결":"Search — e.g. pencil, charcoal, watercolor, grain","브러시를 만들지 못했어요: ":"Couldn't create the brush: ","전체":"All","\"${pr.name}\" 브러시를 만들었어요":"Created the \"${pr.name}\" brush","찾는 프리셋이 없어요":"No matching presets","마법봉":"Magic Wand","빠른 선택":"Quick Selection","고급 브러시":"Advanced Brush","블러":"Blur","퀵 마스크":"Quick Mask","마법봉 (Magic Wand)":"Magic Wand","빠른 선택 (Quick Selection)":"Quick Selection","고급 브러시 (CSP Brush)":"Advanced Brush (CSP Brush)","블러 (Blur)":"Blur","퀵 마스크 (Quick Mask)":"Quick Mask","투명색 전환 (Transparent Color)":"Transparent Color Toggle","아무 키 조합이나 누르세요":"Press any key combination","선택 모드를 바꾸지 못했어요":"Couldn't change the selection mode","Magma의 Copy merged(Ctrl+Shift+C)가 응답하지 않았어요":"Magma's Copy merged (Ctrl+Shift+C) didn't respond","선택 모양을 읽지 못했어요":"Couldn't read the selection shape","선택 위치 정보를 읽지 못했어요":"Couldn't read the selection position","선택 범위 ${n}px 확장":"Expand selection by ${n}px","선택 범위 ${-n}px 축소":"Shrink selection by ${-n}px","${label} 중…":"${label}…","화면 위치 정보를 읽지 못해 멈췄어요":"Stopped: couldn't read the screen position info","화면을 회전하거나 뒤집은 상태에서는 아직 쓸 수 없어요":"This doesn't work yet while the view is rotated or flipped","화면을 읽지 못했어요":"Couldn't read the screen","선택 영역이 화면에 충분히 보이도록 한 뒤 다시 해 주세요":"Make sure enough of the selection is visible on screen, then try again","화면 위치 계산이 맞지 않아 안전을 위해 멈췄어요":"Stopped for safety: the screen position calculation didn't match","${label}: 남는 영역이 없어서 선택을 해제했어요":"${label}: nothing was left, so the selection was cleared","${label} 완료":"${label} done","${grow ? '넓힐' : '좁힐'} 픽셀 수":"Pixels to ${grow ? '넓힐' : '좁힐'}","선택 범위 확장…":"Expand Selection…","선택 범위 축소…":"Shrink Selection…","작업 기록 (내 컴퓨터)…":"History (this computer)…","레이어 속성 (내 화면)…":"Layer Properties (my screen)…","저장된 그림을 찾지 못했어요":"Couldn't find the saved image","방금":"just now","${Math.round(s / 60)}분 전":"${Math.round(s / 60)} min ago","${Math.round(s / 3600)}시간 전":"${Math.round(s / 3600)} h ago","${Math.round(s / 86400)}일 전":"${Math.round(s / 86400)} d ago","오늘":"Today","보드를 연 상태에서 쓸 수 있어요":"Available while a board is open","이 컴퓨터 사용량 ${fmtMB(await histUsage())}":"Used on this computer: ${fmtMB(await histUsage())}","기록을 읽지 못했어요":"Couldn't read the history","아직 저장된 기록이 없어요. 그림을 그리면 몇 분 안에 저장돼요(지금 저장도 돼요).":"Nothing saved yet. It saves within a few minutes after you draw (or use Save now).","레이어 ${p.layers.length}개":"${p.layers.length} layers"," · ${p.changed}개 바뀜":" · ${p.changed} changed"," (빈 레이어)":" (empty layer)","복사":"Copy","복사 중…":"Copying…","복사됨":"Copied","\"${l.name}\"(${fmtTime(p.t).split(' · ')[0]})을 복사했어요 → Edit → Paste on new layer로 붙이세요":"Copied \"${l.name}\" (${fmtTime(p.t).split(' · ')[0]}) → paste it with Edit → Paste on new layer","복사하지 못했어요: ":"Couldn't copy: ","저장 중…":"Saving…","지금 저장":"Save now","지금 상태를 저장했어요":"Saved the current state","마지막 기록과 달라진 게 없어요":"Nothing has changed since the last save","이 보드 기록 지우기":"Clear this board's history","이 보드의 작업 기록을 지웠어요 (Magma 보드는 그대로예요)":"Cleared this board's history (the Magma board itself is unchanged)","지우지 못했어요":"Couldn't delete","보드가 너무 커서 레이어 스트로크를 쓸 수 없어요":"The board is too large for layer stroke","레이어를 고른 뒤 다시 열어 주세요":"Pick a layer, then open this again","\"${L.name}\" 레이어 스트로크를 지웠어요":"Removed the layer stroke from \"${L.name}\"","투명색 사용 중":"Transparent color in use","투명색":"Transparent color"," (${(S.akeys || []).map(comboText).join(', ') || '단축키 없음'}) — 누르면 지금 색과 바꿔요":" (${(S.akeys || []).map(comboText).join(', ') || '단축키 없음'}) — click to swap with the current color","투명색: 그리면 지워져요":"Transparent color: drawing erases","투명색 — 브러시가 지우개가 돼요":"Transparent color — the brush becomes an eraser","원래 색으로 돌아왔어요":"Back to the original color","올가미 채우기를 지우기 모드로 바꾸지 못했어요":"Couldn't switch Lasso fill to erase mode"," 못 했어요: ":" failed: ","지우지":"Erase","투명색 지우기":"Transparent color erase","흐리게 하지":"Blur","잠긴 레이어 획":"Locked layer stroke","투명 부분 잠금이 켜진 레이어라 지울 수 없어요":"This layer has transparent pixel lock on, so it can't be erased","선택 영역이 있으면 고급 브러시로 지울 수 없어요 — 선택을 풀고 다시 해 주세요":"The Advanced Brush can't erase while there's a selection — deselect and try again","흐리게 할 레이어를 먼저 골라 주세요":"Pick a layer to blur first","글자 레이어는 흐리게 할 수 없어요":"Text layers can't be blurred","선택 영역이 있으면 블러를 쓸 수 없어요 — 선택을 풀고 다시 해 주세요":"Blur doesn't work while there's a selection — deselect and try again","흐리게 하지 못했어요: ":"Couldn't blur: ","사각형 선택":"Rectangle Selection","타원 선택":"Ellipse Selection","올가미 선택":"Lasso Selection","리퀴파이":"Liquify","사각형":"Rectangle","타원":"Ellipse","도형":"Shapes","손 (화면 이동)":"Hand (pan)","화면 회전":"Rotate View","확대·축소":"Zoom"," — 누르면 같은 폴더 도구가 펼쳐져요":" — click to open the other tools in this group","레이어 내용 선택 메뉴를 찾지 못했어요":"Couldn't find the layer content selection menu","Magma 편집기를 찾지 못했어요":"Couldn't find the Magma editor","이 레이어를 알아보지 못했어요":"Couldn't recognize this layer","먼저 레이어 하나를 골라 주세요":"Pick a layer first","다른 사람 레이어는 함께 고를 수 없어요":"Other people's layers can't be selected together","지금 레이어는 늘 함께 바뀌어요":"The current layer always changes along with them","한 번에 함께 바꿀 수 있는 레이어는 ${MS_MAX + 1}개까지예요 (되돌리기가 15칸이라서)":"You can change up to ${MS_MAX + 1} layers together at once (undo only has 15 steps)","레이어 ${n + 1}개를 함께 골랐어요 — 변형(Ctrl+T)·이동(V)·눈·속성을 함께 바꿔요":"Selected ${n + 1} layers together — transform (Ctrl+T), move (V), visibility and properties change together","함께 고르기를 풀었어요":"Cleared multi-selection","선택을 풀지 못함":"couldn't deselect","올가미 선택으로 바꾸지 못함":"couldn't switch to Lasso selection","선택 모드를 바꾸지 못함":"couldn't change the selection mode","원래 선택을 다시 긋지 못함":"couldn't redraw the original selection","레이어를 고르지 못함":"couldn't pick the layer","빈 레이어":"empty layer","변형을 시작하지 못함":"couldn't start the transform","왜곡 모드 단추를 찾지 못함":"couldn't find the distort mode button","변형이 시작되지 않음":"transform didn't start","모양이 맞지 않음":"shape doesn't match","모양이 맞지 않음 — Ctrl+Z로 되돌려 주세요":"shape doesn't match — undo with Ctrl+Z","모양이 맞지 않아 그대로 둠":"shape doesn't match, left as is","함께 변형하다 멈췄어요: ":"Stopped while transforming together: ","여러 조각(또는 구멍)으로 된 선택은 지금 레이어만 바뀌어요":"With a selection made of several pieces (or holes), only the current layer changes","선택 영역이 있을 때는 함께 고른 레이어 ${MS_MAX_SEL}개까지만 같이 바뀌어요(레이어마다 되돌리기 3칸) — 지금 레이어만 바뀌어요":"With a selection, only up to ${MS_MAX_SEL} selected layers can change together (3 undo steps per layer) — only the current layer changes","잠긴 레이어(${locked.map((L) => L.name).join(', ')})가 있어 지금 레이어만 바뀌어요":"There are locked layers (${locked.map((L) => L.name).join(', ')}), so only the current layer changes","레이어 ${todo.length}개에 같은 ${ss.kind === 'move' ? '이동' : '변형'}을 하는 중…":"Applying the same ${ss.kind === 'move' ? '이동' : '변형'} to ${todo.length} layers…","앞 레이어에서 멈춤":"stopped at an earlier layer","함께 옮기기":"Move together","함께 변형":"Transform together","${results.length - bad.length}개는 함께 바꿨지만 ${bad.map(([L, e]) => `\"${L.name}\"(${e})`).join(', ')}은 못 바꿨어요":"Changed ${results.length - bad.length} together, but couldn't change ${bad.map(([L, e]) => `\"${L.name}\"(${e})`).join(', ')}","레이어 ${results.length + 1}개를 함께 ${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} (되돌리기는 레이어마다 ${ss.sel ? '3칸: 선택 해제·선택·변형' : '한 칸'})":"${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} ${results.length + 1} layers together (undo per layer: ${ss.sel ? '3칸: 선택 해제·선택·변형' : '한 칸'})","속성을 함께 바꾸다 멈췄어요: ":"Stopped while changing properties together: ","레이어 칸을 찾지 못함":"couldn't find the layer row","불투명도 칸을 찾지 못함":"couldn't find the opacity field","불투명도가 바뀌지 않음":"opacity didn't change","합성 모드를 찾지 못함":"couldn't find the blend mode","합성 모드가 바뀌지 않음":"blend mode didn't change","단추를 찾지 못함":"couldn't find the button","바뀌지 않음":"didn't change","레이어 ${todo.length}개에 같은 속성을 맞추는 중…":"Matching the same properties on ${todo.length} layers…","\"${L.name}\"(고르지 못함)":"\"${L.name}\"(couldn't pick)","속성 함께 바꾸기":"Change properties together","투명 픽셀 잠금":"Lock transparent pixels","잠금":"Lock","클리핑":"Clipping","일부는 못 바꿨어요: ${bad.join(', ')}":"Some couldn't be changed: ${bad.join(', ')}","레이어 ${todo.length + 1}개에 ${Object.keys(ch).map((k) => names[k]).join('·')} 함께 맞췄어요":"Matched ${Object.keys(ch).map((k) => names[k]).join('·')} on ${todo.length + 1} layers","보드가 너무 커서 퀵 마스크를 쓸 수 없어요":"The board is too large for Quick Mask","칠한 모양: Enter = 선택으로 만들기 · Esc = 처음 선택으로 · Ctrl+Z = 한 획 되돌리기":"Painted shape: Enter = make selection · Esc = back to original selection · Ctrl+Z = undo one stroke","화면을 회전·뒤집기 한 상태에서는 퀵 마스크를 선택으로 만들 수 없어요 — 화면을 원래대로 돌리고 Enter":"Quick Mask can't become a selection while the view is rotated/flipped — reset the view, then press Enter","선택을 모두 지웠어요":"Cleared the whole selection","선택 모양을 만들지 못했어요":"Couldn't make the selection shape","퀵 마스크 선택":"Quick Mask selection","퀵 마스크를 선택으로 만들었어요 (${cnt.toLocaleString()}픽셀)":"Turned the Quick Mask into a selection (${cnt.toLocaleString()} px)"," · 작은 조각 ${P.dropped}개는 뺐어요":" · Left out ${P.dropped} small pieces","선택으로 만들지 못했어요: ":"Couldn't make a selection: ","처음 선택으로 돌렸어요":"Restored the original selection","되돌릴 획이 없어요 (Magma 되돌리기는 퀵 마스크에서 나간 뒤에)":"No strokes to undo (use Magma's undo after leaving Quick Mask)","클리핑을 바꾸지 못했어요: ":"Couldn't change clipping: ","다른 사람 레이어는 클리핑할 수 없어요":"Other people's layers can't be clipped","레이어를 고르지 못했어요":"Couldn't pick the layer","클리핑 단추를 찾지 못했어요":"Couldn't find the clipping button","\"${L.name}\" 클리핑 ${L.clippingGroup ? '켬 (아래 레이어 모양 안에만 보여요)' : '끔'}":"\"${L.name}\" clipping ${L.clippingGroup ? '켬 (아래 레이어 모양 안에만 보여요)' : '끔'}","클리핑이 바뀌지 않았어요":"Clipping didn't change","${g.what} 되돌렸어요 (Magma 되돌리기 ${done}칸을 한 번에)":"Undid ${g.what} (${done} Magma undo steps at once)"," · 더 앞의 칸은 15칸 한도로 지워져 있었어요":" · earlier steps were already gone due to the 15-step limit","${g.what} — ${g.n}칸 중 ${done}칸만 되돌렸어요":"${g.what} — undid only ${done} of ${g.n} steps","${r.what} 다시 했어요 (${done}칸을 한 번에)":"Redid ${r.what} (${done} steps at once)","${r.what} — ${r.n}칸 중 ${done}칸만 다시 했어요":"${r.what} — redid only ${done} of ${r.n} steps","칠할 영역을 이 픽셀만큼 넓히거나(+) 좁혀요(−). 0이면 Magma 그대로":"Grows (+) or shrinks (−) the fill area by this many pixels. 0 = Magma's default","확장/축소":"Expand/Shrink","Mode가 opacity·smart이거나 Target layer가 above·below면 확장/축소·빈틈 닫기 없이 Magma 그대로 칠해요":"If Mode is opacity/smart or Target layer is above/below, it fills the normal Magma way, without expand/shrink or gap closing","칠하지 못했어요: ":"Couldn't fill: ","칠할 레이어를 먼저 골라 주세요":"Pick a layer to fill first","그림을 읽지 못했어요":"Couldn't read the image","칠할 곳이 없어요 (너무 많이 좁혔어요)":"Nothing to fill (shrunk too much)","칠할 영역을 만들지 못했어요":"Couldn't create the fill area","올가미 채우기 모드를 맞추지 못해 안전을 위해 멈췄어요":"Stopped for safety: couldn't set the Lasso fill mode","${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀":"${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()} px"," (영역 ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)":" (area ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)"," · 틈 ${ff.bridges}곳 이음":" · bridged ${ff.bridges} gaps","${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀 · 안티에일리어스":"${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()} px · anti-aliased","원 (딱딱)":"Circle (hard)","원 (부드러움)":"Circle (soft)","납작붓":"Flat Brush","연필 (거친)":"Pencil (rough)","스프레이 점":"Spray Dots","붓털":"Bristles","수채 얼룩":"Watercolor Blot","흑연":"Graphite","목탄 끝":"Charcoal Tip","파스텔 덩이":"Pastel Chunk","마른 붓털":"Dry Bristles","납작 붓털":"Flat Bristles","레이크":"Rake","별":"Star","하트":"Heart","잎":"Leaf","삼각형":"Triangle","종이":"Paper","수채 종이":"Watercolor Paper","캔버스 천":"Canvas","노이즈":"Noise","거친 결":"Rough Grain","드로잉지 결":"Drawing Paper","목탄지":"Charcoal Paper","중목 종이":"Medium-Grain Paper","사포":"Sandpaper","빗금":"Hatching","망점":"Halftone","기본 브러시 ":"Basic Brush ","한글이 보이도록 기본 글꼴을 \"${font}\"로 맞췄어요 (끄려면 오른쪽 '자동' 해제)":"Set the default font to \"${font}\" so Korean text shows up (to turn this off, uncheck 'Auto' on the right)","\"${f}\" 글꼴에는 한글이 없어 네모로 보여요 — 글자를 고르고 오른쪽 '한글' 글꼴 단추를 눌러 주세요":"The \"${f}\" font has no Korean characters, so they show as boxes — select the text and click the 'Korean' font button on the right","한글":"Korean","글꼴을 ${f}로 (한글이 보이는 Magma 글꼴)":"Set the font to ${f} (a Magma font that shows Korean)","한글을 치면 자동으로 한글 글꼴로 바꿔요":"Switch to a Korean font automatically when you type Korean","자동":"Auto","내 컴퓨터 글꼴…":"My computer's fonts…","컴퓨터에 설치된 글꼴로 글자를 그림으로 넣어요":"Add text as an image using fonts installed on your computer","글자를 써 주세요":"Please type some text","붙일 레이어를 먼저 골라 주세요":"Pick a layer to paste on first","글자 레이어 말고 그림 레이어를 골라 주세요":"Pick a drawing layer, not a text layer","글자를 붙였어요 — 이동 도구로 옮길 수 있어요":"Text added — you can move it with the Move tool","여기에는 그림이 있는 레이어가 없어요":"There's no layer with a drawing here","\"${L.name}\" 레이어":"Layer \"${L.name}\"","를 골랐어요":" selected"," — 다른 사람 레이어예요":" — it's someone else's layer","채울 레이어를 먼저 골라 주세요":"Pick a layer to fill first","Alt를 떼면 채워요 — 다시 눌러 주세요":"Fills when you release Alt — press it again","올가미 채우기 설정을 바꾸지 못했어요":"Couldn't change the Lasso fill settings","선택 영역을 지웠어요":"Erased the selection","레이어 전체를 지웠어요":"Erased the whole layer","선택 영역을 채웠어요":"Filled the selection","보드 전체를 채웠어요":"Filled the whole board","채우지 못했어요: ":"Couldn't fill: ","레이어 속성 — 브러시 설정 자리에 레이어 속성을 띄워요":"Layer Properties — shows layer properties where the brush settings are","레이어 속성":"Layer Properties","레이어를 고르면 속성이 보여요":"Pick a layer to see its properties","경계 효과 (테두리)":"Border Effect (outline)","테두리 두께":"Border thickness","흐리기":"Blur","테두리 색":"Border color","테두리 안티에일리어싱":"Border anti-aliasing","내 화면에만 보여요 (보드에는 평범한 레이어)":"Only visible on my screen (a normal layer on the board)","효과":"Effect","켜짐":"On","꺼짐":"Off","그리기: 손을 떼면 보드에 들어가요 · Alt: 스포이트 · Shift+클릭: 직선 · Ctrl+Alt 끌기·[ ]: 크기":"Draw: goes onto the board when you release · Alt: eyedropper · Shift+click: straight line · Ctrl+Alt drag / [ ]: size","문지르기: 흐리게(손을 떼면 보드에 들어가요, 되돌리기 2칸) · [ ]: 크기":"Drag: blur (goes onto the board when you release, 2 undo steps) · [ ]: size","빨간 곳 = 선택 · 칠하기: 넣기 · Alt: 반대로 · Enter: 선택으로 · Esc: 처음으로 · [ ]: 크기":"Red = selection · Paint: add · Alt: reverse · Enter: to selection · Esc: start over · [ ]: size","문지르기: 선택(선택이 있으면 추가) · Alt: 빼기 · [ ]: 브러시 크기":"Drag: select (adds to an existing selection) · Alt: subtract · [ ]: brush size","클릭한 영역을 지금 색으로 채워요":"Fills the clicked area with the current color","클릭: 선택 · Shift: 추가 · Alt: 빼기":"Click: select · Shift: add · Alt: subtract","불투명도 (%)":"Opacity (%)","강도 (흐림 반경 px)":"Strength (blur radius px)","밀도 (%)":"Density (%)","선택으로 만들기":"Make Selection","아직 칠한 게 없어요":"Nothing painted yet","처음으로":"Start Over","모두 지우기":"Clear All","선택을 비우고 새로 칠하기":"Empty the selection and paint from scratch","칠하기":"Paint","선택 넣기":"Add to selection","선택 빼기":"Subtract from selection","참조":"Reference","모든 레이어":"All layers","허용 오차":"Tolerance","영역 확장":"Expand area","동작":"Action","선택":"Select","채우기":"Fill","이어진 곳만":"Contiguous","전체 같은 색":"All matching colors","빈틈 닫기":"Close gaps","v${VERSION}으로 업데이트됐어요":"Updated to v${VERSION}","도구":"Tools","색상환":"Color wheel","브러시 목록":"Brush list","레이어":"Layers","펼치기":"Expand","접기":"Collapse","닫기 (Window 메뉴에서 다시 열기)":"Close (reopen from the Window menu)","Window — 패널·화면 배치":"Window — panels & layout","패널":"Panels","화면 모드":"View mode","두 줄":"Two rows","배치 처음으로 (이 모드)":"Reset layout (this mode)","사용자 지정 UI 끄기 (원래 화면)":"Turn off custom UI (original layout)","사용자 지정 UI 켜기":"Turn on custom UI","레이아웃 설정 단추를 찾지 못했어요":"Couldn't find the layout settings button","Magma 화면 조각을 찾지 못함":"couldn't find a Magma screen element","화면 배치에 문제가 생겨 원래 Magma 화면으로 돌렸어요. 다른 기능은 그대로 쓸 수 있어요 (Window 메뉴에서 다시 켜기)":"Something went wrong with the layout, so it switched back to the original Magma layout. Other features still work (turn it back on from the Window menu)","처음 보는 화면 조각: ":"Unknown screen element: "};
+  const I18N = { built: false, exact: new Map(), subs: [], pats: [], obs: null, busy: false };
+  const I18N_SCOPE = '[class*="mw-"], [class*="mx-"]';
+  const I18N_ATTRS = ['title', 'placeholder', 'aria-label', 'tooltip'];
+  function i18nBuild() {
+    if (I18N.built) return;
+    I18N.built = true;
+    const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    for (const [ko, en] of Object.entries(I18N_EN)) {
+      if (!en || ko === en) continue;
+      if (ko.includes('${')) {
+        // `${…}` 자리는 아무 글자나 → 영어 쪽 같은 식 자리에 그대로
+        const parts = ko.split(/(\$\{[^}]*\})/), exprs = [];
+        let re = '';
+        for (const p of parts) { if (/^\$\{[^}]*\}$/.test(p)) { exprs.push(p); re += '(.+?)'; } else re += esc(p.replace(/\\n/g, '\n').replace(/\\(['"`])/g, '$1')); }
+        if (!HANGUL.test(parts.filter((p, i) => i % 2 === 0).join(''))) continue;
+        I18N.pats.push({ re: new RegExp(re, 'g'), exprs, en: en.replace(/\\n/g, '\n').replace(/\\(['"`])/g, '$1') });
+      } else {
+        const k = ko.replace(/\\n/g, '\n').replace(/\\(['"`])/g, '$1'), v = en.replace(/\\n/g, '\n').replace(/\\(['"`])/g, '$1');
+        I18N.exact.set(k.trim(), v.trim());
+        if (k.trim().length >= 2) I18N.subs.push([k, v]);
+      }
+    }
+    I18N.subs.sort((a, b) => b[0].length - a[0].length);
+    I18N.pats.sort((a, b) => b.re.source.length - a.re.source.length);
+  }
+  function i18nText(str) {
+    if (!str || !HANGUL.test(str)) return str;
+    i18nBuild();
+    const t = str.trim();
+    if (I18N.exact.has(t)) { const lead = str.slice(0, str.indexOf(t)), tail = str.slice(str.indexOf(t) + t.length); return lead + I18N.exact.get(t) + tail; }
+    let out = str;
+    for (const p of I18N.pats) {
+      if (!HANGUL.test(out)) break;
+      p.re.lastIndex = 0;
+      out = out.replace(p.re, (...m) => { let r = p.en; p.exprs.forEach((ex, i) => { r = r.split(ex).join(m[i + 1]); }); return r; });
+    }
+    for (const [k, v] of I18N.subs) { if (!HANGUL.test(out)) break; if (out.includes(k)) out = out.split(k).join(v); }
+    return out;
+  }
+  function i18nNode(n, en) {
+    if (n.nodeType === 3) {
+      if (en) {
+        if (n.__mwOut === n.data) return;
+        if (!HANGUL.test(n.data)) return;
+        n.__mwKo = n.data; const v = i18nText(n.data); n.__mwOut = v; if (v !== n.data) n.data = v;
+      } else if (n.__mwKo != null && n.__mwOut === n.data) { n.data = n.__mwKo; n.__mwOut = null; n.__mwKo = null; }
+      return;
+    }
+    if (n.nodeType !== 1) return;
+    for (const a of I18N_ATTRS) {
+      const v = n.getAttribute(a); if (v == null) continue;
+      const ko = (n.__mwKoA || (n.__mwKoA = {}));
+      if (en) { if (HANGUL.test(v) && v !== (n.__mwOutA || {})[a]) { ko[a] = v; const t = i18nText(v); (n.__mwOutA || (n.__mwOutA = {}))[a] = t; if (t !== v) n.setAttribute(a, t); } }
+      else if (ko[a] != null && (n.__mwOutA || {})[a] === v) { n.setAttribute(a, ko[a]); ko[a] = null; }
+    }
+  }
+  function i18nTree(root, en) {
+    i18nNode(root, en);
+    if (root.nodeType !== 1) return;
+    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+    let n; while ((n = w.nextNode())) i18nNode(n, en);
+  }
+  const inScope = (n) => { const el = n.nodeType === 1 ? n : n.parentElement; return !!(el && el.closest && el.closest(I18N_SCOPE)); };
+  function i18nApplyAll() {
+    const en = LANG_EN();
+    for (const el of document.querySelectorAll(I18N_SCOPE)) if (!el.parentElement || !el.parentElement.closest(I18N_SCOPE)) i18nTree(el, en);
+  }
+  function i18nStart() {
+    if (I18N.obs) return;
+    I18N.obs = new MutationObserver((recs) => {
+      if (I18N.busy) return;
+      const en = LANG_EN();
+      if (!en) return; // 한국어 화면: 원문 그대로
+      I18N.busy = true;
+      try {
+        for (const r of recs) {
+          if (r.type === 'childList') { for (const n of r.addedNodes) if (inScope(n)) i18nTree(n, true); }
+          else if (inScope(r.target)) i18nNode(r.target, true);
+        }
+      } catch (e) { /* 번역 실패는 무시 (원문이 보일 뿐) */ } finally { I18N.busy = false; }
+    });
+    I18N.obs.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: I18N_ATTRS });
+    i18nApplyAll();
+  }
+  let i18nLast = null;
+  function i18nTick() { const en = LANG_EN(); if (en !== i18nLast) { i18nLast = en; I18N.busy = true; try { i18nApplyAll(); } finally { I18N.busy = false; } } }
+  function setExtLang(v) { // 'auto' | 'ko' | 'en'
+    try { const st = JSON.parse(localStorage.getItem('magmaWand.settings') || '{}'); if (v === 'auto') delete st.lang; else st.lang = v; localStorage.setItem('magmaWand.settings', JSON.stringify(st)); } catch { /* 무시 */ }
+    S.lang = v === 'auto' ? undefined : v; saveSettings();
+    LANG_AT = 0; i18nTick(); if (DK.on) dkRender();
+  }
+  cleanups.push(() => { I18N.obs?.disconnect(); I18N.obs = null; });
+
   // Magma는 페이지 이동 없이 화면을 바꾸므로 주기적으로 상태를 맞춘다
   const tick = setInterval(() => {
+    try { i18nStart(); i18nTick(); } catch (e) { /* 무시 */ }
     try { dkTick(); } catch (e) { console.warn('[MagmaWand] 사용자 지정 UI', e); }
     if (!getCanvas()) { if (S.active) setActive(false); return; }
     ensureStyle();
