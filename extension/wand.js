@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.20.0';
+  const VERSION = '0.21.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -1888,7 +1888,8 @@
       // 색 혼합: BrushWaterColor 1 = 블렌드, 그 밖 = 물감 섞기 · 물감량 BrushMixColor · 물감 농도 BrushMixAlpha · 색 늘이기 BrushMixColorExtension
       mix: v.BrushUseWaterColor ? { mode: num(v.BrushWaterColor, 0) === 1 ? 'blend' : 'paint', amount: num(v.BrushMixColor, 50) / 100, density: num(v.BrushMixAlpha, 50) / 100,
         stretch: num(v.BrushMixColorExtension, 10) / 100, amountEff: parseEffector(v.BrushMixColorEffector), densEff: parseEffector(v.BrushMixAlphaEffector), ref: 'layer' } : null,
-      unsupported: [v.BrushUseWaterEdge && '수채 경계', v.UseDualBrush && '2중 브러시', num(v.CompositeMode, 0) !== 0 && '합성 모드'].filter(Boolean),
+      wedge: v.BrushUseWaterEdge ? { on: true, radius: num(v.BrushWaterEdgeRadius, 3), alpha: num(v.BrushWaterEdgeAlphaPower, 20) / 100, value: num(v.BrushWaterEdgeValuePower, 0) / 100 } : null,
+      unsupported: [v.UseDualBrush && '2중 브러시', num(v.CompositeMode, 0) !== 0 && '합성 모드'].filter(Boolean),
     };
     brush.baseSize = brush.size;
     return { brush, tips, texture };
@@ -2016,7 +2017,8 @@ void main(){
   vec4 c = uMode > 0.5 ? texelFetch(uS, ivec2(p), 0) : texture(uS, p / uDoc);
   float k = uOp;
   if (uUseTex > 0.5) { float t = texture(uTex, p / uTexScale).r; if (uTexInv > 0.5) t = 1.0 - t; k *= mix(1.0, t, uTexDen); }
-  o = c * k;
+  if (uMode > 0.5) o = c.a > 0.00001 ? vec4(clamp(c.rgb / c.a, 0.0, 1.0), clamp(c.a * k, 0.0, 1.0)) : vec4(0.0);
+  else o = c * k;
 }`;
   const advComp = (gl, vs, fs) => {
     const mk = (t, s) => { const sh = gl.createShader(t); gl.shaderSource(sh, s); gl.compileShader(sh); if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error('셰이더: ' + gl.getShaderInfoLog(sh)); return sh; };
@@ -2057,7 +2059,9 @@ void main(){
     }
     if (ADV.W !== W || ADV.H !== H || !ADV.S) {
       for (const t of [ADV.S, ADV.C]) if (t) gl.deleteTexture(t);
-      const mk = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, W, H);
+      // 에어브러시처럼 아주 옅게 여러 번 겹쳐도 색이 틀어지지 않게 16비트 실수 버퍼 (보드가 아주 크면 메모리 때문에 8비트)
+      ADV.float = W * H <= 9e6 && !!gl.getExtension('EXT_color_buffer_float');
+      const mk = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texStorage2D(gl.TEXTURE_2D, 1, ADV.float ? gl.RGBA16F : gl.RGBA8, W, H);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; };
       ADV.S = mk(); ADV.C = mk(); ADV.W = W; ADV.H = H; ADV.cBox = null;
@@ -2113,10 +2117,21 @@ void main(){
     const canvas = getCanvas(), E = getEditor();
     if (!canvas || !E || !brush) return false;
     advEnsureGL(canvas, E.drawing.w, E.drawing.h);
+    // 기본 모양·텍스처는 그리는 방법이 좋아지면 새 그림으로 바꿔 둔다
+    let changed = false;
+    for (const t of [...(brush.tips || []), ...(brush.texture ? [brush.texture] : [])]) {
+      if (!t || !t.builtinId || t.bver === BUILTIN_VER) continue;
+      const item = BUILTIN_TIPS.find((x) => x.id === t.builtinId) || BUILTIN_TEX.find((x) => x.id === t.builtinId);
+      if (!item) continue;
+      t.key = await advPutImage(await builtinBlob(item, item.size || 256)); t.bver = BUILTIN_VER; changed = true;
+    }
+    if (changed) { ADV.tips.clear(); await advSaveBrush(brush); }
     const tips = [];
-    for (const t of brush.tips || []) { if (t.key) { const i = await advMaskTexture(t.key, false); if (i) tips.push(i); } }
+    const proc = (brush.tips || []).length === 1 && PROC_TIPS.has(brush.tips[0].builtinId); // 원형: 수학 원(완벽한 안티에일리어싱)
+    if (proc && brush.tips[0].builtinId === 'round-soft' && brush.hardness >= 0.99) { brush.hardness = 0.15; await advSaveBrush(brush); }
+    if (!proc) for (const t of brush.tips || []) { if (t.key) { const i = await advMaskTexture(t.key, false); if (i) tips.push(i); } }
     const texInfo = brush.texture && brush.texture.key ? await advMaskTexture(brush.texture.key, true) : null;
-    ADV.tipTex = tips; ADV.texInfo = texInfo; ADV.brush = brush;
+    ADV.tipTex = tips; ADV.texInfo = texInfo; ADV.brush = brush; ADV.proc = proc;
     return true;
   }
   const hsv = (r, g, b) => { const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn; let h = 0;
@@ -2137,6 +2152,7 @@ void main(){
     const s = { pts: [], acc: 0, dist: 0, last: null, speed: 0, idx: 0, dir: 1, box: null, color: advColor(), erase: !!S.alpha, v: 0, n: 0 };
     s.hsv = hsv(...s.color);
     if (b.mix && b.mix.mode !== 'none' && !s.erase) s.mix = advMixStart(b);
+    if (ADV.cv) ADV.cv.style.mixBlendMode = b.blend === 'multiply' && !s.erase ? 'multiply' : '';
     ADV.stroke = s;
     advAddPoint(e);
     return true;
@@ -2160,18 +2176,28 @@ void main(){
     if (L < 0.01) return;
     const dt = Math.max(1, t - a.t);
     s.speed = s.speed * 0.7 + (L / dt) * 0.3;
-    const ang = Math.atan2(dy, dx);
+    // 진행 방향은 브러시 크기의 0.6배 거리에 걸쳐 천천히 따라간다 (급커브에서 끝 모양이 홱 돌지 않게)
+    const raw = Math.atan2(dy, dx);
+    const ang0 = s.dirAng == null ? raw : s.dirAng;
+    if (s.dirAng == null) s.dirAng = raw;
+    else { let d = raw - s.dirAng; d = Math.atan2(Math.sin(d), Math.cos(d)); s.dirAng += d * Math.min(1, L / Math.max(2, b.size * 0.6)); }
+    let dA = s.dirAng - ang0; dA = Math.atan2(Math.sin(dA), Math.cos(dA));
+    // 끝 모양이 진행 방향을 따라 돌 때: 이 구간에서 도는 만큼 도장을 촘촘히 찍고 각도도 조금씩 돌린다
+    // (끝 모양 가장자리가 한 도장에 1픽셀 넘게 휙 돌지 않게 → 급커브 바깥에 깃털처럼 삐죽한 자국이 안 생김)
+    const turns = (b.rotMask & 0x40) || b.ribbon;
+    const rotStep = turns ? Math.abs(dA) * b.size * 0.5 : 0;
     let walked = 0;
-    for (let guard = 0; guard < 5000; guard++) {
+    for (let guard = 0; guard < 20000; guard++) {
       const pNow = a.p + (pr - a.p) * (walked / L);
       const size = Math.max(0.5, b.size * effectorValue(b.sizeEff, pNow, s.speed, 1));
-      const step = Math.max(0.3, size * b.interval * effectorValue(b.intervalEff, pNow, s.speed, Math.random()));
+      let step = Math.max(0.3, size * b.interval * effectorValue(b.intervalEff, pNow, s.speed, Math.random()));
+      if (rotStep > 1) step = Math.max(0.15, Math.min(step, L / rotStep));
       const need = step - s.acc;
       if (walked + need > L) { s.acc += L - walked; break; }
       walked += need; s.acc = 0;
       const f = walked / L;
       s.dist += need;
-      advStamp(a.x + dx * f, a.y + dy * f, a.p + (pr - a.p) * f, ang, need);
+      advStamp(a.x + dx * f, a.y + dy * f, a.p + (pr - a.p) * f, ang0 + dA * f, need);
     }
     s.last = cur;
   }
@@ -2284,9 +2310,10 @@ void main(){
     gl.uniform3f(P.u.uInv0, m[0] / k, m[2] / k, m[4]); gl.uniform3f(P.u.uInv1, m[1] / k, m[3] / k, m[5]);
     gl.uniform1f(P.u.uH, ADV.cv.height); gl.uniform2f(P.u.uDoc, ADV.W, ADV.H); gl.uniform1f(P.u.uMode, 0);
     advTexUniforms(P);
-    for (const [tex, op] of [[ADV.C, ADV.cOp || 1], [ADV.S, advOpacity()]]) {
+    for (const [tex, op] of [[ADV.C, ADV.cBaked ? 1 : (ADV.cOp || 1)], [ADV.S, advOpacity()]]) {
       if (tex === ADV.C && !ADV.cBox) continue;
       if (tex === ADV.S && !ADV.stroke) continue;
+      if (tex === ADV.C && ADV.cBaked) gl.uniform1f(P.u.uUseTex, 0); else advTexUniforms(P);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(P.u.uS, 0);
       gl.uniform1f(P.u.uOp, op);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -2334,37 +2361,107 @@ void main(){
     const px = new Uint8Array(box.w * box.h * 4);
     gl.readPixels(0, 0, box.w, box.h, gl.RGBA, gl.UNSIGNED_BYTE, px);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.bindVertexArray(null); gl.deleteTexture(out);
-    // 화면에는 확정될 때까지 잠깐 남겨 둔다 (S ↔ C 바꾸고 새 S는 비움)
+    // 화면에는 확정될 때까지 남겨 둔다 (S ↔ C 바꾸고 새 S는 비움)
     if (ADV.cBox) advClear(ADV.C, ADV.cBox);
-    const t = ADV.C; ADV.C = ADV.S; ADV.S = t; ADV.cBox = box; ADV.cOp = op;
-    advKick();
-    advClipToSelection(px, box);
-    // 미리곱셈 → 일반 알파
+    const t = ADV.C; ADV.C = ADV.S; ADV.S = t; ADV.cBox = box; ADV.cOp = op; ADV.cBaked = false;
+    // px = 일반 알파(GPU에서 미리곱셈을 풀어 줌) — 선택 밖 잘라내기, 수채 경계
+    advClipToSelection(px, box, false);
+    if (!s.erase && bb && bb.wedge && bb.wedge.on) advWaterEdge(px, box.w, box.h, bb.wedge);
     let any = false;
-    for (let i = 0; i < px.length; i += 4) {
-      const a = px[i + 3];
-      if (a) { any = true; if (a < 255) { px[i] = Math.min(255, (px[i] * 255) / a); px[i + 1] = Math.min(255, (px[i + 1] * 255) / a); px[i + 2] = Math.min(255, (px[i + 2] * 255) / a); } }
-    }
-    const done = () => { clearTimeout(ADV.cTimer); ADV.cTimer = setTimeout(() => { if (ADV.cBox === box) { advClear(ADV.C, box); ADV.cBox = null; advKick(); } }, 260); };
+    for (let i = 3; i < px.length; i += 4) if (px[i]) { any = true; break; }
+    advBake(px, box); // 화면에는 실제로 들어갈 모습 그대로
+    advKick();
+    const blend = !s.erase && bb && bb.blend === 'multiply' ? 'multiply' : 'normal';
+    // 붙여넣은 그림이 레이어에 실제로 들어간 걸 본 그 다음 프레임에 미리보기를 지운다 (진해졌다 연해지는 깜빡임 없음)
+    const clearNow = () => { clearTimeout(ADV.cTimer); if (ADV.cBox === box) { advClear(ADV.C, box); ADV.cBox = null; ADV.cBaked = false; if (ADV.cv && !ADV.stroke) ADV.cv.style.mixBlendMode = ''; advShow(); advKick(); } };
+    const done = () => requestAnimationFrame(clearNow);
+    ADV.cTimer = setTimeout(clearNow, 4000); // 혹시 확인이 안 되면
     if (!any) { done(); return; }
     if (s.erase) { // 투명색: 그 질감 그대로 지우기
-      ADV.commitQ = ADV.commitQ.then(() => advEraseCommit(px, box)).catch((e) => { console.warn('[MagmaWand] 지우기 실패', e); toast('지우지 못했어요: ' + (e && e.message || e)); }).finally(done);
+      ADV.commitQ = ADV.commitQ.then(() => advEraseCommit(px, box, clearNow)).catch((e) => { console.warn('[MagmaWand] 지우기 실패', e); toast('지우지 못했어요: ' + (e && e.message || e)); }).finally(done);
       return;
     }
     ADV.commitQ = ADV.commitQ.then(async () => {
       try {
+        const E = getEditor(), L = E && msActive(E);
+        if (blend === 'multiply' && E && L) { await advMultiplyCommit(E, L, px, box, clearNow); return; }
         const W = ADV.W, H = ADV.H;
         const oc = new OffscreenCanvas(W, H);
         oc.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(px.buffer), box.w, box.h), box.x, box.y);
         const blob = await oc.convertToBlob({ type: 'image/png' });
         const dt = new DataTransfer();
         dt.items.add(new File([blob], 'brush.png', { type: 'image/png' }));
+        const probe = E && L ? landProbe(E, L, px, box) : null;
         document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+        if (probe) await swapWhenLanded(probe.check, clearNow);
       } catch (e) {
         console.warn('[MagmaWand] 획 붙이기 실패', e);
         toast('획을 보드에 넣지 못했어요: ' + (e && e.message || e));
       } finally { done(); }
     });
+  }
+
+  // ----- 획 확정 도우미: 구운 미리보기 · 수채 경계 · 곱하기 -----
+  // 확정할 그림(px, 일반 알파)을 화면용 버퍼 C에 그대로 올려 둔다 → 붙여넣은 그림과 똑같은 모습이라 바뀌는 순간이 안 보인다
+  function advBake(px, box) {
+    const gl = ADV.gl;
+    if (!gl || !ADV.C) return;
+    gl.bindTexture(gl.TEXTURE_2D, ADV.C);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    if (ADV.float) {
+      const f = new Float32Array(px.length);
+      for (let i = 0; i < px.length; i += 4) { const a = px[i + 3] / 255; f[i] = px[i] / 255 * a; f[i + 1] = px[i + 1] / 255 * a; f[i + 2] = px[i + 2] / 255 * a; f[i + 3] = a; }
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, box.x, box.y, box.w, box.h, gl.RGBA, gl.FLOAT, f);
+    } else {
+      const u = new Uint8Array(px.length);
+      for (let i = 0; i < px.length; i += 4) { const a = px[i + 3]; u[i] = px[i] * a / 255; u[i + 1] = px[i + 1] * a / 255; u[i + 2] = px[i + 2] * a / 255; u[i + 3] = a; }
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, box.x, box.y, box.w, box.h, gl.RGBA, gl.UNSIGNED_BYTE, u);
+    }
+    ADV.cBaked = true;
+  }
+  // 수채 경계 (클립 스튜디오 '수채 경계'): 물이 마르며 가장자리에 물감이 고인 것처럼 테두리 안쪽 띠를 진하게
+  //  범위(px) 안에서 '획 알파 − 흐린 알파'가 큰 곳 = 가장자리. 투명도 영향만큼 알파를, 명도 영향만큼 색을 진하게.
+  function advWaterEdge(px, w, h, we) {
+    const r = Math.max(1, Math.round(we.radius || 4));
+    const A = new Float32Array(w * h);
+    for (let i = 0; i < A.length; i++) A[i] = px[i * 4 + 3] / 255;
+    // 상자 흐림 두 번(가로·세로) × 2
+    const tmp = new Float32Array(A.length);
+    let B = A.slice();
+    for (let pass = 0; pass < 2; pass++) {
+      for (let y = 0; y < h; y++) { let s = 0, n = 0; const row = y * w;
+        for (let x = -r; x < w; x++) { const ax = x + r; if (ax < w) { s += B[row + ax]; n++; } const rx = x - r - 1; if (rx >= 0) { s -= B[row + rx]; n--; } if (x >= 0) tmp[row + x] = s / Math.max(1, n); } }
+      for (let x = 0; x < w; x++) { let s = 0, n = 0;
+        for (let y = -r; y < h; y++) { const ay = y + r; if (ay < h) { s += tmp[ay * w + x]; n++; } const ry = y - r - 1; if (ry >= 0) { s -= tmp[ry * w + x]; n--; } if (y >= 0) B[y * w + x] = s / Math.max(1, n); } }
+    }
+    const ap = we.alpha == null ? 0.6 : we.alpha, vp = we.value == null ? 0.3 : we.value;
+    for (let i = 0; i < A.length; i++) {
+      const a = A[i];
+      if (a <= 0.003) continue;
+      const e = Math.max(0, Math.min(1, (a - B[i]) * 2.5)); // 가장자리 정도
+      if (e <= 0) continue;
+      const na = Math.min(1, a + (1 - a) * ap * e + a * ap * e * 0.6);
+      px[i * 4 + 3] = Math.round(na * 255);
+      const dk = 1 - vp * e * 0.55;
+      px[i * 4] *= dk; px[i * 4 + 1] *= dk; px[i * 4 + 2] *= dk;
+    }
+  }
+  // 곱하기 합성 획: 레이어 그림 × 획 색 (투명한 곳은 그냥 칠함) → 비우기 + 붙여넣기 (되돌리기 2칸, 묶음 되돌리기로 한 번에)
+  async function advMultiplyCommit(E, L, px, box, onLanded) {
+    if (L.opacityLocked) { toast('투명 픽셀 잠금 레이어에는 곱하기 브러시를 아직 못 써요'); return; }
+    const before = readLayerEff(E, L, box), after = new Uint8ClampedArray(before.length);
+    for (let i = 0; i < px.length; i += 4) {
+      const As = px[i + 3] / 255, Ab = before[i + 3] / 255;
+      if (As <= 0) { after[i] = before[i]; after[i + 1] = before[i + 1]; after[i + 2] = before[i + 2]; after[i + 3] = before[i + 3]; continue; }
+      const Ao = As + Ab * (1 - As);
+      for (let c = 0; c < 3; c++) {
+        const Cs = px[i + c] / 255, Cb = before[i + c] / 255;
+        const co = As * (1 - Ab) * Cs + As * Ab * (Cb * Cs) + (1 - As) * Ab * Cb;
+        after[i + c] = Math.round(Math.min(1, co / Ao) * 255);
+      }
+      after[i + 3] = Math.round(Ao * 255);
+    }
+    await replaceLayerRegion(E, L, box, before, after, '칠하지', onLanded);
   }
 
   // ---------- 고급 브러시 ③ 도구 연결 (입력·커서·브러시 고르기) ----------
@@ -2390,7 +2487,7 @@ void main(){
     if (ADV.stroke || BSZ.on) return;
     if (!ADV.brush) { toast('먼저 오른쪽 설정 칸에서 브러시(.sut)를 가져와 주세요'); return; }
     if (ADV.brush.erase) { toast('이 브러시는 지우개·특수 합성이라 아직 쓸 수 없어요'); return; }
-    if (ADV.brush.tips.length && !ADV.tipTex.length) { toast('이 브러시는 끝 모양 PNG가 필요해요 — 설정 칸의 "끝 모양 PNG 넣기"를 눌러 주세요'); return; }
+    if (ADV.brush.tips.length && !ADV.tipTex.length && !ADV.proc) { toast('이 브러시는 끝 모양 PNG가 필요해요 — 설정 칸의 "끝 모양 PNG 넣기"를 눌러 주세요'); return; }
     const E = getEditor();
     if (!E) return;
     const L = E.model.user.activeLayers && E.model.user.activeLayers[0];
@@ -2466,7 +2563,7 @@ void main(){
     return { c, a: a + (1 - a) * den };
   }
   // 선택 영역이 있으면 획을 그 안으로 잘라낸다 (px = 미리곱셈 RGBA, box 크기, 위에서 아래 줄 순서)
-  function advClipToSelection(px, box) {
+  function advClipToSelection(px, box, premult = true) {
     const E = getEditor();
     const se = E && E.model.user.selection, sb = se && se.bounds;
     if (!sb || !(sb.w > 0) || !(sb.h > 0) || !se.poly || !Array.isArray(se.poly.segments)) return;
@@ -2482,7 +2579,8 @@ void main(){
       const k = mk[i + 3];
       if (k === 255) continue;
       if (!k) { px[i] = px[i + 1] = px[i + 2] = px[i + 3] = 0; continue; }
-      px[i] = px[i] * k / 255; px[i + 1] = px[i + 1] * k / 255; px[i + 2] = px[i + 2] * k / 255; px[i + 3] = px[i + 3] * k / 255;
+      if (premult) { px[i] = px[i] * k / 255; px[i + 1] = px[i + 1] * k / 255; px[i + 2] = px[i + 2] * k / 255; }
+      px[i + 3] = px[i + 3] * k / 255;
     }
   }
   // 보드 좌표의 점을 사용자 입력처럼 (Shift+클릭 직선의 시작점)
@@ -2654,7 +2752,7 @@ void main(){
         if (picker) { picker.remove(); picker = null; return; }
         picker = builtinPicker(list, async (item) => {
           try {
-            await applyBlob(t, await builtinBlob(item), tex, { builtinId: item.id });
+            await applyBlob(t, await builtinBlob(item), tex, { builtinId: item.id, bver: BUILTIN_VER });
             tx.querySelector('.mw-hist-meta').textContent = '기본 모양: ' + item.name;
             img.src = await builtinThumb(item);
             if (tex) brush.texDensity = brush.texDensity || 0.5;
@@ -2773,7 +2871,20 @@ void main(){
         slider('흐름(밀도)', ...pct('flow'), 1, 100, 1, '%'),
         effRow('흐름 효과', 'flowEff'),
         check('안티에일리어스', () => b.aa, (v) => { b.aa = v ? 1 : 0; }),
+        seg('합성 모드', [['normal', '보통'], ['multiply', '곱하기']], () => b.blend || 'normal', (v) => { b.blend = v; }),
+        Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: '곱하기: 획마다 아래 그림과 곱해져 겹칠수록 진해져요(수채 덧칠). 레이어를 비우고 다시 넣는 방식이라 되돌리기 2칸이에요(Ctrl+Z 한 번에 되돌아가요).' }),
       ],
+      '수채 경계': () => {
+        const we = () => b.wedge || (b.wedge = { on: false, radius: 6, alpha: 0.55, value: 0.35 });
+        we();
+        return [
+          check('수채 경계 켜기', () => b.wedge.on, (v) => { b.wedge.on = v; }),
+          slider('범위', () => b.wedge.radius, (v) => { b.wedge.radius = v; }, 1, 40, 1, 'px'),
+          slider('투명도 영향', () => Math.round(b.wedge.alpha * 100), (v) => { b.wedge.alpha = v / 100; }, 0, 100, 1, '%'),
+          slider('명도 영향', () => Math.round(b.wedge.value * 100), (v) => { b.wedge.value = v / 100; }, 0, 100, 1, '%'),
+          Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: '물이 마르면서 가장자리에 물감이 고인 것처럼 획 테두리 안쪽을 진하게 해요. 손을 떼는 순간 적용돼요.' }),
+        ];
+      },
       '색 혼합': () => {
         const mx = () => b.mix || (b.mix = { mode: 'none', amount: 0.5, density: 0.8, stretch: 0.3, amountEff: null, densEff: null, ref: 'layer' });
         mx();
@@ -2870,14 +2981,15 @@ void main(){
   // ---------- 고급 브러시 ⑤ 프리셋 (클립 스튜디오 기본 브러시처럼 바로 쓰는 묶음) ----------
   const effP = (min) => ({ pressure: { min, curve: null } });
   const ADV_PRESETS = [
-    { name: '연필', tip: 'pencil', tex: 'paper', o: { size: 5, sizeEff: effP(0.4), flow: 0.9, flowEff: effP(0.25), interval: 0.1, texDensity: 0.45, smoothing: 8 } },
-    { name: '진한 연필', tip: 'pencil', tex: 'paper', o: { size: 7, sizeEff: effP(0.5), flow: 1, interval: 0.08, texDensity: 0.25, smoothing: 8 } },
+    { name: '연필', tip: 'pencil', tex: 'paper', o: { size: 6, sizeEff: effP(0.5), flow: 0.85, flowEff: effP(0.2), interval: 0.06, texDensity: 0.7, texScale: 0.6, smoothing: 8 } },
+    { name: '진한 연필', tip: 'pencil', tex: 'paper', o: { size: 8, sizeEff: effP(0.55), flow: 1, flowEff: effP(0.45), interval: 0.05, texDensity: 0.45, texScale: 0.6, smoothing: 8 } },
     { name: 'G펜', tip: 'round-hard', o: { size: 6, sizeEff: effP(0.05), interval: 0.05, smoothing: 25, taperIn: 15, taperOut: 15 } },
     { name: '붓펜', tip: 'round-hard', o: { size: 14, thickness: 0.8, rotation: 30, sizeEff: effP(0.1), interval: 0.05, smoothing: 20, taperIn: 30, taperOut: 40 } },
     { name: '마커', tip: 'square', o: { size: 16, thickness: 0.35, rotation: 45, rotMask: 0, flow: 0.55, opacity: 0.9, interval: 0.04, sizeEff: null } },
-    { name: '에어브러시', tip: 'round-soft', o: { size: 120, hardness: 0, flow: 0.08, flowEff: effP(0.1), interval: 0.15, sizeEff: null } },
-    { name: '수채', tip: 'watercolor', tex: 'paper', o: { size: 60, flow: 0.35, interval: 0.12, rotMask: 0x80, rotRandom: 1, texDensity: 0.5, sizeEff: effP(0.5),
-      mix: { mode: 'blend', amount: 0.55, density: 0.4, stretch: 0.2, amountEff: null, densEff: null, ref: 'layer' } } },
+    { name: '에어브러시', tip: 'round-soft', o: { size: 120, hardness: 0, flow: 0.06, flowEff: effP(0.1), interval: 0.08, sizeEff: null } },
+    { name: '수채', tip: 'watercolor', tex: 'wcpaper', o: { size: 60, flow: 0.45, opacity: 0.85, interval: 0.06, rotMask: 0x80, rotRandom: 0.3, texDensity: 0.18, sizeEff: effP(0.5),
+      blend: 'multiply', wedge: { on: true, radius: 5, alpha: 0.75, value: 0.45 },
+      mix: { mode: 'blend', amount: 0.7, density: 0.5, stretch: 0.2, amountEff: null, densEff: null, ref: 'layer' } } },
     { name: '유화 (물감 섞기)', tip: 'bristle', tex: 'canvas', o: { size: 40, flow: 0.9, thickness: 0.7, rotMask: 0x40, interval: 0.06, texDensity: 0.35, sizeEff: effP(0.4),
       mix: { mode: 'paint', amount: 0.55, density: 1, stretch: 0.55, amountEff: effP(0.3), densEff: null, ref: 'layer' } } },
     { name: '구아슈', tip: 'flat', o: { size: 30, thickness: 0.6, rotMask: 0x40, interval: 0.05, sizeEff: effP(0.3),
@@ -2886,8 +2998,10 @@ void main(){
       mix: { mode: 'paint', amount: 0.2, density: 0.85, stretch: 0.4, amountEff: null, densEff: null, ref: 'layer' } } },
     { name: '손끝 (문지르기)', tip: 'round-soft', o: { size: 40, hardness: 0.3, flow: 0.7, interval: 0.05, sizeEff: null,
       mix: { mode: 'paint', amount: 0, density: 1, stretch: 0.85, amountEff: null, densEff: null, ref: 'layer' } } },
-    { name: '분필', tip: 'chalk', tex: 'canvas', o: { size: 24, flow: 0.8, rotMask: 0x80, rotRandom: 1, texDensity: 0.7, texPerStamp: true, interval: 0.1 } },
-    { name: '크레용', tip: 'chalk', tex: 'paper', o: { size: 14, flow: 0.95, rotMask: 0x80, rotRandom: 1, texDensity: 0.8, sizeEff: effP(0.6), interval: 0.08 } },
+    { name: '분필', tip: 'chalk', tex: 'rough', o: { size: 24, flow: 0.85, rotMask: 0x80, rotRandom: 1, texDensity: 0.75, interval: 0.08 } },
+    { name: '크레용', tip: 'chalk', tex: 'rough', o: { size: 14, flow: 0.95, rotMask: 0x80, rotRandom: 1, texDensity: 0.85, texScale: 0.7, sizeEff: effP(0.6), interval: 0.06 } },
+    { name: '수채 번짐 (곱하기)', tip: 'round-soft', tex: 'wcpaper', o: { size: 90, hardness: 0.2, flow: 0.25, opacity: 0.7, interval: 0.08, texDensity: 0.3, sizeEff: effP(0.6),
+      blend: 'multiply', wedge: { on: true, radius: 10, alpha: 0.6, value: 0.3 } } },
     { name: '스프레이', tip: 'round-hard', o: { size: 60, flow: 0.7, interval: 0.15, sizeEff: null, spray: { size: 2, sync: false, density: 40, bias: 0, sizeEff: null, densEff: effP(0.2) } } },
     { name: '반짝이', tip: 'sparkle', o: { size: 80, interval: 0.5, rotMask: 0x80, rotRandom: 1, sizeEff: null, jitter: { h: 0, s: 0, v: 30 },
       spray: { size: 10, sync: false, density: 3, bias: 0.3, sizeEff: { random: { min: 0.4 } }, densEff: null } } },
@@ -2908,7 +3022,7 @@ void main(){
     if (b.rotMask == null) b.rotMask = 3;
     if (pr.tex) {
       const it = BUILTIN_TEX.find((t) => t.id === pr.tex);
-      if (it) b.texture = { key: await advPutImage(await builtinBlob(it)), thumbKey: null, needPng: false, builtinId: it.id };
+      if (it) b.texture = { key: await advPutImage(await builtinBlob(it)), thumbKey: null, needPng: false, builtinId: it.id, bver: BUILTIN_VER };
     }
     await advSaveBrush(b);
     return b;
@@ -3194,6 +3308,11 @@ void main(){
     if (!getCanvas() || document.querySelector('.modal-dialog')) return;
     const c = comboOf(e);
     if (!c) return;
+    // B: 이미 Magma 브러시면 고급 브러시로, 고급 브러시면 Magma 브러시로 (누를 때마다 번갈아)
+    if (c === 'KeyB' && !S.busy) {
+      if (S.active && S.tool === 'brush') { e.preventDefault(); e.stopImmediatePropagation(); activateMember('faPaintBrush'); return; }
+      if (!S.active && currentTool() === 'faPaintBrush') { e.preventDefault(); e.stopImmediatePropagation(); activateMember('@brush'); return; }
+    }
     const tool = S.keys.includes(c) ? 'wand' : S.qkeys.includes(c) ? 'quick' : S.bkeys.includes(c) ? 'brush' : S.lkeys.includes(c) ? 'blur' : S.mkeys.includes(c) ? 'qmask' : null;
     if (!tool) return;
     if (tool === 'qmask' && S.active && S.tool === 'qmask') { e.preventDefault(); e.stopImmediatePropagation(); activateMember('lassoSelectionIcon'); return; } // 퀵 마스크 단축키를 다시 누르면 나가기(선택으로 반영)
@@ -4539,7 +4658,7 @@ void main(){
     return out;
   }
   // before → after 로 바뀐 곳만: ① 그 사각형을 올가미 채우기 '지우기'로 비우고 ② after를 붙여넣는다 (Magma 동작 2번)
-  async function replaceLayerRegion(E, L, ir, before, after, what) {
+  async function replaceLayerRegion(E, L, ir, before, after, what, onLanded) {
     const canvas = getCanvas();
     let x0 = Infinity, y0 = Infinity, x1 = -1, y1 = -1;
     for (let y = 0; y < ir.h; y++) for (let x = 0; x < ir.w; x++) {
@@ -4562,6 +4681,7 @@ void main(){
       blob = await oc.convertToBlob({ type: 'image/png' });
     }
     const gref0 = guRef();
+    const cover = showCover(E, er); // 비우는 동안 그 자리를 '바뀌기 전 화면'으로 덮어 둔다
     S.busy = true;
     document.documentElement.classList.add('mw-busy');
     const back = currentTool();
@@ -4596,19 +4716,65 @@ void main(){
       S.busy = false;
       document.documentElement.classList.remove('mw-busy');
     }
-    if (!ok) return false;
+    if (!ok) { cover.remove(); onLanded?.(); return false; }
     if (blob) {
       const dt = new DataTransfer();
       dt.items.add(new File([blob], 'layer.png', { type: 'image/png' }));
       const t1 = guRef();
+      const probe = landProbe(E, L, after, ir, true);
       document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-      await waitFor(() => guRef() !== t1, 3000); // 붙여넣기가 기록에 들어간 뒤
-    }
-    guAdd(gref0, what === '지우지' ? '투명색 지우기' : what === '흐리게 하지' ? '블러' : what);
+      await swapWhenLanded(probe.check, () => { cover.remove(); onLanded?.(); });
+      await waitFor(() => guRef() !== t1, 3000); // 붙여넣기가 기록에 들어간 뒤 (묶음 되돌리기용)
+    } else { await swapWhenLanded(() => true, () => { cover.remove(); onLanded?.(); }); }
+    guAdd(gref0, what === '지우지' ? '투명색 지우기' : what === '흐리게 하지' ? '블러' : what === '칠하지' ? '곱하기 획' : what);
     return true;
   }
+  // 그 자리를 '지금 보이는 화면'으로 덮는 그림 (Magma 그림판 바로 위, 마법봉 미리보기 아래)
+  function showCover(E, box) {
+    const canvas = getCanvas();
+    let snap = null;
+    try { snap = E.renderer.getDrawingSnapshotAsBinary(E.drawing); } catch { }
+    if (!canvas || !snap || !box) return { remove() { } };
+    const W = E.drawing.w, c = document.createElement('canvas');
+    c.width = box.w; c.height = box.h; c.className = 'mw-cover mw-el';
+    const im = new ImageData(box.w, box.h);
+    for (let y = 0; y < box.h; y++) im.data.set(snap.subarray(((box.y + y) * W + box.x) * 4, ((box.y + y) * W + box.x + box.w) * 4), y * box.w * 4);
+    c.getContext('2d').putImageData(im, 0, 0);
+    const m = E.computedView.transform;
+    Object.assign(c.style, { position: 'absolute', left: canvas.offsetLeft + 'px', top: canvas.offsetTop + 'px', pointerEvents: 'none', transformOrigin: '0 0',
+      transform: `matrix(${m[0]},${m[1]},${m[2]},${m[3]},${m[4] + m[0] * box.x + m[2] * box.y},${m[5] + m[1] * box.x + m[3] * box.y})` });
+    canvas.after(c);
+    return { remove() { c.remove(); } };
+  }
+  // 붙여넣은 그림이 레이어에 실제로 들어갔는지: 바뀔 픽셀 몇 개를 골라 값이 바뀌는지(exact = 기대값과 같아지는지) 본다
+  function landProbe(E, L, px, box, exact = false) {
+    const rd = (k) => { const x = box.x + (k % box.w), y = box.y + Math.floor(k / box.w); try { return readLayerEff(E, L, { x, y, w: 1, h: 1 }); } catch { return null; } };
+    const same = (v, k) => Math.abs(v[3] - px[k * 4 + 3]) <= 3 && (px[k * 4 + 3] < 8 || (Math.abs(v[0] - px[k * 4]) <= 4 && Math.abs(v[1] - px[k * 4 + 1]) <= 4 && Math.abs(v[2] - px[k * 4 + 2]) <= 4));
+    // 후보: 칠해지는(알파 큰) 픽셀 고르게 30개
+    const cand = [];
+    const n = px.length / 4, step = Math.max(1, Math.floor(n / 600));
+    for (let k = 0; k < n && cand.length < 30; k += step) if (px[k * 4 + 3] > 40) cand.push(k);
+    const pts = [], before = [];
+    for (const k of cand) {
+      const v = rd(k); if (!v) continue;
+      if (exact && same(v, k)) continue; // 이미 같은 값인 곳은 판단에 못 씀
+      pts.push(k); before.push(v);
+      if (pts.length >= 6) break;
+    }
+    const check = () => !pts.length || pts.some((k, j) => { const v = rd(k); if (!v) return false; if (exact) return same(v, k); const b = before[j]; return v[0] !== b[0] || v[1] !== b[1] || v[2] !== b[2] || v[3] !== b[3]; });
+    return { check };
+  }
+  // 화면 갱신(프레임)마다 확인하다가, 들어간 게 보이는 바로 그 프레임 안에서 fn을 부른다 → 미리보기와 실제 그림이 한 프레임에 바뀜
+  function swapWhenLanded(check, fn, ms = 3000) {
+    const end = performance.now() + ms;
+    return new Promise((res) => {
+      const f = () => { let ok = false; try { ok = check(); } catch { ok = true; } if (ok || performance.now() > end) { try { fn(); } finally { res(); } return; } requestAnimationFrame(f); };
+      requestAnimationFrame(f);
+    });
+  }
+
   // 투명색 고급 브러시 확정: maskPx = 획 알파(box 크기 RGBA), 결과 = 원래 그림 × (1 − 획 알파)
-  async function advEraseCommit(maskPx, box) {
+  async function advEraseCommit(maskPx, box, onLanded) {
     const E = getEditor();
     const L = E && E.model.user.activeLayers && E.model.user.activeLayers[0];
     if (!E || !getCanvas() || !L) return;
@@ -4626,7 +4792,7 @@ void main(){
       const m = bx >= 0 && by >= 0 && bx < box.w && by < box.h ? maskPx[(by * box.w + bx) * 4 + 3] / 255 : 0;
       if (m > 0.002) after[i + 3] = Math.round(after[i + 3] * (1 - m));
     }
-    await replaceLayerRegion(E, L, ir, before, after, '지우지');
+    await replaceLayerRegion(E, L, ir, before, after, '지우지', onLanded);
   }
 
   // ---------- 블러 브러시 (블렌드 폴더) ----------
@@ -4775,11 +4941,11 @@ void main(){
         if (a < 0.5) continue;
         after[i] = buf[i] * 255 / a; after[i + 1] = buf[i + 1] * 255 / a; after[i + 2] = buf[i + 2] * 255 / a; after[i + 3] = a;
       }
-      await replaceLayerRegion(E, L, ir, before, after, '흐리게 하지');
+      await replaceLayerRegion(E, L, ir, before, after, '흐리게 하지', hide);
     } catch (err) {
       console.warn('[MagmaWand] 블러', err);
       toast('흐리게 하지 못했어요: ' + (err && err.message || err));
-    } finally { setTimeout(hide, 200); }
+    } finally { requestAnimationFrame(hide); }
   }
   cleanups.push(() => { BLR.wrap?.remove(); BLR.wrap = null; BLR.st = null; });
 
@@ -6230,16 +6396,56 @@ void main(){
   // 검은 그림 + 투명 배경 = 끝 모양(알파를 씀), 회색조 불투명 그림 = 텍스처(어두울수록 진하게)
   const rnd = (seed) => { let s = seed >>> 0 || 1; return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296); };
   const star = (g, n, pts, ro, ri, rot = -Math.PI / 2) => { g.beginPath(); for (let i = 0; i < pts * 2; i++) { const r = i % 2 ? ri : ro, a = rot + i * Math.PI / pts; g.lineTo(n / 2 + Math.cos(a) * r, n / 2 + Math.sin(a) * r); } g.closePath(); g.fill(); };
+  // ----- 이음매 없는 노이즈 (텍스처가 바둑판처럼 보이지 않게) -----
+  // 주기 P칸으로 감싸는 Perlin 노이즈를 여러 겹(fBm) 쌓는다. 그림 크기 n이 주기의 배수라 가장자리가 그대로 이어진다.
+  function tileNoise(n, P, seed) {
+    const r = rnd(seed), gx = new Float32Array(P * P), gy = new Float32Array(P * P);
+    for (let i = 0; i < P * P; i++) { const a = r() * Math.PI * 2; gx[i] = Math.cos(a); gy[i] = Math.sin(a); }
+    const out = new Float32Array(n * n), sc = P / n, fade = (t) => t * t * t * (t * (t * 6 - 15) + 10);
+    const dot = (ix, iy, dx, dy) => { const i = ((iy % P + P) % P) * P + ((ix % P + P) % P); return gx[i] * dx + gy[i] * dy; };
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      const fx = x * sc, fy = y * sc, x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0, u = fade(tx), v = fade(ty);
+      const a = dot(x0, y0, tx, ty) + (dot(x0 + 1, y0, tx - 1, ty) - dot(x0, y0, tx, ty)) * u;
+      const b = dot(x0, y0 + 1, tx, ty - 1) + (dot(x0 + 1, y0 + 1, tx - 1, ty - 1) - dot(x0, y0 + 1, tx, ty - 1)) * u;
+      out[y * n + x] = a + (b - a) * v;
+    }
+    return out;
+  }
+  function fbm(n, P0, oct, seed, gain = 0.5) {
+    const out = new Float32Array(n * n);
+    let amp = 1, P = P0;
+    for (let o = 0; o < oct && P <= n; o++, amp *= gain, P *= 2) { const t = tileNoise(n, P, seed + o * 101); for (let i = 0; i < out.length; i++) out[i] += t[i] * amp; }
+    let mn = Infinity, mx = -Infinity;
+    for (const v of out) { if (v < mn) mn = v; if (v > mx) mx = v; }
+    for (let i = 0; i < out.length; i++) out[i] = (out[i] - mn) / (mx - mn || 1);
+    return out;
+  }
+  const sstep = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  // 픽셀마다 값 정하기: 끝 모양 = 검정 + 알파 f(0~1), 텍스처 = 불투명 회색(어두울수록 물감이 잘 묻음) f(0~1 = 묻는 정도)
+  function pixTip(g, n, f) { const im = g.createImageData(n, n); for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) { const a = f(x, y); im.data[(y * n + x) * 4 + 3] = Math.round(Math.max(0, Math.min(1, a)) * 255); } g.putImageData(im, 0, 0); }
+  function pixTex(g, n, f) { const im = g.createImageData(n, n); for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) { const v = Math.round(255 * (1 - Math.max(0, Math.min(1, f(x, y))))), i = (y * n + x) * 4; im.data[i] = im.data[i + 1] = im.data[i + 2] = v; im.data[i + 3] = 255; } g.putImageData(im, 0, 0); }
+  const radial = (n, x, y) => Math.hypot(x + 0.5 - n / 2, y + 0.5 - n / 2) / (n / 2);
+  const BUILTIN_VER = 4; // 기본 모양·텍스처 그리는 법이 바뀌면 올린다 (예전 브러시도 새 그림으로 갱신)
+  const PROC_TIPS = new Set(['round-hard', 'round-soft']);
   const BUILTIN_TIPS = [
     { id: 'round-hard', name: '원 (딱딱)', draw: (g, n) => { g.beginPath(); g.arc(n / 2, n / 2, n / 2 - 1, 0, 7); g.fill(); } },
     { id: 'round-soft', name: '원 (부드러움)', draw: (g, n) => { const r = g.createRadialGradient(n / 2, n / 2, 0, n / 2, n / 2, n / 2); r.addColorStop(0, 'rgba(0,0,0,1)'); r.addColorStop(0.35, 'rgba(0,0,0,.8)'); r.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = r; g.fillRect(0, 0, n, n); } },
     { id: 'square', name: '사각형', draw: (g, n) => g.fillRect(n * 0.08, n * 0.08, n * 0.84, n * 0.84) },
     { id: 'flat', name: '납작붓', draw: (g, n) => { g.beginPath(); g.ellipse(n / 2, n / 2, n * 0.48, n * 0.14, 0, 0, 7); g.fill(); } },
-    { id: 'pencil', name: '연필 (거친)', draw: (g, n) => { const r = rnd(7); for (let i = 0; i < n * n * 0.5; i++) { const a = r() * 7, d = Math.sqrt(r()) * n * 0.48; g.globalAlpha = 0.25 + r() * 0.6; g.fillRect(n / 2 + Math.cos(a) * d, n / 2 + Math.sin(a) * d, 1.5, 1.5); } g.globalAlpha = 1; } },
-    { id: 'chalk', name: '분필', draw: (g, n) => { const r = rnd(11); for (let i = 0; i < 900; i++) { const a = r() * 7, d = Math.pow(r(), 0.7) * n * 0.48; g.globalAlpha = 0.3 + r() * 0.7; g.beginPath(); g.arc(n / 2 + Math.cos(a) * d, n / 2 + Math.sin(a) * d, 0.8 + r() * 2.2, 0, 7); g.fill(); } g.globalAlpha = 1; } },
+    // 연필: 가장자리가 고르지 않고 안쪽에도 흑연 알갱이가 보이는 원
+    { id: 'pencil', name: '연필 (거친)', draw: (g, n) => { const gr = fbm(n, 16, 4, 7), fine = fbm(n, 64, 2, 8); const edge = fbm(n, 4, 3, 9);
+      pixTip(g, n, (x, y) => { const i = y * n + x, r = radial(n, x, y) * (0.86 + edge[i] * 0.3); const d = 1 - sstep(0.8, 0.98, r); return d * sstep(0.32, 0.62, gr[i] * 0.5 + fine[i] * 0.5 + (1 - r) * 0.12); }); } },
+    // 분필: 울퉁불퉁한 테두리 + 구멍 많은 알갱이
+    { id: 'chalk', name: '분필', draw: (g, n) => { const edge = fbm(n, 4, 3, 11), gr = fbm(n, 32, 3, 12);
+      pixTip(g, n, (x, y) => { const i = y * n + x, r = radial(n, x, y) * (0.82 + edge[i] * 0.35); return (1 - sstep(0.7, 0.95, r)) * sstep(0.35, 0.62, gr[i]); }); } },
     { id: 'spray', name: '스프레이 점', draw: (g, n) => { const r = rnd(3); for (let i = 0; i < 160; i++) { const a = r() * 7, d = Math.abs((r() + r() + r()) / 3 - 0.5) * 2 * n * 0.48; g.beginPath(); g.arc(n / 2 + Math.cos(a) * d, n / 2 + Math.sin(a) * d, 0.8 + r() * 1.6, 0, 7); g.fill(); } } },
-    { id: 'bristle', name: '붓털', draw: (g, n) => { const r = rnd(5); for (let i = 0; i < 26; i++) { const y = n * 0.15 + r() * n * 0.7; g.globalAlpha = 0.4 + r() * 0.6; g.beginPath(); g.ellipse(n / 2 + (r() - 0.5) * n * 0.3, y, n * (0.18 + r() * 0.3), 1 + r() * 2, 0, 0, 7); g.fill(); } g.globalAlpha = 1; } },
-    { id: 'watercolor', name: '수채 얼룩', draw: (g, n) => { const r = rnd(9); for (let i = 0; i < 14; i++) { const x = n / 2 + (r() - 0.5) * n * 0.35, y = n / 2 + (r() - 0.5) * n * 0.35, rr = n * (0.18 + r() * 0.2); const gr = g.createRadialGradient(x, y, 0, x, y, rr); gr.addColorStop(0, 'rgba(0,0,0,.18)'); gr.addColorStop(0.85, 'rgba(0,0,0,.28)'); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(0, 0, n, n); } } },
+    // 붓털: 세로로 늘어선 털 수십 가닥(진행 방향으로 끌면 결이 생김), 털마다 굵기·진하기 다르게
+    { id: 'bristle', name: '붓털', draw: (g, n) => { const r = rnd(5), hairs = []; for (let i = 0; i < 46; i++) hairs.push({ y: n * (0.1 + 0.8 * r()), w: 0.6 + r() * 2.2, a: 0.35 + r() * 0.65, len: 0.25 + r() * 0.2, cx: (r() - 0.5) * 0.12 });
+      const gr = fbm(n, 32, 2, 6);
+      pixTip(g, n, (x, y) => { let a = 0; const fx = x / n - 0.5; for (const h of hairs) { const dy = Math.abs(y - h.y); if (dy > h.w * 2.5) continue; const lx = Math.abs(fx - h.cx) / h.len; if (lx > 1) continue; a = Math.max(a, h.a * Math.exp(-(dy * dy) / (h.w * h.w)) * (1 - lx * lx)); } return a * (0.75 + gr[y * n + x] * 0.35); }); } },
+    // 수채: 가장자리가 물 번진 듯 울퉁불퉁하고 속은 고르지 않은 옅은 얼룩
+    { id: 'watercolor', name: '수채 얼룩', draw: (g, n) => { const edge = fbm(n, 4, 4, 9), body = fbm(n, 8, 4, 10);
+      pixTip(g, n, (x, y) => { const i = y * n + x, r = radial(n, x, y) * (0.8 + edge[i] * 0.32); return (1 - sstep(0.84, 0.97, r)) * (0.58 + body[i] * 0.14); }); } },
     { id: 'cloud', name: '구름', draw: (g, n) => { const r = rnd(13); for (let i = 0; i < 9; i++) { const x = n / 2 + (r() - 0.5) * n * 0.45, y = n / 2 + (r() - 0.5) * n * 0.25, rr = n * (0.14 + r() * 0.12); const gr = g.createRadialGradient(x, y, 0, x, y, rr); gr.addColorStop(0, 'rgba(0,0,0,.9)'); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(0, 0, n, n); } } },
     { id: 'splatter', name: '물감 튀김', draw: (g, n) => { const r = rnd(17); g.beginPath(); g.arc(n / 2, n / 2, n * 0.2, 0, 7); g.fill(); for (let i = 0; i < 22; i++) { const a = r() * 7, d = n * (0.22 + r() * 0.25); g.beginPath(); g.arc(n / 2 + Math.cos(a) * d, n / 2 + Math.sin(a) * d, 1 + r() * n * 0.05, 0, 7); g.fill(); } } },
     { id: 'star', name: '별', draw: (g, n) => star(g, n, 5, n * 0.48, n * 0.2) },
@@ -6250,13 +6456,25 @@ void main(){
     { id: 'snow', name: '눈송이', draw: (g, n) => { g.strokeStyle = '#000'; g.lineWidth = n * 0.06; g.lineCap = 'round'; for (let i = 0; i < 6; i++) { const a = i * Math.PI / 3; g.beginPath(); g.moveTo(n / 2, n / 2); g.lineTo(n / 2 + Math.cos(a) * n * 0.45, n / 2 + Math.sin(a) * n * 0.45); g.stroke(); for (const s of [-1, 1]) { g.beginPath(); g.moveTo(n / 2 + Math.cos(a) * n * 0.28, n / 2 + Math.sin(a) * n * 0.28); g.lineTo(n / 2 + Math.cos(a) * n * 0.28 + Math.cos(a + s * 0.8) * n * 0.12, n / 2 + Math.sin(a) * n * 0.28 + Math.sin(a + s * 0.8) * n * 0.12); g.stroke(); } } } },
   ];
   const BUILTIN_TEX = [
-    { id: 'paper', name: '종이', draw: (g, n) => { const r = rnd(21); g.fillStyle = '#fff'; g.fillRect(0, 0, n, n); for (let i = 0; i < n * n * 0.35; i++) { const v = 150 + r() * 105 | 0; g.fillStyle = `rgb(${v},${v},${v})`; g.fillRect(r() * n, r() * n, 1 + r() * 2, 1 + r() * 2); } } },
-    { id: 'canvas', name: '캔버스 천', draw: (g, n) => { g.fillStyle = '#fff'; g.fillRect(0, 0, n, n); for (let y = 0; y < n; y += 4) for (let x = 0; x < n; x += 4) { const v = ((x + y) / 4) % 2 ? 120 : 200; g.fillStyle = `rgb(${v},${v},${v})`; g.fillRect(x, y, 3, 3); } } },
-    { id: 'noise', name: '노이즈', draw: (g, n) => { const r = rnd(23), im = g.createImageData(n, n); for (let i = 0; i < im.data.length; i += 4) { const v = r() * 255 | 0; im.data[i] = im.data[i + 1] = im.data[i + 2] = v; im.data[i + 3] = 255; } g.putImageData(im, 0, 0); } },
+    // 종이: 결(중간 크기 굴곡) + 이(작은 요철). 높은 곳에만 물감이 묻는 것처럼
+    { id: 'paper', name: '종이', size: 512, draw: (g, n) => { const mid = fbm(n, 16, 4, 21), tooth = fbm(n, 128, 2, 22), fib = fbm(n, 64, 3, 23);
+      pixTex(g, n, (x, y) => { const i = y * n + x; return sstep(0.22, 0.72, mid[i] * 0.45 + tooth[i] * 0.4 + fib[i] * 0.15); }); } },
+    // 수채 종이(황목): 큼직한 굴곡 + 잔 요철
+    { id: 'wcpaper', name: '수채 종이', size: 512, draw: (g, n) => { const big = fbm(n, 8, 4, 31), fine = fbm(n, 64, 3, 32);
+      pixTex(g, n, (x, y) => { const i = y * n + x; return sstep(0.18, 0.8, big[i] * 0.6 + fine[i] * 0.4); }); } },
+    // 캔버스 천: 씨실·날실이 엇갈려 짜인 결 + 실 굵기 흔들림
+    { id: 'canvas', name: '캔버스 천', size: 512, draw: (g, n) => { const p = 8, irr = fbm(n, 32, 3, 41), grain = fbm(n, 128, 2, 42);
+      pixTex(g, n, (x, y) => { const i = y * n + x, cx = Math.floor(x / p), cy = Math.floor(y / p), over = (cx + cy) % 2;
+        const tx = Math.sin(Math.PI * ((y % p) + 0.5) / p), ty = Math.sin(Math.PI * ((x % p) + 0.5) / p);
+        const thread = over ? tx * (0.75 + 0.25 * ty) : ty * (0.75 + 0.25 * tx);
+        return sstep(0.15, 0.95, thread * (0.7 + irr[i] * 0.35) * (0.85 + grain[i] * 0.2)); }); } },
+    { id: 'noise', name: '노이즈', size: 512, draw: (g, n) => { const a = fbm(n, 32, 4, 23), b = fbm(n, 256, 1, 24); pixTex(g, n, (x, y) => { const i = y * n + x; return a[i] * 0.6 + b[i] * 0.4; }); } },
+    // 거친 결: 분필·크레용용 (작은 요철이 뚜렷)
+    { id: 'rough', name: '거친 결', size: 512, draw: (g, n) => { const a = fbm(n, 64, 3, 51), b = fbm(n, 16, 3, 52); pixTex(g, n, (x, y) => { const i = y * n + x; return sstep(0.3, 0.62, a[i] * 0.7 + b[i] * 0.3); }); } },
     { id: 'hatch', name: '빗금', draw: (g, n) => { g.fillStyle = '#fff'; g.fillRect(0, 0, n, n); g.strokeStyle = '#444'; g.lineWidth = 2; for (let i = -n; i < n * 2; i += 8) { g.beginPath(); g.moveTo(i, 0); g.lineTo(i + n, n); g.stroke(); } } },
     { id: 'dots', name: '망점', draw: (g, n) => { g.fillStyle = '#fff'; g.fillRect(0, 0, n, n); g.fillStyle = '#222'; for (let y = 4; y < n; y += 8) for (let x = 4; x < n; x += 8) { g.beginPath(); g.arc(x, y, 2.4, 0, 7); g.fill(); } } },
   ];
-  async function builtinBlob(item, size = 256) {
+  async function builtinBlob(item, size = item.size || 256) {
     const oc = new OffscreenCanvas(size, size), g = oc.getContext('2d');
     g.fillStyle = '#000';
     item.draw(g, size);
@@ -6281,7 +6499,7 @@ void main(){
     brush.id = 'b_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     brush.added = Date.now();
     brush.builtin = true;
-    brush.tips = [{ key: await advPutImage(await builtinBlob(item)), thumbKey: null, needPng: false, builtinId: item.id }];
+    brush.tips = [{ key: await advPutImage(await builtinBlob(item)), thumbKey: null, needPng: false, builtinId: item.id, bver: BUILTIN_VER }];
     brush.texture = null;
     await advSaveBrush(brush);
     return brush;
@@ -7268,7 +7486,7 @@ void main(){
     removeSettings();
     cancelAnimationFrame(ADV.raf); ADV.raf = 0; ADV.cv = null;
     // 덧그림 캔버스·떠 있는 창도 모두 치운다 (예전 버전이 남긴 것까지)
-    document.querySelectorAll('.mw-menu, .mw-toast, .mw-dialog-wrap, .mw-shortcut, .mw-flyout, .mw-overlay, .mw-brush, .mw-alpha, .mw-eye, canvas.mw-adv, canvas.mw-fx, .mw-blurwrap, .mw-mswrap, .mw-msguard, .mw-bset, .mw-clipline, .mw-flashbox, .mw-size-ring, .mw-size-label').forEach((e) => e.remove());
+    document.querySelectorAll('.mw-menu, .mw-toast, .mw-dialog-wrap, .mw-shortcut, .mw-flyout, .mw-overlay, .mw-brush, .mw-alpha, .mw-eye, canvas.mw-adv, canvas.mw-fx, canvas.mw-cover, .mw-blurwrap, .mw-mswrap, .mw-msguard, .mw-bset, .mw-clipline, .mw-flashbox, .mw-size-ring, .mw-size-label').forEach((e) => e.remove());
     document.documentElement.classList.remove('mw-quick', 'mw-alpha-on', 'mw-lp');
     styleEl?.remove();
     toolBtn = null; styleEl = null;
