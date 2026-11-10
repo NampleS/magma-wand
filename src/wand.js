@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.30.2';
+  const VERSION = '0.30.3';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -4833,7 +4833,7 @@ void main(){
     const keep = new Set();
     for (const p of await histPoints(board)) for (const l of p.layers) if (l.key) keep.add(l.key);
     const bs = await hstore('blobs', 'readwrite');
-    const keys = await reqP(bs.getAllKeys(IDBKeyRange.bound(board + ':', board + ':￿')));
+    const keys = await reqP(bs.getAllKeys(IDBKeyRange.bound(board + ':', board + ':\uffff'))); // 글자 그대로 넣으면 크롬이 확장을 'UTF-8 아님'으로 거부함 → 이스케이프로
     const del = await hstore('blobs', 'readwrite');
     for (const k of keys) if (!keep.has(k)) del.delete(k);
   }

@@ -43,6 +43,18 @@ const KILL_STUB = `// Magma 마법봉 — 비상 정지 버전 (${version})
 const wandPath = p('src', 'wand.js');
 if (!kill) {
   let wand = fs.readFileSync(wandPath, 'utf8');
+  // 크롬은 확장 스크립트에 유니코드 '비문자'(U+FFFE·U+FFFF·U+FDD0~FDEF 등)가 글자 그대로 있으면
+  // 'UTF-8로 인코딩되지 않았습니다'라며 확장을 아예 안 불러온다(새로 설치한 친구 컴퓨터에서 실측) → 배포 전에 막는다
+  {
+    const lines = wand.split('\n');
+    for (let i = 0; i < lines.length; i++) for (const ch of lines[i]) {
+      const c = ch.codePointAt(0);
+      if ((c >= 0xFDD0 && c <= 0xFDEF) || (c & 0xFFFE) === 0xFFFE) {
+        console.error(`배포 중단: src/wand.js ${i + 1}번째 줄에 크롬이 거부하는 글자 U+${c.toString(16).toUpperCase()}가 있어요. '\\u${c.toString(16)}'처럼 이스케이프로 바꿔 주세요.`);
+        process.exit(1);
+      }
+    }
+  }
   wand = wand.replace(/const VERSION = '[^']*';/, `const VERSION = '${version}';`);
   fs.writeFileSync(wandPath, wand);
   fs.copyFileSync(wandPath, p('extension', 'wand.js')); // 크롬 확장 기본 버전
