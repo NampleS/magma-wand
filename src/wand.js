@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.30.4';
+  const VERSION = '0.30.5';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -240,6 +240,30 @@
     return false;
   }
 
+  // Magma는 선택 모드가 '새 선택'(select)일 때만 Alt(빼기)·Shift(추가)를 본다(Magma 소스: mode가 add면 늘 추가).
+  // 모드 버튼이 다른 값에 머물러 있으면 Alt+올가미로 빼기가 안 됨(사용자 보고) → 누르는 순간에만 모드를 맞췄다가 손을 떼면 되돌린다.
+  // 버튼은 Magma가 이 누르기를 받기 전에 누르므로(끄는 중이 아님) Magma 끌기와 엉키지 않는다.
+  const SELMOD = { prev: null, pid: null };
+  const SEL_TOOLS = new Set(['selectRectIcon', 'selectEllipseIcon', 'lassoSelectionIcon']);
+  on(window, 'pointerdown', (e) => {
+    if (!e.isTrusted || e.button !== 0 || S.active || S.busy || SELMOD.prev || e.ctrlKey || e.metaKey) return;
+    if (!e.altKey && !e.shiftKey) return;
+    const c = getCanvas();
+    if (!c || e.target !== c || !SEL_TOOLS.has(currentTool())) return;
+    const cur = getSelectionMode(), want = e.altKey ? 'subtract' : 'add';
+    if (!cur || cur === 'select' || cur === want) return;
+    const b = selectionModeButtons().find((x) => x.getAttribute('radiovalue') === want);
+    if (!b) return;
+    SELMOD.prev = cur; SELMOD.pid = e.pointerId;
+    press(b);
+  }, true);
+  const selModBack = (e) => {
+    if (!SELMOD.prev || (e && e.pointerId !== SELMOD.pid)) return;
+    const prev = SELMOD.prev; SELMOD.prev = null; SELMOD.pid = null;
+    setTimeout(() => { setSelectionMode(prev).catch(() => { }); }, 60); // Magma가 이 선택을 마친 다음에
+  };
+  on(window, 'pointerup', selModBack, true);
+  on(window, 'pointercancel', selModBack, true);
   // 선택 모드 버튼(새 선택 / 추가 / 빼기 / 교차) — Magma 선택 도구 설정 칸에 있는 것
   function selectionModeButtons() {
     return [...document.querySelectorAll('.selection-tool button[radiovalue]')];
@@ -5459,7 +5483,7 @@ void main(){
   //    다른 사람 화면에서는 그리기로 보여 보드가 어긋나므로, Magma 자체 지우개 도구를 쓴다.
   //  - 고급 브러시 → 그 질감 그대로 지운다: 손을 떼면 (1) 지운 부분이 든 사각형을 올가미 채우기 '지우기'로 비우고
   //    (2) 미리 계산한 결과(원래 그림 × (1 − 획))를 붙여넣는다. Magma 동작 2번(되돌리기 2칸).
-  const ALPHA = { el: null, prevTool: null, switching: false };
+  const ALPHA = { el: null, prevTool: null, switching: false, synced: false };
   function ensureAlphaSwatch() {
     if (destroyed) return;
     const sw = document.querySelector('svg.icon-switchColorsIcon');
@@ -5493,6 +5517,7 @@ void main(){
   const ERASE_FROM = new Set(['faPaintBrush', 'faPencil']);
   async function setAlpha(on) {
     S.alpha = !!on;
+    ALPHA.synced = false;
     { const E = getEditor(); ALPHA.color = S.alpha && E ? E.primaryColor : undefined; }
     ensureAlphaSwatch();
     if (S.alpha) { status('투명색: 그리면 지워져요'); await alphaSyncTool(); }
@@ -5503,13 +5528,17 @@ void main(){
     note(S.alpha ? '투명색 — 브러시가 지우개가 돼요' : '원래 색으로 돌아왔어요');
   }
   // 투명색일 때 Magma 브러시·연필을 고르면 지우개로 바꿔 둔다
+  // 투명색을 켠 그 순간에만 Magma 브러시·연필을 지우개로 바꾼다. 그 뒤 사용자가 직접(B 등) 브러시를 고르면
+  // '지우개로 되돌리기'를 하지 않고 투명색을 끈다 — 예전엔 B를 눌러도 곧바로 지우개로 돌아가 버렸음(사용자 보고)
   async function alphaSyncTool() {
     if (!S.alpha || S.active || ALPHA.switching || S.busy) return;
     const t = currentTool();
-    if (ERASE_FROM.has(t)) {
-      ALPHA.prevTool = t;
-      ALPHA.switching = true; try { await selectTool('faEraser'); } finally { ALPHA.switching = false; }
+    if (!ALPHA.synced) {
+      ALPHA.synced = true;
+      if (ERASE_FROM.has(t)) { ALPHA.prevTool = t; ALPHA.switching = true; try { await selectTool('faEraser'); } finally { ALPHA.switching = false; } }
+      return;
     }
+    if (ERASE_FROM.has(t)) { ALPHA.prevTool = null; await setAlpha(false); }
   }
   // ---------- 레이어 그림 바꿔 넣기 (투명색 지우기·블러가 함께 씀) ----------
   // 읽기 전용: 레이어 + 그 위에 아직 '떠 있는' 붙여넣기(Magma가 다음 동작 때 레이어에 넣음, 실측)를 겹쳐 rect 범위를 읽는다
