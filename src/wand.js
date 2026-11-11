@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.30.3';
+  const VERSION = '0.30.4';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -4280,6 +4280,24 @@ void main(){
   // 페이지 본문이 생기기 전에 들어와도 멈추지 않도록 문서 전체를 지켜본다 (0.4.0 버그)
   modalObserver.observe(document.documentElement, { childList: true, subtree: true });
   cleanups.push(() => modalObserver.disconnect());
+  // 도구 설정 칸(editor-sliders) 안이 바뀌면 rAF를 기다리지 않고 바로(화면에 그리기 전) 덧붙인 줄을 맞춘다.
+  // 한 프레임이라도 늦으면 줄이 사라졌다 다시 나타나 깜빡여 보인다
+  let slidersFixing = false;
+  const slidersObserver = new MutationObserver((recs) => {
+    if (slidersFixing || destroyed) return;
+    let hit = false;
+    for (const r of recs) {
+      const t = r.target;
+      if (t && t.nodeType === 1 && t.closest?.('editor-sliders')) { hit = true; break; }
+      for (const n of r.addedNodes) if (n.nodeType === 1 && (n.tagName === 'EDITOR-SLIDERS' || n.querySelector?.('editor-sliders'))) { hit = true; break; }
+      if (hit) break;
+    }
+    if (!hit) return;
+    slidersFixing = true;
+    try { ensureFillRow(); ensureKoRow(); if (S.active) ensureSettings(); } catch (e) { /* 무시 */ } finally { slidersFixing = false; }
+  });
+  slidersObserver.observe(document.documentElement, { childList: true, subtree: true });
+  cleanups.push(() => slidersObserver.disconnect());
 
   // ---------- 선택 범위 확장/축소 (Edit 메뉴 → Invert selection 아래) ----------
   // 1) Magma의 "Copy merged"(Ctrl+Shift+C) 결과를 클립보드에 쓰기 직전에 가로채서 정확한 선택 모양(보드 해상도,
@@ -7811,12 +7829,10 @@ void main(){
     };
   }
   function ensureFillRow() {
-    // 다른 도구 설정 칸으로 바뀌면(Magma가 칸을 다시 쓰는 경우) 붙여 둔 줄을 치운다
-    if (S.active || currentTool() !== 'faFillDrip') { if (FG.row) { FG.row.remove(); FG.row = null; } return; }
-    const gapRow = fgRow('Close gap') || fgRow('Tolerance');
-    if (!gapRow) return;
-    if (FG.row && FG.row.isConnected && FG.row.previousElementSibling === gapRow) return;
-    FG.row?.remove();
+    // 페인트통 설정 칸(Fill mode·Tolerance 줄이 있는 칸)일 때만 붙인다. 다른 칸이면 떼어 두기만(다시 만들지 않음)
+    const gapRow = !S.active && fgRow('Fill mode') ? (fgRow('Close gap') || fgRow('Tolerance')) : null;
+    if (!gapRow) { if (FG.row && FG.row.isConnected) FG.row.remove(); return; }
+    if (FG.row) { if (FG.row.previousElementSibling !== gapRow) gapRow.after(FG.row); return; } // Magma가 칸을 다시 그렸으면 같은 줄을 옮기기만 (깜빡임 없음)
     const min = -20, max = 20;
     const row = gapRow.cloneNode(true);
     row.removeAttribute('tooltip');
@@ -7843,7 +7859,6 @@ void main(){
       const up = () => { slider.removeEventListener('pointermove', mv); slider.removeEventListener('pointerup', up); };
       slider.addEventListener('pointermove', mv); slider.addEventListener('pointerup', up);
     });
-    row.addEventListener('wheel', (e) => { e.preventDefault(); setV(S.fillGrow + (e.deltaY < 0 ? 1 : -1)); }, { passive: false });
     if (numBtn && inp) {
       numBtn.addEventListener('click', (e) => {
         e.preventDefault(); e.stopPropagation();
@@ -7935,8 +7950,10 @@ void main(){
     let cnt = 0; for (let i = 0; i < mask.length; i++) cnt += mask[i];
     if (!cnt) { note('칠할 곳이 없어요 (너무 많이 좁혔어요)'); return; }
     const erase0 = cfg.clear || !!S.alpha;
-    // Anti-alias가 켜져 있으면: 가장자리를 부드럽게 만든 그림을 붙여넣기 한 번으로(지우기는 비우기+붙여넣기)
-    if (cfg.aa) { await fgPaintAA(E, L, mask, img.w, img.h, cfg, erase0, ff); return; }
+    // 영역 모양 그대로 그림을 만들어 붙여넣기 한 번으로 칠한다(지우기는 비우기+붙여넣기).
+    // 예전의 올가미 칠하기는 크고 가는 고리(원 선)처럼 테두리 점이 많으면 안쪽 구멍을 버려 원 안까지 칠했고(실측), 도구 바꾸기로 느렸다.
+    await fgPaintAA(E, L, mask, img.w, img.h, cfg, erase0, ff); return;
+    // eslint-disable-next-line no-unreachable
     const P = exactPath(mask, img.w, img.h, D.spike, { pixelOnly: true });
     if (!P) { toast('칠할 영역을 만들지 못했어요'); return; }
     const poly = P.pts.map(D.toBuf);
@@ -7987,7 +8004,10 @@ void main(){
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (mask[y * W + x]) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
     if (x1 < 0) return;
     const box = rclip({ x: x0 - 1, y: y0 - 1, w: x1 - x0 + 3, h: y1 - y0 + 3 }, W, H);
-    const a = aaMask(mask, W, H, box), op = Math.max(0, Math.min(1, cfg.opacity / 100));
+    const op = Math.max(0, Math.min(1, cfg.opacity / 100));
+    let a;
+    if (cfg.aa) a = aaMask(mask, W, H, box); // 안티에일리어스: 가장자리 1픽셀 부드럽게
+    else { a = new Uint8Array(box.w * box.h); for (let y = 0; y < box.h; y++) for (let x = 0; x < box.w; x++) if (mask[(box.y + y) * W + box.x + x]) a[y * box.w + x] = 255; }
     S.busy = true; document.documentElement.classList.add('mw-busy');
     try {
       if (erase) {
@@ -7996,6 +8016,7 @@ void main(){
         S.busy = false;
         await replaceLayerRegion(E, L, box, before, after, '지우지');
       } else {
+        if (E.model.settings && E.model.settings.pasteNewLayer) fgWarnOnce('pnl', '주의: Magma 설정 "붙여넣기를 새 레이어로"가 켜져 있어 확장/축소·빈틈 닫기로 칠할 때마다 새 레이어가 생겨요');
         const n = Number.isFinite(E.primaryColor) ? E.primaryColor >>> 8 : 0, r = (n >> 16) & 255, g = (n >> 8) & 255, bl = n & 255;
         const px = new Uint8Array(box.w * box.h * 4);
         for (let i = 0; i < a.length; i++) { const k = (a[i] / 255) * op, A = Math.round(255 * k); px[i * 4] = Math.round(r * k); px[i * 4 + 1] = Math.round(g * k); px[i * 4 + 2] = Math.round(bl * k); px[i * 4 + 3] = A; }
@@ -8010,7 +8031,7 @@ void main(){
         document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
       }
       let cnt = 0; for (const v of mask) cnt += v;
-      note(`${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀 · 안티에일리어스` + (S.fillGrow ? ` (영역 ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)` : '') + (ff ? ` · 틈 ${ff.bridges}곳 이음` : ''));
+      note(`${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀` + (cfg.aa ? ' · 안티에일리어스' : '') + (S.fillGrow ? ` (영역 ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)` : '') + (ff ? ` · 틈 ${ff.bridges}곳 이음` : ''));
     } finally { S.busy = false; document.documentElement.classList.remove('mw-busy'); }
   }
   for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) on(window, t, (e) => onFillClick(e), true);
@@ -8308,8 +8329,8 @@ void main(){
   let koRow = null;
   function ensureKoRow() {
     if (destroyed) return;
-    const fontRow = !S.active && currentTool() === 'faText' ? textFontRow() : null;
-    if (!fontRow) { koRow?.remove(); koRow = null; return; }
+    const fontRow = !S.active ? textFontRow() : null;
+    if (!fontRow) { if (koRow && koRow.isConnected) koRow.remove(); return; } // 떼어 두기만 (다시 만들지 않음)
     if (!koRow) {
       koRow = document.createElement('div');
       koRow.className = 'mw-ko-row mw-el';
@@ -8755,7 +8776,6 @@ void main(){
       });
     }
     if (range) range.addEventListener('input', () => setV(+range.value));
-    row.addEventListener('wheel', (e) => { e.preventDefault(); setV(get() + (e.deltaY < 0 ? step : -step)); }, { passive: false });
     if (numBtn && inp) {
       numBtn.addEventListener('click', (e) => {
         e.preventDefault(); e.stopPropagation();
@@ -9164,7 +9184,6 @@ void main(){
         slider.addEventListener('pointermove', mv);
         slider.addEventListener('pointerup', up);
       });
-      row.addEventListener('wheel', (e) => { e.preventDefault(); setV(S[key] + (e.deltaY < 0 ? 1 : -1)); }, { passive: false });
       // 숫자를 누르면 직접 입력
       if (numBtn && inp) {
         numBtn.addEventListener('click', (e) => {
