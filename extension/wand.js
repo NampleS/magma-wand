@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.31.2';
+  const VERSION = '0.31.3';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -2891,10 +2891,40 @@ void main(){
     if (!any) { onLanded?.(); return; }
     await replaceLayerRegion(E, L, box, before, after, '칠하지', onLanded);
   }
+
+  // ---------- 보드 크기 PNG 빠르게 만들기 ----------
+  // Magma는 보드와 크기가 같은 그림만 '제자리'에 붙인다(그보다 작으면 화면 가운데). 그래서 붙여넣기용 그림은 늘 보드 크기인데,
+  // 큰 보드(3840×3840 등)에서 캔버스로 PNG를 만들면 몇 초씩 걸렸다(실측). 대부분 빈 칸이므로 PNG를 직접 짠다:
+  // 줄마다 필터 0 + RGBA(일반 알파), 압축은 브라우저 내장 deflate(CompressionStream) — 수십~백여 ms.
+  // rgba = box 크기의 일반(미리곱셈 아닌) RGBA. 나머지는 투명
+  async function boardPng(W, H, box, rgba) {
+    if (typeof CompressionStream !== 'function') { // 오래된 브라우저: 예전 방식
+      const oc = new OffscreenCanvas(W, H);
+      oc.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, box.w * box.h * 4), box.w, box.h), box.x, box.y);
+      return oc.convertToBlob({ type: 'image/png' });
+    }
+    const stride = W * 4 + 1, raw = new Uint8Array(stride * H); // 0으로 채워짐 = 필터 0 + 투명
+    for (let y = 0; y < box.h; y++) {
+      const yy = box.y + y; if (yy < 0 || yy >= H) continue;
+      const x0 = Math.max(0, box.x), x1 = Math.min(W, box.x + box.w); if (x1 <= x0) continue;
+      raw.set(rgba.subarray((y * box.w + (x0 - box.x)) * 4, (y * box.w + (x1 - box.x)) * 4), yy * stride + 1 + x0 * 4);
+    }
+    const z = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
+    const chunk = (type, data) => {
+      const out = new Uint8Array(12 + data.length), dv = new DataView(out.buffer);
+      dv.setUint32(0, data.length);
+      for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+      out.set(data, 8);
+      dv.setUint32(8 + data.length, crc32(out, 4, 8 + data.length)); // 위쪽 crc32(배열, 시작, 끝) 그대로
+      return out;
+    };
+    const ihdr = new Uint8Array(13), hv = new DataView(ihdr.buffer);
+    hv.setUint32(0, W); hv.setUint32(4, H); ihdr[8] = 8; ihdr[9] = 6; // 8비트 RGBA
+    const sig = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+    return new Blob([sig, chunk('IHDR', ihdr), chunk('IDAT', z), chunk('IEND', new Uint8Array(0))], { type: 'image/png' });
+  }
   async function advPastePx(E, L, px, box, onLanded) {
-    const oc = new OffscreenCanvas(ADV.W, ADV.H);
-    oc.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(px.buffer, px.byteOffset, px.length), box.w, box.h), box.x, box.y);
-    const blob = await oc.convertToBlob({ type: 'image/png' });
+    const blob = await boardPng(ADV.W, ADV.H, box, px);
     const dt = new DataTransfer();
     dt.items.add(new File([blob], 'brush.png', { type: 'image/png' }));
     const probe = E && L ? landProbe(E, L, px, box) : null;
@@ -5601,9 +5631,7 @@ void main(){
     let keep = false; for (let i = 3; i < sub.length; i += 4) if (sub[i]) { keep = true; break; }
     let blob = null;
     if (keep) {
-      const oc = new OffscreenCanvas(E.drawing.w, E.drawing.h);
-      oc.getContext('2d').putImageData(new ImageData(sub, ew, eh), ex, ey);
-      blob = await oc.convertToBlob({ type: 'image/png' });
+      blob = await boardPng(E.drawing.w, E.drawing.h, { x: ex, y: ey, w: ew, h: eh }, sub);
     }
     const gref0 = guRef();
     const cover = showCover(E, er); // 비우는 동안 그 자리를 '바뀌기 전 화면'으로 덮어 둔다
@@ -6135,7 +6163,7 @@ void main(){
     SYM.raf = 0;
     const r = symRuler(), editing = S.active && S.tool === 'sym';
     const showAxis = !!r && (S.symOn !== false || editing);
-    const qp = qsPreview(); // 도형 보정 미리보기
+    const qp = qsPreview() || SYM.ghost; // 도형 보정 미리보기 (손 뗀 뒤엔 다 그을 때까지 그대로)
     if ((!showAxis && !qp) || !getCanvas()) {
       if (SYM.cv) { SYM.cv.remove(); SYM.cv = null; SYM.sig = ''; }
       setTimeout(symKick, 500); // 다른 보드로 옮겨 가거나 다시 켤 때를 위해 가끔 확인
@@ -6284,6 +6312,7 @@ void main(){
         return;
       }
       if (e.type === 'pointerup' || e.type === 'pointercancel') {
+        if (e.type === 'pointerup' && R.snap) { try { const g = SYM.ghost = qsPreview(); setTimeout(() => { if (SYM.ghost === g) { SYM.ghost = null; symKick(); } }, 6000); } catch { SYM.ghost = null; } } // 다 그을 때까지 그대로 보여 줌(혹시 못 그으면 6초 뒤 치움)
         SYM.rec = null;
         qsHoldStop();
         if (e.type === 'pointercancel') { symKick(); return; }
@@ -6343,13 +6372,13 @@ void main(){
     for (const q of R.pts) q.p = 0.5;
   }
   async function symReplay(R) {
-    if (!R.pts.length) { symKick(); return; }
+    if (!R.pts.length) { SYM.ghost = null; symKick(); return; }
     symPenCheck(R);
     let pts = R.pts, T, stab = null;
     if (R.snap) {
       // 보정된 도형: 원래 획의 같은 자리 필압 + 새 시각. 펜은 맨 앞에 필압을 아주 조금 낮춘 점을 하나 더 둔다
       // (Magma는 펜 획 첫머리에서 필압이 오르기 전 점들을 건너뜀 → 바로 다음 점부터 그려지게)
-      const Q = qsStroke(R.snap, R.pen);
+      const Q = qsStroke(R.snap, R.pen, R.ext ? 100 : 170); // 와콤 앱은 실제 시간으로 그으므로 점을 줄여 빨리
       const t0 = performance.now() - (Q.length + 2) * 6 - 30;
       pts = [{ x: Q[0].x, y: Q[0].y, p: R.pen ? Math.max(0.005, Q[0].p - 0.003) : 0.5, tx: 0, ty: 0, w: 1, h: 1, t: t0 }]
         .concat(Q.map((q, i) => ({ x: q.x, y: q.y, p: q.p, tx: 0, ty: 0, w: 1, h: 1, t: t0 + (i + 1) * 6 })));
@@ -6405,7 +6434,7 @@ void main(){
             const t0 = performance.now(), base0 = pts[0].t;
             feed && feed(Math.max(0.03, Math.min(1, pts[0].p)), 0);
             for (let i = 1; i < pts.length; i++) {
-              const due = R.snap ? i * 5 : Math.min(pts[i].t - base0, i * 40); // 보정 도형 = 점마다 5ms, 대칭 복사본 = 원래 속도
+              const due = R.snap ? i * 2 : Math.min(pts[i].t - base0, i * 40); // 보정 도형 = 점마다 2ms, 대칭 복사본 = 원래 속도
               const wait = due - (performance.now() - t0);
               if (wait > 1) await sleep(wait);
               feed && feed(Math.max(0.03, Math.min(1, pts[i].p)), 0);
@@ -6424,6 +6453,7 @@ void main(){
       }
       await symIdle();
     } catch (err) { DG.stop = 'error ' + (err && err.message || err); throw err; } finally {
+      if (SYM.ghost) { await nextFrame(); await nextFrame(); SYM.ghost = null; symKick(); } // Magma 획이 화면에 나온 뒤에 미리보기 치움
       if (stab != null) { try { await setStabilizer(stab); } catch { /* 무시 */ } }
       SYM.replaying = false;
       DG.made = made;
@@ -6685,10 +6715,10 @@ void main(){
     };
   }
   // 보정된 선 → 그릴 점들 [{x, y, p}] (펜이면 원래 획의 같은 자리 필압)
-  function qsStroke(Q, pen) {
+  function qsStroke(Q, pen, maxN = 170) {
     const z = viewZoom() || 1, pts = qsPts(Q), L = qsLen(pts);
     // 곡선(점이 많음)은 길이를 따라 고르게 다시 찍고, 직선·다각형은 꼭짓점을 살려 촘촘히. Magma 입력 한도(한 번에 200개) 안으로
-    const dense = pts.length > 24 ? qsResample(pts, Math.max(2, Math.min(170, Math.round(L * z / 2)))) : qsDense(pts, Math.max(2 / z, L / 160));
+    const dense = pts.length > 24 ? qsResample(pts, Math.max(2, Math.min(maxN, Math.round(L * z / 2)))) : qsDense(pts, Math.max(2 / z, L / (maxN - 10)));
     if (!pen) return dense.map((q) => ({ x: q[0], y: q[1], p: 0.5 }));
     const prof = qsProfile(Q.raw);
     let acc = 0;
@@ -7614,9 +7644,31 @@ void main(){
     if (!A[seed]) return null;
     const B = new Uint8Array(n);
     for (let i = 0; i < n; i++) if (!A[i]) B[i] = 1;
-    const { sk, list } = skeletonize(B, w, h);
     const nb8 = [-w - 1, -w, -w + 1, -1, 1, w - 1, w, w + 1];
     const R = Math.max(1, G), D = Math.ceil(2.5 * R) + 6;
+    // 뼈대는 칠할 색 근처(T픽셀 안)의 벽만 계산한다. 다리(길이 ≤ R)는 칠할 색을 가로지를 때만 의미가 있어서
+    // 벽 깊숙한 곳은 결과에 영향이 없는데, 넓은 다른 색 덩어리(배경 등)를 통째로 가늘게 깎느라 수백 ms~수 초가 걸렸다(실측).
+    const T = Math.max(48, 4 * R + 24);
+    const Bs = new Uint8Array(n);
+    let fr = [];
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      if (!B[p]) continue;
+      if ((x > 0 && A[p - 1]) || (x < w - 1 && A[p + 1]) || (y > 0 && A[p - w]) || (y < h - 1 && A[p + w]) ||
+        (x > 0 && y > 0 && A[p - w - 1]) || (x < w - 1 && y > 0 && A[p - w + 1]) || (x > 0 && y < h - 1 && A[p + w - 1]) || (x < w - 1 && y < h - 1 && A[p + w + 1])) { Bs[p] = 1; fr.push(p); }
+    }
+    for (let d = 1; d < T && fr.length; d++) {
+      const nx = [];
+      for (const p of fr) {
+        const x = p % w;
+        for (let dy = -1; dy <= 1; dy++) {
+          const row = p + dy * w; if (row < 0 || row >= n) continue;
+          for (let dx = -1; dx <= 1; dx++) { const xx = x + dx; if (xx < 0 || xx >= w) continue; const r = row + dx; if (B[r] && !Bs[r]) { Bs[r] = 1; nx.push(r); } }
+        }
+      }
+      fr = nx;
+    }
+    const { sk, list } = skeletonize(Bs, w, h);
     const bridges = [];
     for (const p of list) {
       if (!sk[p]) continue;
@@ -7664,6 +7716,75 @@ void main(){
       if (p < n - w && !B[p + w] && !mask[p + w]) { mask[p + w] = 1; q[qt++] = p + w; }
     }
     return { mask, count, bridges: bridges.length };
+  }
+
+  // 큰 보드에서 빈틈 닫기 빠르게: 4배 줄인 그림에서 선을 빈틈 크기만큼 두껍게 해 대략의 칠 영역을 잡고,
+  // 그 둘레(넉넉한 여유)만 잘라 원래 방식(gapBridgeFill)으로 정확히 계산한다.
+  // 잘라 낸 가장자리에 칠이 닿으면(대략 범위가 모자람) 보드 전체로 다시 계산해서 결과는 늘 원래와 같다.
+  function gapBridgeFillFast(img, sx, sy, tolPct, G) {
+    const { w, h, data } = img;
+    if (w * h < 1e5) return gapBridgeFill(img, sx, sy, tolPct, G);
+    const A = floodFill(img, sx, sy, tolPct, null, true, false).mask;
+    if (!A[sy * w + sx]) return null;
+    const k = 4, lw = Math.ceil(w / k), lh = Math.ceil(h / k);
+    const low = new Uint8Array(lw * lh);
+    for (let y = 0; y < h; y++) { const row = y * w, lr = ((y / k) | 0) * lw; for (let x = 0; x < w; x++) if (!A[row + x]) low[lr + ((x / k) | 0)] = 1; }
+    const r = Math.max(1, Math.ceil(G / k));
+    const tmp = new Uint8Array(lw * lh), dil = new Uint8Array(lw * lh);
+    for (let y = 0; y < lh; y++) { // 가로로 r칸 넓히기
+      let cnt = 0; const o = y * lw;
+      for (let x = -r; x < lw; x++) { const add = x + r; if (add < lw && low[o + add]) cnt++; const rem = x - r - 1; if (rem >= 0 && low[o + rem]) cnt--; if (x >= 0) tmp[o + x] = cnt > 0 ? 1 : 0; }
+    }
+    for (let x = 0; x < lw; x++) { // 세로로 r칸 넓히기
+      let cnt = 0;
+      for (let y = -r; y < lh; y++) { const add = y + r; if (add < lh && tmp[add * lw + x]) cnt++; const rem = y - r - 1; if (rem >= 0 && tmp[rem * lw + x]) cnt--; if (y >= 0) dil[y * lw + x] = cnt > 0 ? 1 : 0; }
+    }
+    const s0 = ((sy / k) | 0) * lw + ((sx / k) | 0);
+    let bx0 = lw, by0 = lh, bx1 = -1, by1 = -1;
+    if (dil[s0]) {
+      // 아주 좁은 칸(줄인 그림에선 벽에 묻힘): 원래 크기에서 그냥 이어진 곳을 잡아 그 둘레로
+      const seenF = new Uint8Array(w * h), qf = new Int32Array(Math.min(w * h, 4e6)); let fh = 0, ft = 0; const p0 = sy * w + sx;
+      seenF[p0] = 1; qf[ft++] = p0;
+      while (fh < ft) {
+        const p = qf[fh++], x = p % w, y = (p - x) / w;
+        const lx = (x / k) | 0, ly = (y / k) | 0; if (lx < bx0) bx0 = lx; if (lx > bx1) bx1 = lx; if (ly < by0) by0 = ly; if (ly > by1) by1 = ly;
+        if (ft > qf.length - 4) return gapBridgeFill(img, sx, sy, tolPct, G); // 너무 넓게 샘 → 전체로
+        if (x > 0 && A[p - 1] && !seenF[p - 1]) { seenF[p - 1] = 1; qf[ft++] = p - 1; }
+        if (x < w - 1 && A[p + 1] && !seenF[p + 1]) { seenF[p + 1] = 1; qf[ft++] = p + 1; }
+        if (y > 0 && A[p - w] && !seenF[p - w]) { seenF[p - w] = 1; qf[ft++] = p - w; }
+        if (y < h - 1 && A[p + w] && !seenF[p + w]) { seenF[p + w] = 1; qf[ft++] = p + w; }
+      }
+    }
+    const seen = new Uint8Array(lw * lh), q = new Int32Array(lw * lh);
+    let qh = 0, qt = 0;
+    if (!dil[s0]) { seen[s0] = 1; q[qt++] = s0; }
+    while (qh < qt) {
+      const p = q[qh++], x = p % lw, y = (p - x) / lw;
+      if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y;
+      if (x > 0 && !dil[p - 1] && !seen[p - 1]) { seen[p - 1] = 1; q[qt++] = p - 1; }
+      if (x < lw - 1 && !dil[p + 1] && !seen[p + 1]) { seen[p + 1] = 1; q[qt++] = p + 1; }
+      if (y > 0 && !dil[p - lw] && !seen[p - lw]) { seen[p - lw] = 1; q[qt++] = p - lw; }
+      if (y < lh - 1 && !dil[p + lw] && !seen[p + lw]) { seen[p + lw] = 1; q[qt++] = p + lw; }
+    }
+    const M = 3 * G + 3 * k + 8;
+    const x0 = Math.max(0, bx0 * k - M), y0 = Math.max(0, by0 * k - M), x1 = Math.min(w, (bx1 + 1) * k + M), y1 = Math.min(h, (by1 + 1) * k + M);
+    const cw = x1 - x0, ch = y1 - y0;
+    if (cw * ch > 0.6 * w * h) return gapBridgeFill(img, sx, sy, tolPct, G); // 거의 보드 전체면 그냥 전체로
+    const sub = new Uint8ClampedArray(cw * ch * 4);
+    for (let y = 0; y < ch; y++) sub.set(data.subarray(((y0 + y) * w + x0) * 4, ((y0 + y) * w + x1) * 4), y * cw * 4);
+    const res = gapBridgeFill({ w: cw, h: ch, data: sub }, sx - x0, sy - y0, tolPct, G);
+    if (!res) return null;
+    // 잘라 낸 가장자리(보드 끝이 아닌 쪽)에 칠이 닿았으면 범위가 모자랐던 것 → 보드 전체로
+    const m = res.mask;
+    let touch = false;
+    if (x0 > 0) for (let y = 0; y < ch && !touch; y++) if (m[y * cw]) touch = true;
+    if (x1 < w) for (let y = 0; y < ch && !touch; y++) if (m[y * cw + cw - 1]) touch = true;
+    if (y0 > 0) for (let x = 0; x < cw && !touch; x++) if (m[x]) touch = true;
+    if (y1 < h) for (let x = 0; x < cw && !touch; x++) if (m[(ch - 1) * cw + x]) touch = true;
+    if (touch) return gapBridgeFill(img, sx, sy, tolPct, G);
+    const mask = new Uint8Array(w * h);
+    for (let y = 0; y < ch; y++) mask.set(m.subarray(y * cw, (y + 1) * cw), (y0 + y) * w + x0);
+    return { mask, count: res.count, bridges: res.bridges };
   }
 
   // ---------- 퀵 마스크 (선택 폴더, 클립 스튜디오 '퀵 마스크') ----------
@@ -8105,6 +8226,23 @@ void main(){
     gapRow.after(row);
     FG.row = row;
   }
+  // 큰 보드: 영역을 감싸는 사각형(+여유)만 잘라 넓히기·좁히기 → 결과는 같고 훨씬 빠르다
+  function growMaskFast(mask, w, h, n) {
+    if (!n) return mask;
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (let y = 0; y < h; y++) { const o = y * w; let any = false; for (let x = 0; x < w; x++) if (mask[o + x]) { if (x < x0) x0 = x; if (x > x1) x1 = x; any = true; } if (any) { if (y < y0) y0 = y; y1 = y; } }
+    if (x1 < 0) return mask;
+    const pad = Math.abs(n) + 2;
+    const cx0 = Math.max(0, x0 - pad), cy0 = Math.max(0, y0 - pad), cx1 = Math.min(w, x1 + 1 + pad), cy1 = Math.min(h, y1 + 1 + pad);
+    const cw = cx1 - cx0, ch = cy1 - cy0;
+    if (cw * ch > 0.6 * w * h) return growMaskBy(mask, w, h, n);
+    const sub = new Uint8Array(cw * ch);
+    for (let y = 0; y < ch; y++) sub.set(mask.subarray((cy0 + y) * w + cx0, (cy0 + y) * w + cx1), y * cw);
+    const g = growMaskBy(sub, cw, ch, n);
+    const out = new Uint8Array(w * h);
+    for (let y = 0; y < ch; y++) out.set(g.subarray(y * cw, (y + 1) * cw), (cy0 + y) * w + cx0);
+    return out;
+  }
   // 마스크를 n픽셀 넓히기(+)·좁히기(−) — 거리 변환(원형)
   function growMaskBy(mask, w, h, n) {
     const out = new Uint8Array(w * h), r2 = n * n;
@@ -8174,10 +8312,10 @@ void main(){
     const dx = Math.floor(fx), dy = Math.floor(fy);
     if (dx < 0 || dy < 0 || dx >= img.w || dy >= img.h) return;
     const pct = Math.max(0, Math.min(100, cfg.tol / 2.55));
-    const ff = cfg.gap > 0 && cfg.contig ? gapBridgeFill(img, dx, dy, pct, cfg.gap) : null;
+    const ff = cfg.gap > 0 && cfg.contig ? gapBridgeFillFast(img, dx, dy, pct, cfg.gap) : null;
     let mask = (ff || floodFill(img, dx, dy, pct, null, true, cfg.contig)).mask;
     if (cfg.invert) for (let i = 0; i < mask.length; i++) mask[i] = mask[i] ? 0 : 1;
-    mask = growMaskBy(mask, img.w, img.h, S.fillGrow);
+    mask = growMaskFast(mask, img.w, img.h, S.fillGrow);
     let cnt = 0; for (let i = 0; i < mask.length; i++) cnt += mask[i];
     if (!cnt) { note('칠할 곳이 없어요 (너무 많이 좁혔어요)'); return; }
     const erase0 = cfg.clear || !!S.alpha;
@@ -8254,9 +8392,7 @@ void main(){
         advClipToSelection(px, box); // 선택 영역 밖은 칠하지 않음 (Magma 페인트통과 같게)
         const out = new Uint8ClampedArray(px.length);
         for (let i = 0; i < px.length; i += 4) { const A = px[i + 3]; if (!A) continue; out[i] = Math.min(255, px[i] * 255 / A); out[i + 1] = Math.min(255, px[i + 1] * 255 / A); out[i + 2] = Math.min(255, px[i + 2] * 255 / A); out[i + 3] = A; }
-        const oc = new OffscreenCanvas(W, H);
-        oc.getContext('2d').putImageData(new ImageData(out, box.w, box.h), box.x, box.y);
-        const blob = await oc.convertToBlob({ type: 'image/png' });
+        const blob = await boardPng(W, H, box, out);
         const dt = new DataTransfer();
         dt.items.add(new File([blob], 'fill.png', { type: 'image/png' }));
         document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
