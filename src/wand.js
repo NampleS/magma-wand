@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.30.7';
+  const VERSION = '0.31.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -244,7 +244,7 @@
   // 모드 버튼이 다른 값에 머물러 있으면 Alt+올가미로 빼기가 안 됨(사용자 보고) → 누르는 순간에만 모드를 맞췄다가 손을 떼면 되돌린다.
   // 버튼은 Magma가 이 누르기를 받기 전에 누르므로(끄는 중이 아님) Magma 끌기와 엉키지 않는다.
   const SELMOD = { prev: null, pid: null };
-  const SEL_TOOLS = new Set(['selectRectIcon', 'selectEllipseIcon', 'lassoSelectionIcon']);
+  const SEL_TOOLS = new Set(['selectRectIcon', 'selectEllipseIcon', 'lassoSelectionIcon', 'faWandMagicSparkles']); // 공식 마법봉도 같은 선택 모드 규칙
   on(window, 'pointerdown', (e) => {
     if (!e.isTrusted || e.button !== 0 || S.active || S.busy || SELMOD.prev || e.ctrlKey || e.metaKey) return;
     if (!e.altKey && !e.shiftKey) return;
@@ -4174,6 +4174,11 @@ void main(){
     }
     const tool = S.keys.includes(c) ? 'wand' : S.qkeys.includes(c) ? 'quick' : S.bkeys.includes(c) ? 'brush' : S.lkeys.includes(c) ? 'blur' : S.mkeys.includes(c) ? 'qmask' : S.ykeys.includes(c) ? 'sym' : null;
     if (!tool) return;
+    if (tool === 'wand' && nativeWand()) { // 공식 Magic Wand로 (확장 도구가 켜져 있어도 끄고 넘어감)
+      e.preventDefault(); e.stopImmediatePropagation();
+      activateMember('faWandMagicSparkles');
+      return;
+    }
     if (tool === 'qmask' && S.active && S.tool === 'qmask') { e.preventDefault(); e.stopImmediatePropagation(); activateMember('lassoSelectionIcon'); return; } // 퀵 마스크 단축키를 다시 누르면 나가기(선택으로 반영)
     // 사용자가 고른 키이므로 Magma의 같은 키 동작보다 이 도구를 우선한다
     e.preventDefault(); e.stopImmediatePropagation();
@@ -4202,6 +4207,7 @@ void main(){
     if (!lassoTd) return;
     let after = lassoTd.parentElement;
     for (const def of SC_ROWS) {
+      if (def.key === 'keys' && nativeWand()) { scRows.keys?.remove(); delete scRows.keys; continue; }
       let row = scRows[def.key];
       if (!row || !row.isConnected) { row = buildShortcutRow(lassoTd.parentElement, def); if (!row) return; scRows[def.key] = row; }
       if (after.nextElementSibling !== row) after.after(row);
@@ -5879,7 +5885,7 @@ void main(){
   // 오른쪽에 같은 폴더 도구들이 펼쳐진다. '@'로 시작하는 것은 마법봉 쪽 도구.
   const GROUPS = [
     { id: 'select', members: ['selectRectIcon', 'selectEllipseIcon', 'lassoSelectionIcon', '@qmask'] },
-    { id: 'wand', members: ['@wand', '@quick'] },
+    { id: 'wand', members: ['faWandMagicSparkles', '@wand', '@quick'] }, // 공식 Magic Wand가 있으면 확장 마법봉은 숨김
     { id: 'brush', members: ['faPaintBrush', '@brush'] },
     { id: 'blend', members: ['blendIcon', '@blur', 'liquifyIcon'] },
     { id: 'shape', members: ['faSquare', 'faCircle', 'faSplotch'] },
@@ -5888,10 +5894,12 @@ void main(){
   ];
   const NATIVE_LABEL = { selectRectIcon: '사각형 선택', selectEllipseIcon: '타원 선택', lassoSelectionIcon: '올가미 선택',
     faPaintBrush: '브러시', blendIcon: '블렌드', liquifyIcon: '리퀴파이', faSquare: '사각형', faCircle: '타원', faSplotch: '도형',
-    faHandPaper: '손 (화면 이동)', faUndoAlt: '화면 회전', faSearch: '확대·축소', perspectiveGridToolIcon: '원근 격자' };
+    faHandPaper: '손 (화면 이동)', faUndoAlt: '화면 회전', faSearch: '확대·축소', perspectiveGridToolIcon: '원근 격자', faWandMagicSparkles: '마법봉 (W)' };
   const GRP = { slots: {}, last: Object.assign({}, S.groupLast || {}) };
   const nativeBtn = (name) => toolButtons().find((b) => toolName(b) === name);
-  const memberExists = (m) => m[0] === '@' || !!nativeBtn(m);
+  // Magma 공식 마법봉(Magic Wand, 베타)이 생겨서 확장 마법봉은 공식이 없는 계정에서만 쓴다
+  const nativeWand = () => nativeBtn('faWandMagicSparkles');
+  const memberExists = (m) => (m === '@wand' ? !nativeWand() : m[0] === '@' || !!nativeBtn(m));
   function memberLabel(m) {
     if (m[0] !== '@') return NATIVE_LABEL[m] || m;
     const t = m.slice(1), k = TOOL_KEYS[t] && S[TOOL_KEYS[t]];
