@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.31.3';
+  const VERSION = '0.31.4';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -6304,7 +6304,7 @@ void main(){
       if (e.type === 'pointermove') {
         const V = symView();
         if (!V) return;
-        if (R.snap) { R.snap.cur = V.toDoc(e.clientX, e.clientY); SYM.ver++; symKick(); return; } // 보정된 도형 돌리기·키우기
+        if (R.snap) { QS.shift = !!e.shiftKey; R.snap.cur = V.toDoc(e.clientX, e.clientY); SYM.ver++; symKick(); return; } // 보정된 도형 돌리기·키우기 (Shift = 직선 수평·수직)
         const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
         for (const ce of (evs.length ? evs : [e])) R.pts.push(symRecPt(V, ce, R.ext));
         if (qsOn()) qsHoldReset(e.clientX, e.clientY, () => qsSnapNative(R));
@@ -6312,7 +6312,7 @@ void main(){
         return;
       }
       if (e.type === 'pointerup' || e.type === 'pointercancel') {
-        if (e.type === 'pointerup' && R.snap) { try { const g = SYM.ghost = qsPreview(); setTimeout(() => { if (SYM.ghost === g) { SYM.ghost = null; symKick(); } }, 6000); } catch { SYM.ghost = null; } } // 다 그을 때까지 그대로 보여 줌(혹시 못 그으면 6초 뒤 치움)
+        if (e.type === 'pointerup' && R.snap) { R.snap.lock = QS.shift || !!e.shiftKey; try { const g = SYM.ghost = qsPreview(); setTimeout(() => { if (SYM.ghost === g) { SYM.ghost = null; symKick(); } }, 6000); } catch { SYM.ghost = null; } } // 다 그을 때까지 그대로 보여 줌(혹시 못 그으면 6초 뒤 치움)
         SYM.rec = null;
         qsHoldStop();
         if (e.type === 'pointercancel') { symKick(); return; }
@@ -6491,7 +6491,7 @@ void main(){
   //  - 고급 브러시: 획 버퍼를 비우고 보정된 선으로 다시 찍어 붙여넣기 한 번.
   //  - 대칭 자가 켜져 있으면 보정된 선도 건너편에 함께.
   const QS_HOLD = 1000; // 펜을 멈추고 기다리는 시간 (ms)
-  const QS = { adv: null, hold: { x: 0, y: 0, timer: 0 } };
+  const QS = { adv: null, shift: false, hold: { x: 0, y: 0, timer: 0 } };
   const qsOn = () => S.qsOn !== false;
   const qd = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
   function qsSegDist(p, a, b) {
@@ -6804,10 +6804,33 @@ void main(){
   function qsPts(Q) {
     const v0 = [Q.anchor[0] - Q.piv[0], Q.anchor[1] - Q.piv[1]], v1 = [Q.cur[0] - Q.piv[0], Q.cur[1] - Q.piv[1]];
     const l0 = Math.hypot(...v0), l1 = Math.hypot(...v1);
-    if (l0 < 1e-3 || l1 < 1e-3) return Q.fit.pts;
-    const s = l1 / l0, a = Math.atan2(v1[1], v1[0]) - Math.atan2(v0[1], v0[0]), c = Math.cos(a) * s, n = Math.sin(a) * s;
-    return Q.fit.pts.map((p) => { const dx = p[0] - Q.piv[0], dy = p[1] - Q.piv[1]; return [Q.piv[0] + c * dx - n * dy, Q.piv[1] + n * dx + c * dy]; });
+    let pts = Q.fit.pts;
+    if (l0 >= 1e-3 && l1 >= 1e-3) {
+      const s = l1 / l0, a = Math.atan2(v1[1], v1[0]) - Math.atan2(v0[1], v0[0]), c = Math.cos(a) * s, n = Math.sin(a) * s;
+      pts = Q.fit.pts.map((p) => { const dx = p[0] - Q.piv[0], dy = p[1] - Q.piv[1]; return [Q.piv[0] + c * dx - n * dy, Q.piv[1] + n * dx + c * dy]; });
+    }
+    const sh = Q.lock !== undefined ? Q.lock : QS.shift; // 손 뗀 순간의 Shift로 고정
+    return Q.fit.kind === 'line' && sh && pts.length === 2 ? qsAxisSnap(pts) : pts;
   }
+  // 직선 + Shift: 화면 기준 수평·수직 중 가까운 쪽으로 (시작점 고정, 끝점은 그 축 위로 내림. 보드를 돌려 놓아도 화면 기준)
+  function qsAxisSnap(pts) {
+    const [A, B] = pts, V = symView();
+    if (!V) return Math.abs(B[0] - A[0]) >= Math.abs(B[1] - A[1]) ? [A, [B[0], A[1]]] : [A, [A[0], B[1]]];
+    const a = V.toClient(A[0], A[1]), b = V.toClient(B[0], B[1]);
+    const nb = Math.abs(b[0] - a[0]) >= Math.abs(b[1] - a[1]) ? [b[0], a[1]] : [a[0], b[1]];
+    return [A, V.toDoc(nb[0], nb[1])];
+  }
+  // Shift 누름 상태 (그리는 도중에 눌러도 바로 미리보기에 반영)
+  function qsShift(v) {
+    v = !!v;
+    if (QS.shift === v) return;
+    QS.shift = v;
+    const R = SYM.rec;
+    if ((R && R.snap && R.snap.fit.kind === 'line') || (QS.adv && QS.adv.Q.fit.kind === 'line')) { SYM.ver++; symKick(); }
+  }
+  on(window, 'keydown', (e) => { if (e.key === 'Shift' && e.isTrusted) qsShift(true); }, true);
+  on(window, 'keyup', (e) => { if (e.key === 'Shift') qsShift(false); }, true);
+  on(window, 'blur', () => qsShift(false));
   // 멈춤 감지: 화면에서 5px 넘게 움직이면 다시 잼
   function qsHoldReset(cx, cy, fn) {
     const H = QS.hold;
@@ -6862,11 +6885,12 @@ void main(){
     const A = QS.adv;
     if (!A || e.pointerId !== A.pid) return;
     const V = symView(); if (!V) return;
-    A.Q.cur = V.toDoc(e.clientX, e.clientY); SYM.ver++; symKick();
+    QS.shift = !!e.shiftKey; A.Q.cur = V.toDoc(e.clientX, e.clientY); SYM.ver++; symKick();
   }
   function qsAdvCommit(cancel) {
     const A = QS.adv; QS.adv = null; symKick();
     if (!A || cancel || !ADV.brush) return;
+    A.Q.lock = QS.shift;
     const pts = qsStroke(A.Q, A.ptype === 'pen'), V = symView();
     if (!V || pts.length < 2) return;
     const z = viewZoom() || 1; let t = performance.now();
