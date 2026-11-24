@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.32.0';
+  const VERSION = '0.32.1';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -5589,19 +5589,23 @@ void main(){
   // Magma 올가미 브러시는 Mode(draw/erase)가 둘이지만 Opacity 값은 하나뿐이다. 모드가 바뀔 때(E 누르고 있기·draw/erase 단추·투명색)
   // 그때까지의 값을 그 모드 몫으로 적어 두고, 바뀐 모드의 값을 Opacity 칸에 넣는다. 모드·값 읽기는 Magma 객체(읽기만), 바꾸기는 화면 조작으로만.
   // S.lassoOp = { draw, erase }(%), S.lassoBack = 투명색이 지우기로 바꾸기 전의 모드(끄면 되돌림, 새로고침해도 남게 저장)
-  const LB = { busy: false, mode: null, tries: 0, warned: false };
+  const LB = { busy: false, mode: null, tries: 0, warned: false, down: false };
+  const lbOpRow = () => magmaRows().find((r) => r.querySelector('.slider-label')?.textContent.trim() === 'Opacity');
+  // 편집기를 아직 못 잡았을 때(열린 채 업데이트된 직후)는 화면의 설정 칸에서 읽는다
+  const LB_DOM = { get mode() { const m = getBrushMode(); return m === 'erase' ? 1 : m === 'draw' ? 0 : -1; }, get opacity() { return parseFloat(lbOpRow()?.querySelector('editable-number')?.textContent) / 100; } };
   function lbTool() {
     const E = getEditor(), t = E && E.activeTool;
+    if (!E) return currentTool() === 'lassoBrushIcon' && LB_DOM.mode >= 0 && Number.isFinite(LB_DOM.opacity) ? LB_DOM : null;
     return t && t.name === 'Lasso Brush' && Number.isFinite(t.opacity) && (t.mode === 0 || t.mode === 1) ? t : null;
   }
   const lbMode = (t) => (t.mode === 1 ? 'erase' : 'draw');
   const lbOp = (t) => Math.round(t.opacity * 100);
   function lbIdle() {
     const E = getEditor();
-    return !!E && !E.drawingInProgress && !E.isAltPressed && !S.busy && !S.active && !ALPHA.switching && !SYM.rec && !SYM.replaying;
+    return !LB.down && !(E && (E.drawingInProgress || E.isAltPressed)) && !S.busy && !S.active && !ALPHA.switching && !SYM.rec && !SYM.replaying;
   }
   function lbOpInput() {
-    const row = magmaRows().find((r) => r.querySelector('.slider-label')?.textContent.trim() === 'Opacity');
+    const row = lbOpRow();
     const a = document.activeElement;
     return { row, typing: !!(row && a && a.tagName === 'INPUT' && row.contains(a)) };
   }
@@ -5639,6 +5643,8 @@ void main(){
     const t2 = lbTool(); if (t2 && LB.mode && lbMode(t2) !== LB.mode && lbIdle() && !LB.tries) setTimeout(lbSync, 0); // 바꾸는 사이 또 바뀜(E를 짧게)
   }
   // 모드는 키(E)·단추로 바뀐다 → Magma가 처리한 바로 뒤에 맞춘다. 펜을 떼고 나서도(그리는 중엔 미뤄 둠)
+  on(window, 'pointerdown', (e) => { if (e.isTrusted && e.target === getCanvas()) LB.down = true; }, true);
+  for (const ev of ['pointerup', 'pointercancel', 'blur']) on(window, ev, (e) => { if (e.isTrusted) LB.down = false; }, true);
   for (const ev of ['keydown', 'keyup', 'pointerup']) on(window, ev, (e) => { if (e.isTrusted && !e.repeat && lbTool()) setTimeout(lbSync, 0); }, true);
   on(window, 'click', (e) => {
     const b = e.isTrusted && e.target.closest && e.target.closest('button');
@@ -6373,7 +6379,7 @@ void main(){
         if (R.snap) { QS.shift = !!e.shiftKey; R.snap.cur = V.toDoc(e.clientX, e.clientY); SYM.ver++; symKick(); return; } // 보정된 도형 돌리기·키우기 (Shift = 직선 수평·수직)
         const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
         for (const ce of (evs.length ? evs : [e])) R.pts.push(symRecPt(V, ce, R.ext));
-        if (qsOn()) qsHoldReset(e.clientX, e.clientY, () => qsSnapNative(R));
+        if (qsFor(R.tool)) qsHoldReset(e.clientX, e.clientY, () => qsSnapNative(R));
         symKick();
         return;
       }
@@ -6396,7 +6402,7 @@ void main(){
     if (!canvas || e.target !== canvas || e.button !== 0 || e.altKey || e.ctrlKey || e.metaKey || spaceDown) return;
     if (S.active || S.busy || (!symOn() && !qsOn())) return;
     const tool = currentTool();
-    if (!SYM_NATIVE.has(tool)) return;
+    if (!SYM_NATIVE.has(tool) || (!symOn() && !qsFor(tool))) return;
     const V = symView();
     if (!V) return;
     const E = getEditor();
@@ -6407,7 +6413,7 @@ void main(){
     // Shift+클릭 직선: Magma는 '마지막 획 끝'에서 잇는데, 그 끝이 복사본 끝일 수 있다 → 이 획은 Magma에 넘기지 않고
     // 원본·복사본 모두 내 기록의 끝점에서 이어 그린다(원본을 맨 나중에 그어 Magma의 '마지막 끝'도 원본과 같게)
     if (shift) { e.stopImmediatePropagation(); if (e.cancelable) e.preventDefault(); }
-    if (qsOn()) qsHoldReset(e.clientX, e.clientY, () => qsSnapNative(SYM.rec));
+    if (qsFor(tool)) qsHoldReset(e.clientX, e.clientY, () => qsSnapNative(SYM.rec));
   }
   for (const t of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) on(window, t, symNative, true);
   // Magma가 앞 획을 완전히 마무리할 때까지 기다린다. 마무리 전에 다음 획을 보내면 Magma가 그 점들을
@@ -6559,6 +6565,7 @@ void main(){
   const QS_HOLD = 1000; // 펜을 멈추고 기다리는 시간 (ms)
   const QS = { adv: null, shift: false, hold: { x: 0, y: 0, timer: 0 } };
   const qsOn = () => S.qsOn !== false;
+  const qsFor = (tool) => qsOn() && tool !== 'lassoBrushIcon'; // 올가미류는 멈춰도 도형으로 바꾸지 않음 (사용자 결정)
   const qd = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
   function qsSegDist(p, a, b) {
     const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy;
@@ -6908,7 +6915,7 @@ void main(){
   const qsPressure = (pts) => { const ps = pts.map((p) => p.p).filter((v) => v > 0).sort((a, b) => a - b); return ps.length ? ps[Math.floor(ps.length / 2)] : 0.5; };
   // ----- Magma 브러시 -----
   function qsSnapNative(R) {
-    if (SYM.rec !== R || R.snap || !qsOn()) return;
+    if (SYM.rec !== R || R.snap || !qsFor(R.tool)) return;
     try { qsLog({ what: 'hold', n: R.pts.length, ext: !!R.ext }); } catch { /* 무시 */ }
     const raw = R.from ? [R.from, ...R.pts] : R.pts;
     symPenCheck(R);
