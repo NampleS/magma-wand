@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.35.1';
+  const VERSION = '0.35.2';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -128,11 +128,18 @@
   }
 
   // 현재 도구 설정 칸의 Magma 줄들 (마법봉이 끼워 넣은 줄은 제외)
+  // Magma는 화면 글자를 계정 언어로 번역한다(window.locale = { 영어: 번역 }, 영어 화면이면 없음). 확장이 칸을 글자로 찾을 때는 영어와 번역을 모두 본다.
+  // (예전엔 영어만 봐서, 한국어 Magma에서는 브러시 크기·경도·불투명도·손떨림 보정·페인트통 등을 찾지 못했다 — 사용자 보고)
+  const mT = (en) => { try { const d = window.locale, v = d && typeof d === 'object' ? d[en] : null; return typeof v === 'string' && v ? v : en; } catch { return en; } };
+  const normT = (x) => String(x == null ? '' : x).replace(/\s+/g, ' ').trim();
+  const isT = (text, en) => { const t = normT(text); return t === en || t === normT(mT(en)); };
+  const hasT = (text, en) => { const t = normT(text); return t.includes(en) || t.includes(normT(mT(en))); };
+  const rowOf = (label) => magmaRows().find((r) => isT(r.querySelector('.slider-label')?.textContent, label));
   function magmaRows() { return [...document.querySelectorAll('editor-sliders .tool-sliders .tool-slider:not(.mw-el)')]; }
 
   // "Stabilizer"(손떨림 보정) 값
   function stabilizerRow() {
-    return magmaRows().find((r) => r.querySelector('.slider-label')?.textContent.trim() === 'Stabilizer');
+    return rowOf('Stabilizer');
   }
   function getStabilizer() {
     const row = stabilizerRow();
@@ -174,7 +181,7 @@
   try { if (localStorage.getItem(PENDING_AA) === '1') lassoAASaved = true; } catch { }
   function aaButton() {
     const cb = [...document.querySelectorAll('editor-sliders .selection-tool custom-checkbox')]
-      .find((c) => /^Anti-?alias$/i.test(c.textContent.trim()));
+      .find((c) => /^Anti-?alias$/i.test(c.textContent.trim()) || isT(c.textContent, 'Anti-alias'));
     return cb ? cb.querySelector('button.tgl') : null;
   }
   function getAA() { const b = aaButton(); return b ? b.classList.contains('on') : null; }
@@ -284,22 +291,23 @@
 
   // 올가미 채우기 도구의 "Mode: draw / erase"와 "auto erase mode"
   function brushModeButtons() {
-    return [...document.querySelectorAll('editor-sliders .tool-sliders .tool-row-buttons button')]
-      .filter((b) => /^(draw|erase)$/i.test(b.textContent.trim()));
+    const l = [...document.querySelectorAll('editor-sliders .tool-sliders .tool-row-buttons button')].filter((b) => brushModeOf(b));
+    return l.some((b) => brushModeOf(b) === 'draw') ? l : []; // '지우기'는 페인트통에도 있다(번역이 같음) → 그리기와 짝일 때만
   }
+  const brushModeOf = (b) => (isT(b.textContent, 'draw') || /^draw$/i.test(normT(b.textContent)) ? 'draw' : isT(b.textContent, 'erase') || /^erase$/i.test(normT(b.textContent)) ? 'erase' : null);
   function getBrushMode() {
     const b = brushModeButtons().find((b) => b.classList.contains('on') || b.classList.contains('active'));
-    return b ? b.textContent.trim().toLowerCase() : null;
+    return b ? brushModeOf(b) : null;
   }
   async function setBrushMode(m) {
     if (!m || getBrushMode() === m) return true;
-    const b = brushModeButtons().find((b) => b.textContent.trim().toLowerCase() === m);
+    const b = brushModeButtons().find((b) => brushModeOf(b) === m);
     if (!b) return false;
     press(b);
     return waitFor(() => getBrushMode() === m);
   }
   function autoEraseButton() {
-    const row = magmaRows().find((r) => /auto erase/i.test(r.textContent));
+    const row = magmaRows().find((r) => /auto erase/i.test(r.textContent) || hasT(r.textContent, 'auto erase mode'));
     return row ? row.querySelector('button.tgl') : null;
   }
   function getAutoErase() {
@@ -1586,7 +1594,9 @@
   const SIZE_DIR_KEY = 'magmaWand.sizeDir';
   const BSZ = { on: false, quick: false, ox: 0, oy: 0, zoom: 1, size: 0, el: null, label: null, pid: null };
   function sizeRow() {
-    return magmaRows().find((r) => /^Size(\s+x[\d.]+)?$/.test(r.querySelector('.slider-label')?.textContent.replace(/\s+/g, ' ').trim() || ''));
+    const [a, b] = normT(mT('Size x$1')).split('$1'), q = (x) => String(x || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp('^(Size( x[\\d.]+)?|' + q(mT('Size')) + '|' + q(a) + '[\\d.]+' + q(b) + ')$');
+    return magmaRows().find((r) => re.test(normT(r.querySelector('.slider-label')?.textContent)));
   }
   function getBrushSize() {
     const v = parseFloat(sizeRow()?.querySelector('editable-number')?.textContent.trim());
@@ -4431,20 +4441,20 @@ void main(){
   const SC_ROWS = [{ key: 'keys', label: '마법봉 (Magic Wand)' }, { key: 'qkeys', label: '빠른 선택 (Quick Selection)' }, { key: 'bkeys', label: '고급 브러시 (CSP Brush)' }, { key: 'lkeys', label: '블러 (Blur)' }, { key: 'mkeys', label: '퀵 마스크 (Quick Mask)' }, { key: 'ykeys', label: '대칭 자 (Symmetry Ruler)' }, { key: 'akeys', label: '투명색 전환 (Transparent Color)' }];
   let scRows = {}, stagedAll = null, capturingKey = false, hookedModal = null;
   function ensureShortcutRow() {
-    const modal = [...document.querySelectorAll('.modal-dialog')].find((m) => /Application settings/.test(m.textContent));
+    const modal = [...document.querySelectorAll('.modal-dialog')].find((m) => hasT(m.textContent, 'Application settings'));
     if (!modal) { scRows = {}; stagedAll = null; capturingKey = false; hookedModal = null; return; }
     if (stagedAll === null) stagedAll = { keys: S.keys.slice(), qkeys: S.qkeys.slice(), bkeys: S.bkeys.slice(), akeys: S.akeys.slice(), lkeys: S.lkeys.slice(), mkeys: S.mkeys.slice(), ykeys: S.ykeys.slice(), qsOn: S.qsOn !== false, chatToast: S.chatToast !== false };
     if (hookedModal !== modal) {
       hookedModal = modal;
       modal.addEventListener('click', (e) => {
         const b = e.target.closest && e.target.closest('button');
-        if (b && b.textContent.trim() === 'Save' && stagedAll) {
+        if (b && isT(b.textContent, 'Save') && stagedAll) {
           S.keys = stagedAll.keys.slice(); S.qkeys = stagedAll.qkeys.slice(); S.bkeys = stagedAll.bkeys.slice(); S.akeys = stagedAll.akeys.slice(); S.lkeys = stagedAll.lkeys.slice(); S.mkeys = stagedAll.mkeys.slice(); S.ykeys = stagedAll.ykeys.slice(); S.qsOn = stagedAll.qsOn; S.chatToast = stagedAll.chatToast; saveSettings(); syncTooltip();
         }
       }, true);
     }
     ensureQsSetting(modal);
-    const lassoTd = [...modal.querySelectorAll('td')].find((td) => td.textContent.trim() === 'Lasso Selection');
+    const lassoTd = [...modal.querySelectorAll('td')].find((td) => isT(td.textContent, 'Lasso Selection'));
     if (!lassoTd) return;
     let after = lassoTd.parentElement;
     for (const def of SC_ROWS) {
@@ -4459,13 +4469,13 @@ void main(){
   // Save를 눌러야 저장되고 Cancel·닫기면 버려진다
   let qsSetEls = [];
   function ensureQsSetting(modal) {
-    const thumb = [...modal.querySelectorAll('.custom-control-label')].find((e) => e.textContent.trim() === 'Disable thumbnail generation');
+    const thumb = [...modal.querySelectorAll('.custom-control-label')].find((e) => isT(e.textContent, 'Disable thumbnail generation'));
     if (!thumb) { qsSetEls = []; return; }
     if (qsSetEls.length && qsSetEls.every((e) => e.isConnected)) return;
     qsSetEls.forEach((e) => e.remove()); qsSetEls = [];
     const block = thumb.closest('.pt-2') || thumb.closest('.form-group');
     if (!block || !stagedAll) return;
-    const headTpl = [...modal.querySelectorAll('b')].find((b) => b.textContent.trim() === 'Other settings');
+    const headTpl = [...modal.querySelectorAll('b')].find((b) => isT(b.textContent, 'Other settings'));
     const head = headTpl ? headTpl.cloneNode(false) : document.createElement('b');
     head.textContent = 'Magma Extension'; head.classList.add('mw-el');
     const mkRow = (key, text) => {
@@ -4959,7 +4969,7 @@ void main(){
   function ensureMenuItems() {
     for (const menu of document.querySelectorAll('.dropdown-menu')) {
       const items = [...menu.querySelectorAll('command-menu-item')];
-      const inv = items.find((it) => /Invert selection/.test(it.textContent));
+      const inv = items.find((it) => hasT(it.textContent, 'Invert selection'));
       if (!inv || menu.querySelector('.mw-menu')) continue;
       const invBtn = inv.querySelector('button');
       const disabled = !!(invBtn && (invBtn.disabled || invBtn.classList.contains('disabled')));
@@ -4971,7 +4981,7 @@ void main(){
         if (s) { s.setAttribute('class', 'svg-icon fa-fw icon-mwGrow'); s.setAttribute('viewBox', '0 0 512 512'); s.innerHTML = svg; }
         const walker = document.createTreeWalker(it, NodeFilter.SHOW_TEXT);
         let tn;
-        while ((tn = walker.nextNode())) { if (/Invert selection/.test(tn.nodeValue)) tn.nodeValue = tn.nodeValue.replace(/Invert selection/, text); }
+        while ((tn = walker.nextNode())) { for (const w of ['Invert selection', mT('Invert selection')]) if (tn.nodeValue.includes(w)) { tn.nodeValue = tn.nodeValue.replace(w, text); break; } }
         const b = it.querySelector('button');
         if (b) {
           b.removeAttribute('commandclick');
@@ -5799,7 +5809,7 @@ void main(){
   // 그때까지의 값을 그 모드 몫으로 적어 두고, 바뀐 모드의 값을 Opacity 칸에 넣는다. 모드·값 읽기는 Magma 객체(읽기만), 바꾸기는 화면 조작으로만.
   // S.lassoOp = { draw, erase }(%), S.lassoBack = 투명색이 지우기로 바꾸기 전의 모드(끄면 되돌림, 새로고침해도 남게 저장)
   const LB = { busy: false, mode: null, tries: 0, warned: false, down: false };
-  const lbOpRow = () => magmaRows().find((r) => r.querySelector('.slider-label')?.textContent.trim() === 'Opacity');
+  const lbOpRow = () => rowOf('Opacity');
   // 편집기를 아직 못 잡았을 때(열린 채 업데이트된 직후)는 화면의 설정 칸에서 읽는다
   function lbNow() {
     const t = lbTool();
@@ -5869,7 +5879,7 @@ void main(){
     const b = e.isTrusted && e.target.closest && e.target.closest('button');
     if (!b || !brushModeButtons().includes(b) || !lbTool()) return;
     S.lassoBack = null; saveSettings(); // 직접 고른 모드가 우선
-    if (S.alpha && /^draw$/i.test(b.textContent.trim())) setAlpha(false, '그리기 모드를 골라 투명색을 껐어요');
+    if (S.alpha && brushModeOf(b) === 'draw') setAlpha(false, '그리기 모드를 골라 투명색을 껐어요');
     else setTimeout(lbSync, 0);
   }, true);
 
@@ -5939,7 +5949,7 @@ void main(){
       const oldRow = stabilizerRow();
       if (!(await selectTool('lassoBrushIcon'))) throw new Error('올가미 채우기 도구로 바꾸지 못했어요');
       await waitPanelChange(oldRow);
-      opRow = magmaRows().find((r) => r.querySelector('.slider-label')?.textContent.trim() === 'Opacity');
+      opRow = rowOf('Opacity');
       prevOp = opRow ? parseFloat(opRow.querySelector('editable-number')?.textContent) : null;
       if (prevOp !== null && prevOp !== 100) await setRowNumber(opRow, 100);
       prevMode = getBrushMode(); prevAuto = getAutoErase();
@@ -7208,7 +7218,7 @@ void main(){
   function qsNativeWidth() {
     const size = getBrushSize() || 4, row = sizeRow();
     const pen = !!row && [...row.querySelectorAll('button')].some((b) => b.classList.contains('on') && /penPressure/.test(b.querySelector('svg')?.getAttribute('class') || ''));
-    const mr = magmaRows().find((r) => r.querySelector('.slider-label')?.textContent.trim() === 'Min size');
+    const mr = rowOf('Min size');
     const mn = Math.max(0, Math.min(1, (parseFloat(mr?.querySelector('editable-number')?.textContent) || 0) / 100));
     return (p) => size * (pen ? mn + (1 - mn) * Math.max(0, Math.min(1, p)) : 1);
   }
@@ -7323,14 +7333,16 @@ void main(){
   // Ctrl이 안 눌린 것처럼 보이게 한다(이벤트의 ctrlKey만 가림).
   const TRF = { prev: null, pid: null, t: 0 };
   const tipOf = (b) => b.getAttribute('tooltip') || b.getAttribute('ng-reflect-tooltip') || b.title || '';
-  function trfModeButtons() { return [...document.querySelectorAll('editor-sliders button')].filter((b) => /^Use (scale|skew|perspective|distort) mode$/.test(tipOf(b))); }
+  const TRF_TIPS = ['Use scale mode', 'Use skew mode', 'Use perspective mode', 'Use distort mode'];
+  function trfModeButtons() { return [...document.querySelectorAll('editor-sliders button')].filter((b) => TRF_TIPS.some((t) => isT(tipOf(b), t))); }
+  const trfDistort = () => { const l = trfModeButtons(); return l.length === 4 ? l[3] : null; }; // 번역된 이름이 겹칠 수 있어(왜곡) 순서로
   const trfIsOn = (b) => b.classList.contains('on') || b.classList.contains('active');
   const unCtrl = (e) => { try { Object.defineProperty(e, 'ctrlKey', { value: false }); Object.defineProperty(e, 'metaKey', { value: false }); } catch { } };
   on(window, 'pointerdown', (e) => {
     if (!e.isTrusted || e.button !== 0 || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || S.active) return;
     if (currentTool() !== 'faVectorSquare' || e.target !== getCanvas()) return;
     const btns = trfModeButtons();
-    const dist = btns.find((b) => /distort/.test(tipOf(b)));
+    const dist = trfDistort();
     if (!dist) return;
     const cur = btns.find(trfIsOn);
     if (cur !== dist) { TRF.prev = cur || null; press(dist); }
@@ -7521,7 +7533,7 @@ void main(){
     return [r.left + m[0] * x + m[2] * y + m[4], r.top + m[1] * x + m[3] * y + m[5]];
   }
   const trfBtn = (re) => [...document.querySelectorAll('editor-sliders button')].find((b) => re.test(tipOf(b)));
-  const trfReset = () => [...document.querySelectorAll('editor-sliders button')].find((b) => b.textContent.trim() === 'Reset');
+  const trfReset = () => [...document.querySelectorAll('editor-sliders button')].find((b) => isT(b.textContent, 'Reset'));
   function trfInputs() { return [...document.querySelectorAll('editor-sliders input[type=number]')].slice(0, 5); }
   function setNum(inp, v) {
     const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
@@ -7609,7 +7621,7 @@ void main(){
     let B = sel ? { ...sel.b } : { x: L.rect.x, y: L.rect.y, w: L.rect.w, h: L.rect.h };
     const shown = () => { const v = trfInputs().map((i) => +i.value); return v.length === 5 && Math.abs(v[2] - B.w) < 1.5 && Math.abs(v[3] - B.h) < 1.5 && Math.abs(v[0] - (B.x + B.w / 2)) < 1.5; };
     if (!await waitFor(shown, 1500)) return '변형을 시작하지 못함';
-    if (MS.mode0 === null) { const b = trfModeButtons().find(trfIsOn); MS.mode0 = b ? tipOf(b) : ''; } // 사용자가 쓰던 변형 모드 (끝나면 되돌림)
+    if (MS.mode0 === null) { const b = trfModeButtons().find(trfIsOn); MS.mode0 = b ? trfModeButtons().indexOf(b) + 1 : 0; } // 사용자가 쓰던 변형 모드 (끝나면 되돌림)
     await nextFrame();
     const mine = () => { const s = u.surface; return s && s.toolId === 20 && s.layer === L; };
     const baseOk = () => { const d = mine() && u.surface.distortionBaseRect; return d && Math.abs(d.x - B.x) < 0.5 && Math.abs(d.y - B.y) < 0.5 && Math.abs(d.w - B.w) < 0.5 && Math.abs(d.h - B.h) < 0.5; };
@@ -7617,7 +7629,7 @@ void main(){
     if (aff) {
       const [X, Y, W, Hh, R] = trfInputs();
       if (X && Y && W && Hh && R) {
-        const lock = trfBtn(/^Keep proportions/);
+        const lock = [...document.querySelectorAll('editor-sliders button')].find((b) => isT(tipOf(b), 'Keep proportions when scaling') || /^Keep proportions/.test(tipOf(b)));
         const locked = lock && trfIsOn(lock);
         if (locked) press(lock);
         const [cx, cy] = msApply(H, [B.x + B.w / 2, B.y + B.h / 2]);
@@ -7635,7 +7647,7 @@ void main(){
       }
     }
     // 원근·왜곡·뒤집기(또는 숫자로 안 맞을 때): 'distort' 모드에서 네 모서리를 하나씩 목표 자리로
-    const dist = trfBtn(/^Use distort mode$/);
+    const dist = trfDistort();
     if (!dist) return '왜곡 모드 단추를 찾지 못함';
     if (!trfIsOn(dist)) { press(dist); await nextFrame(); }
     for (let pass = 0; pass < 2; pass++) {
@@ -7820,7 +7832,7 @@ void main(){
         if (it) { it.cv.remove(); it.rest?.remove(); }
       }
       // 마지막 레이어 변형을 끝내고 원래 모드·레이어·도구로
-      if (MS.mode0) { const b = trfModeButtons().find((x) => tipOf(x) === MS.mode0); if (b && !trfIsOn(b)) { press(b); await nextFrame(); } }
+      if (MS.mode0) { const b = trfModeButtons()[MS.mode0 - 1]; if (b && !trfIsOn(b)) { press(b); await nextFrame(); } }
       if (results.length) {
         await selectTool('moveIcon');
         const back = userAct && userAct !== ss.L && E.drawing.layers.includes(userAct) ? userAct : ss.L;
@@ -7854,7 +7866,7 @@ void main(){
   const AA_W = { mid: 2.5, strong: 5 };
   const AAX = { rows: new Map(), busy: false, sig: '' };
   const aaTool = () => { const E = getEditor(), t = E && E.activeTool; return t && (t.name === 'Brush' || t.name === 'Eraser') && typeof t.pixelation === 'boolean' ? t : null; };
-  const aaHardRow = () => { const l = [...document.querySelectorAll('editor-sliders .shape-slider .slider-label')].find((x) => x.textContent.trim() === 'Hardness'); return l ? l.parentElement : null; };
+  const aaHardRow = () => { const l = [...document.querySelectorAll('editor-sliders .shape-slider .slider-label')].find((x) => isT(x.textContent, 'Hardness')); return l ? l.parentElement : null; };
   const aaHard = (lv, size) => Math.max(lv === 'mid' ? 45 : 25, Math.min(99, Math.round(100 * (1 - AA_W[lv] / Math.max(0.5, size / 2))))); // 가는 붓은 가운데가 흐려지지 않게 아래 한도
   function aaLevel(t) {
     if (t.pixelation) return 'none';
@@ -7871,7 +7883,7 @@ void main(){
     await setRowNumber(row, v);
     return waitFor(() => Math.round(t.hardness * 100) === v, 500);
   }
-  const aaPixBox = () => [...document.querySelectorAll('editor-brushes-popup custom-checkbox')].find((c) => c.textContent.trim() === 'Pixelation') || null;
+  const aaPixBox = () => [...document.querySelectorAll('editor-brushes-popup custom-checkbox')].find((c) => isT(c.textContent, 'Pixelation')) || null;
   // Pixelation 칸은 Magma 'Brush Advanced Settings' 창에만 있다 → 닫혀 있으면 안 보이게 잠깐 열어 누르고 닫는다
   async function aaSetPix(t, on) {
     if (t.pixelation === on) return true;
@@ -7881,14 +7893,14 @@ void main(){
     document.documentElement.classList.toggle('mw-bphide', !wasOpen);
     try {
       if (!wasOpen) {
-        const b = [...document.querySelectorAll('editor-sliders .tool-sliders button')].find((x) => /Open Advanced Settings/.test(x.textContent));
+        const b = [...document.querySelectorAll('editor-sliders .tool-sliders button')].find((x) => hasT(x.textContent, 'Open Advanced Settings'));
         if (!b) return false;
         press(b);
         if (!await waitFor(pop, 2000)) return false;
       }
       if (!await waitFor(aaPixBox, wasOpen ? 50 : 700)) { // 다른 탭이 열려 있음 → 첫 탭(Brush Tip Shape)으로
         const tabs = [...document.querySelectorAll('editor-brushes-popup button, editor-brushes-popup .brush-tab, editor-brushes-popup [role=tab]')];
-        const tip = tabs.find((x) => x.textContent.trim() === 'Brush Tip Shape');
+        const tip = tabs.find((x) => isT(x.textContent, 'Brush Tip Shape'));
         backTab = wasOpen ? tabs.find((x) => x !== tip && (x.classList.contains('active') || x.classList.contains('on'))) || null : null;
         if (!tip) return false;
         press(tip);
@@ -8194,7 +8206,7 @@ void main(){
     if (k === 'mode') {
       hdr.querySelector('layer-mode-select button')?.click();
       await waitFor(() => document.querySelector('#layer-modes'), 800);
-      const it = [...document.querySelectorAll('#layer-modes .dropdown-item')].find((b) => b.textContent.trim() === String(v));
+      const it = [...document.querySelectorAll('#layer-modes .dropdown-item')].find((b) => isT(b.textContent, String(v)));
       if (!it) { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true })); return '합성 모드를 찾지 못함'; }
       it.click();
       return await waitFor(() => L.mode === v, 1000) ? null : '합성 모드가 바뀌지 않음';
@@ -8787,10 +8799,10 @@ void main(){
   // 0이 아니면: 클릭을 마법봉이 받아 Magma 페인트통 설정(대상 레이어·허용 오차·이어진 곳만·빈틈 닫기·반전·채우기/지우기·
   // 불투명도)을 그대로 읽어 영역을 계산하고, n픽셀 넓히거나(+) 좁힌(−) 뒤 올가미 채우기 한 번으로 칠한다(되돌리기 한 칸).
   const FG = { row: null, block: false, warned: {} };
-  const fgRow = (label) => magmaRows().find((r) => r.querySelector('.slider-label')?.textContent.trim() === label);
+  const fgRow = rowOf;
   const fgRadio = (label) => fgRow(label)?.querySelector('button.on, button.active')?.getAttribute('radiovalue') || null;
   const fgCheck = (label) => {
-    const lab = [...document.querySelectorAll('editor-sliders .tool-sliders .custom-control-label')].find((x) => x.textContent.trim() === label);
+    const lab = [...document.querySelectorAll('editor-sliders .tool-sliders .custom-control-label')].find((x) => isT(x.textContent, label));
     const b = lab && lab.closest('label')?.querySelector('button[role=checkbox]');
     return b ? b.getAttribute('aria-checked') === 'true' : null;
   };
@@ -8799,7 +8811,7 @@ void main(){
     const fillBtn = fgRow('Fill mode')?.querySelector('button.on');
     return {
       target: fgRadio('Target layer'), mode: fgRadio('Mode'),
-      clear: fillBtn ? fillBtn.textContent.trim() === 'clear' : false,
+      clear: fillBtn ? isT(fillBtn.textContent, 'clear') : false,
       invert: !!fgCheck('Invert'), contig: fgCheck('Contiguous') !== false,
       tol: fgNum('Tolerance') ?? 0, gap: fgNum('Close gap') ?? 0, opacity: fgNum('Opacity') ?? 100, aa: !!fgCheck('Anti-alias'),
     };
@@ -8897,10 +8909,10 @@ void main(){
   // 투명색 + Magma가 칠하는 경우: Fill mode를 이번 한 번만 clear로 (손을 떼고 나면 fill로 되돌림)
   function fgNativeClear() {
     const btns = [...(fgRow('Fill mode')?.querySelectorAll('button') || [])];
-    const fillB = btns.find((b) => b.textContent.trim() === 'fill'), clearB = btns.find((b) => b.textContent.trim() === 'clear');
+    const fillB = btns.find((b) => isT(b.textContent, 'fill')), clearB = btns.find((b) => isT(b.textContent, 'clear'));
     if (!fillB || !clearB || clearB.classList.contains('on')) return;
     clearB.click();
-    const back = () => { window.removeEventListener('pointerup', back, true); setTimeout(() => { const f = [...(fgRow('Fill mode')?.querySelectorAll('button') || [])].find((b) => b.textContent.trim() === 'fill'); if (f && !f.classList.contains('on')) f.click(); }, 300); };
+    const back = () => { window.removeEventListener('pointerup', back, true); setTimeout(() => { const f = [...(fgRow('Fill mode')?.querySelectorAll('button') || [])].find((b) => isT(b.textContent, 'fill')); if (f && !f.classList.contains('on')) f.click(); }, 300); };
     window.addEventListener('pointerup', back, true);
   }
   function onFillClick(e) {
@@ -8979,7 +8991,7 @@ void main(){
       if (prevAuto) await setAutoErase(false);
       // 안전: 원하는 모드인지 확인되지 않으면 긋지 않는다
       if (getBrushMode() !== (erase ? 'erase' : 'draw') || getAutoErase() === true) throw new Error('올가미 채우기 모드를 맞추지 못해 안전을 위해 멈췄어요');
-      opRow = magmaRows().find((r) => r.querySelector('.slider-label')?.textContent.trim() === 'Opacity');
+      opRow = rowOf('Opacity');
       prevOp = opRow ? parseFloat(opRow.querySelector('editable-number')?.textContent) : null;
       if (prevOp !== null && prevOp !== cfg.opacity) await setRowNumber(opRow, cfg.opacity);
       prevStab = getStabilizer(); if (prevStab) await setStabilizer(0);
@@ -9292,7 +9304,7 @@ void main(){
   // 컴퓨터에 설치된 글꼴은 Magma 글자 레이어에 쓸 수 없어서(다른 사람 화면엔 그 글꼴이 없음) '글자 그림'으로 붙여 넣는다.
   const KO_FONTS = ['Paperlogy', 'Syongsyong'];
   const HANGUL = /[ᄀ-ᇿ㄰-㆏가-힣]/;
-  function textFontRow() { return magmaRows().find((r) => r.querySelector('.slider-label')?.textContent.trim() === 'Font') || [...document.querySelectorAll('editor-sliders .tool-slider')].find((r) => /^Font/.test(r.textContent.trim())); }
+  function textFontRow() { return rowOf('Font') || [...document.querySelectorAll('editor-sliders .tool-slider')].find((r) => /^Font/.test(r.textContent.trim()) || normT(r.textContent).startsWith(mT('Font'))); }
   function currentFontName() { const r = textFontRow(); const i = r && r.querySelector('font-selector input, input'); return i ? i.value.trim() : ''; }
   async function setMagmaFont(name) {
     const row = textFontRow();
@@ -9670,7 +9682,7 @@ void main(){
       const oldRow = stabilizerRow();
       if (!(await selectTool('lassoBrushIcon'))) throw new Error('올가미 채우기 도구로 바꾸지 못했어요');
       await waitPanelChange(oldRow);
-      opRow = magmaRows().find((x) => x.querySelector('.slider-label')?.textContent.trim() === 'Opacity');
+      opRow = rowOf('Opacity');
       prevOp = opRow ? parseFloat(opRow.querySelector('editable-number')?.textContent) : null;
       if (prevOp !== null && prevOp !== 100) await setRowNumber(opRow, 100);
       prevMode = getBrushMode(); prevAuto = getAutoErase();
@@ -10055,7 +10067,7 @@ void main(){
     html.mx-dock-on .editor-right, html.mx-dock-on .editor-left { visibility: hidden !important; pointer-events: none !important; }
     html.mx-dock-on:not(.mx-uihidden) .editor { inset: var(--mx-t, 43px) var(--mx-r, 261px) var(--mx-b, 0px) var(--mx-l, 40px) !important; }
     html.mx-uihidden .mx-dock { display: none !important; }
-    html.mx-dock-on editor-color button[tooltip="Layout options"], html.mx-dock-on [command="toggle-hide-column"] { display: none !important; }
+    html.mx-dock-on editor-color button[tooltip="Layout options"], html.mx-dock-on editor-color button.mx-cog, html.mx-dock-on [command="toggle-hide-column"] { display: none !important; }
     .mx-dock { position: absolute; left: 0; right: 0; bottom: 0; top: 43px; pointer-events: none; z-index: 4; }
     .mx-hold { display: none !important; }
     .mx-frame { position: absolute; pointer-events: auto; display: flex; flex-direction: column; box-sizing: border-box; isolation: isolate;
@@ -10333,7 +10345,7 @@ void main(){
       for (const r of sel.querySelectorAll(':scope > *')) {
         if (r.classList.contains('mw-el')) continue;
         const label = r.querySelector('.slider-label')?.textContent.trim();
-        if (label === 'Stabilizer' || /Send to chat|Set as My Avatar/i.test(r.textContent)) r.classList.add('mw-hide');
+        if (isT(label, 'Stabilizer') || /Send to chat|Set as My Avatar/i.test(r.textContent) || hasT(r.textContent, 'Send to chat') || hasT(r.textContent, 'Set as My Avatar')) r.classList.add('mw-hide');
       }
       // 안티에일리어스는 마법봉이 알아서 끄고 켜므로 숨긴다 (마법봉은 항상 픽셀 단위로 정확하게)
       aaButton()?.closest('custom-checkbox')?.classList.add('mw-hide');
@@ -11002,12 +11014,13 @@ void main(){
     setTimeout(() => { if (DK.menuClose === close) window.addEventListener('pointerdown', close, true); }, 0);
   }
   // Magma 레이아웃 설정 창(숨긴 ⚙ 버튼)의 항목을 사용자가 누르는 것처럼 대신 누른다
+  const dkCog = () => [...document.querySelectorAll('button[tooltip]')].find((b) => isT(b.getAttribute('tooltip'), 'Layout options')) || null;
   async function dkLayoutOption(label) {
-    const cog = document.querySelector('button[tooltip="Layout options"]'); // 모드마다 자리가 다름 (Super Simple은 오른쪽 위 아이콘 막대)
+    const cog = dkCog(); // 모드마다 자리가 다름 (Super Simple은 오른쪽 위 아이콘 막대)
     if (!cog) { toast('레이아웃 설정 단추를 찾지 못했어요'); return; }
     cog.click();
     let it = null;
-    for (let i = 0; i < 20 && !it; i++) { await sleep(30); it = [...document.querySelectorAll('.dropdown-menu.show .dropdown-item')].find((b) => b.textContent.replace(/\s+/g, ' ').trim().startsWith(label)); }
+    for (let i = 0; i < 20 && !it; i++) { await sleep(30); it = [...document.querySelectorAll('.dropdown-menu.show .dropdown-item')].find((b) => { const t = normT(b.textContent); return t.startsWith(label) || t.startsWith(normT(mT(label))); }); }
     if (it) it.click();
     await sleep(60);
     if (document.querySelector('.dropdown-menu.show') && cog.getAttribute('aria-expanded') === 'true') cog.click();
@@ -11088,6 +11101,7 @@ void main(){
   function dkTick() {
     if (!document.querySelector('editor-box')) { if (DK.on) dkStop(); return; }
     dkEnsureMenuBtn();
+    { const c = dkCog(); if (c && !c.classList.contains('mx-cog')) c.classList.add('mx-cog'); }
     const cfg = dkLoadCfg();
     // 오른쪽 기둥·왼쪽 도구 막대가 있는 보통 배치에서만 패널로 다룬다. Super Simple 모드·Tab으로 UI를 숨긴 동안은
     // 옮긴 조각을 원래 자리로 돌려 Magma 화면을 그대로 쓰고(배치는 저장), 보통 배치로 돌아오면 다시 씌운다.
