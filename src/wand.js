@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.32.1';
+  const VERSION = '0.33.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -1883,6 +1883,19 @@
     const s = new TextDecoder('utf-16le').decode(b.subarray(b.length & 1 ? 1 : 0));
     return (s.match(/[0-9a-f]{6,}-[0-9a-f-]{8,}/gi) || []);
   };
+  // 입·출 적용 대상: 빅엔디언 u32 [12, 개수, 12] + (설정 번호, 켜짐, 최소%) 묶음. 길이가 적혀 있어도 대상이 모두 꺼져 있으면 아무 일도 없다
+  // (G펜처럼 '입·출 20'이 기본으로 켜져 있지만 대상이 없는 브러시가 대부분 — 예전엔 이걸 안 읽어 양끝이 늘 가늘어졌음)
+  function parseInOut(b) {
+    if (!(b instanceof Uint8Array) || b.length < 24) return null;
+    const dv = new DataView(b.buffer, b.byteOffset, b.byteLength), NAME = { 112: 'opacity', 1001: 'size', 1021: 'flow', 1051: 'thick' }, o = {};
+    const head = dv.getUint32(0), n = dv.getUint32(4), st = dv.getUint32(8);
+    if (head < 12 || st < 12 || n > 200) return null;
+    for (let i = 0; i < n && head + i * st + 12 <= b.length; i++) {
+      const k = NAME[dv.getUint32(head + i * st)];
+      if (k && dv.getUint32(head + i * st + 4)) o[k] = Math.max(0, Math.min(1, dv.getUint32(head + i * st + 8) / 100));
+    }
+    return Object.keys(o).length ? o : null;
+  }
   async function parseSut(buf, fileName) {
     const T = sqliteTables(new Uint8Array(buf));
     if (!T.Variant) throw new Error('브러시 설정을 찾지 못했어요');
@@ -1904,12 +1917,13 @@
       const uuid = (String(m.OriginalPath || m.CatalogPath || '').match(/[0-9a-f]{6,}-[0-9a-f-]{8,}/i) || [''])[0];
       materials.push({ uuid, png: png ? new Blob([png], { type: 'image/png' }) : null, thumb: thumb ? new Blob([thumb], { type: 'image/png' }) : null });
     }
-    const tipIds = blobStrings(v.BrushPatternImageArray), texIds = blobStrings(v.TextureImage), dualIds = v.UseDualBrush ? blobStrings(v.DualPatternImageArray) : [];
+    const tipIds = blobStrings(v.BrushPatternImageArray), texIds = blobStrings(v.TextureImage), dualIds = v.UseDualBrush && v.DualUsePatternImage !== 0 ? blobStrings(v.DualPatternImageArray) : [];
     const findMat = (id, i) => materials.find((m) => m.uuid && id && (m.uuid.includes(id) || id.includes(m.uuid))) || null;
     const tips = v.BrushUsePatternImage ? [...new Set(tipIds.map((id) => findMat(id)).filter(Boolean))] : [];
     if (v.BrushUsePatternImage && !tips.length && materials.length) tips.push(materials[0]);
     const texture = texIds.length ? (findMat(texIds[0]) || materials.find((m) => !tips.includes(m)) || null) : null;
     const num = (x, d) => (Number.isFinite(x) ? x : d);
+    const inOut = parseInOut(v.BrushInOutTarget), cm = num(v.CompositeMode, 0);
     const brush = {
       name: (node && node.NodeName) || String(fileName || '브러시').replace(/\.sut$/i, ''),
       size: num(v.BrushSize, 10), sizeEff: parseEffector(v.BrushSizeEffector),
@@ -1920,25 +1934,28 @@
       thickness: num(v.BrushThickness, 100) / 100, thickEff: parseEffector(v.BrushThicknessEffector), vertical: !!v.BrushVerticalThicknes,
       rotation: num(v.BrushRotation, 0), rotMask: num(v.BrushRotationEffector, 3), rotRandom: num(v.BrushRotationRandomScale, 100) / 100,
       aa: num(v.AntiAlias, 1), smoothing: num(v.FlickerReduction, 0),
-      tipOrder: num(v.BrushPatternOrderType, 0), flipH: num(v.BrushPatternReverseHorizontal, 0), flipV: num(v.BrushPatternReverseVertical, 0),
+      tipOrder: num(v.BrushPatternOrderType2, num(v.BrushPatternOrderType, 0)), flipH: num(v.BrushPatternReverseHorizontal, 0), flipV: num(v.BrushPatternReverseVertical, 0),
       ribbon: !!v.BrushRibbon,
       texDensity: num(v.TextureDensity, 50) / 100, texDensEff: parseEffector(v.TextureDensityEffector), texScale: num(v.TextureScale2, 100) / 100,
       texRotate: num(v.TextureRotate, 0), texInvert: !!v.TextureReverseDensity, texPerStamp: !!v.TextureForPlot,
       spray: v.BrushUseSpray ? { size: num(v.BrushSpraySize, 2), sync: !!v.BrushSpraySizeSyncBrushSize, density: Math.max(1, num(v.BrushSprayDensity, 1)),
         bias: num(v.BrushSprayBias, 0) / 100, sizeEff: parseEffector(v.BrushSpraySizeEffector), densEff: parseEffector(v.BrushSprayDensityEffector) } : null,
       jitter: v.BrushChangePatternColor ? { h: num(v.BrushHueChange, 0), s: num(v.BrushSaturationChange, 0), v: num(v.BrushValueChange, 0) } : null,
-      taperIn: v.BrushUseIn ? num(v.BrushInLength, 20) : 0, taperOut: v.BrushUseOut ? num(v.BrushOutLength, 20) : 0,
+      taperIn: v.BrushUseIn && inOut ? num(v.BrushInLength, 20) : 0, taperOut: v.BrushUseOut && inOut ? num(v.BrushOutLength, 20) : 0, inOut, sutVer: 2,
+      minPx: !!v.BrushAtLeast1Pixel, tipMax: !!v.BrushBlendPatternByDarken, // '브러시 끝을 비교(어두운)로 합성' = 겹쳐도 진해지지 않음
+      sprayRot: v.BrushUseSpray && Number.isFinite(v.BrushRotationInSpray) ? { deg: v.BrushRotationInSpray, mask: num(v.BrushRotationEffectorInSpray, 1), random: num(v.BrushRotationRandomInSpray, 100) / 100 } : null,
+      strokeJitter: v.BrushChangeStrokeColor ? { h: num(v.BrushStrokeHueChange, 0), s: num(v.BrushStrokeSaturationChange, 0), v: num(v.BrushStrokeValueChange, 0) } : null,
       // 합성 모드: 아직 번호 뜻을 다 모름 → 막지 않고 '보통'으로 그린다(설정 창에서 곱하기·지우기로 바꿀 수 있음)
-      erase: false, compositeRaw: num(v.CompositeMode, 0),
+      erase: false, compositeRaw: cm, blend: cm === 27 ? 'erase' : cm === 2 ? 'multiply' : undefined, // 27 = 지우기, 2 = 곱하기
       // 2중 브러시: 두 번째 끝 모양을 따로 찍어 만든 무늬로 획을 깎아 낸다(곱하기)
       dual: v.UseDualBrush ? { size: num(v.DualSize, 30), sizeEff: parseEffector(v.DualSizeEffector), flow: num(v.DualFlow, 100) / 100, hardness: num(v.DualHardness, 100) / 100,
         interval: Math.max(0.01, num(v.DualInterval, 10) / 100), thickness: num(v.DualThickness, 100) / 100, rotation: num(v.DualRotation, 0), rotMask: num(v.DualRotationEffector, 3),
-        rotRandom: num(v.DualRotationRandomScale, 100) / 100, spray: !!v.DualUseSpray, flipH: num(v.DualPatternReverseHorizontal, 0), flipV: num(v.DualPatternReverseVertical, 0) } : null,
+        rotRandom: num(v.DualRotationRandomScale, 100) / 100, spray: !!v.DualUseSpray, sprayP: v.DualUseSpray ? { size: num(v.DualSpraySize, 2), sync: !!v.DualSpraySizeSyncBrushSize, density: Math.max(1, num(v.DualSprayDensity, 1)), bias: num(v.DualSprayBias, 0) / 100 } : null, flipH: num(v.DualPatternReverseHorizontal, 0), flipV: num(v.DualPatternReverseVertical, 0) } : null,
       // 색 혼합: BrushWaterColor 1 = 블렌드, 그 밖 = 물감 섞기 · 물감량 BrushMixColor · 물감 농도 BrushMixAlpha · 색 늘이기 BrushMixColorExtension
       mix: v.BrushUseWaterColor ? { mode: num(v.BrushWaterColor, 0) === 1 ? 'blend' : 'paint', amount: num(v.BrushMixColor, 50) / 100, density: num(v.BrushMixAlpha, 50) / 100,
         stretch: num(v.BrushMixColorExtension, 10) / 100, amountEff: parseEffector(v.BrushMixColorEffector), densEff: parseEffector(v.BrushMixAlphaEffector), ref: 'layer' } : null,
       wedge: v.BrushUseWaterEdge ? { on: true, radius: num(v.BrushWaterEdgeRadius, 3), alpha: num(v.BrushWaterEdgeAlphaPower, 20) / 100, value: num(v.BrushWaterEdgeValuePower, 0) / 100 } : null,
-      unsupported: [num(v.CompositeMode, 0) !== 0 && `합성 모드(${num(v.CompositeMode, 0)}번)는 '보통'으로 그려요 — 지우개 브러시면 ⚙ 설정 → 잉크 → 합성 모드에서 '지우기'`].filter(Boolean),
+      unsupported: [![0, 2, 27].includes(cm) && `합성 모드(${cm}번)는 '보통'으로 그려요 — 지우개 브러시면 ⚙ 설정 → 잉크 → 합성 모드에서 '지우기'`].filter(Boolean),
     };
     brush.baseSize = brush.size;
     const dualTip = dualIds.length ? (findMat(dualIds[0]) || null) : null;
@@ -1971,32 +1988,50 @@
     const st = await advStore('images', 'readwrite');
     for (const k of [...(b.tips || []).flatMap((t) => [t.key, t.thumbKey]), b.texture && b.texture.key, b.texture && b.texture.thumbKey]) if (k) st.delete(k);
   }
+  // 온전한 PNG라도 그림이 비어 있으면(전부 투명이거나 한 가지 색) 실제 소재가 아니다 → PNG 필요
+  async function advUsable(blob) {
+    if (!blob) return false;
+    try {
+      const bmp = await createImageBitmap(blob);
+      const sc = Math.min(1, 256 / Math.max(bmp.width, bmp.height));
+      const w = Math.max(1, Math.round(bmp.width * sc)), h = Math.max(1, Math.round(bmp.height * sc));
+      const oc = new OffscreenCanvas(w, h), g = oc.getContext('2d', { willReadFrequently: true });
+      g.drawImage(bmp, 0, 0, w, h);
+      const d = g.getImageData(0, 0, w, h).data;
+      let amin = 255, amax = 0, lmin = 255, lmax = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        amin = Math.min(amin, d[i + 3]); amax = Math.max(amax, d[i + 3]);
+        if (d[i + 3] > 8) { const l = (d[i] + d[i + 1] + d[i + 2]) / 3; lmin = Math.min(lmin, l); lmax = Math.max(lmax, l); }
+      }
+      if (amax < 8) return false;                       // 전부 투명
+      if (amin > 247 && lmax - lmin < 8) return false;  // 불투명한 한 가지 색
+      return true;
+    } catch { return false; }
+  }
+  // 보호된 소재라 원본을 쓸 수 없을 때: 파일에 그대로(암호 없이) 들어 있는 소재 미리보기 그림(긴 쪽 300픽셀, 투명도 포함)을 끝 모양으로 쓴다.
+  // 원본이 아니므로 큰 크기에서는 조금 부드럽다(approx) — 원본 PNG를 넣으면 바뀐다.
+  async function advUseThumb(t, dims) {
+    if (!t || t.key || !t.thumbKey || t.thumbTried) return false;
+    t.thumbTried = true;
+    const bl = await advGetImage(t.thumbKey);
+    if (!bl || !(await advUsable(bl))) return true;
+    if (dims) { // 원본 크기를 알면 비율이 같은지 (긴 띠 모양은 미리보기가 정사각형으로 줄어 있어 쓰면 망가짐)
+      const bm = await createImageBitmap(bl), k = (bm.width / bm.height) / (dims[0] / dims[1]);
+      if (k < 0.8 || k > 1.25) return true;
+    }
+    t.key = t.thumbKey; t.needPng = false; t.approx = true;
+    return true;
+  }
   // .sut 파일 → 저장된 브러시 (끝 모양 PNG가 보호돼 있으면 needPng 표시)
   async function advImportSut(file) {
     const { brush, tips, texture, dualTip } = await parseSut(await file.arrayBuffer(), file.name);
-    // 온전한 PNG라도 그림이 비어 있으면(전부 투명이거나 한 가지 색) 실제 소재가 아니다 → PNG 필요
-    const usable = async (blob) => {
-      if (!blob) return false;
-      try {
-        const bmp = await createImageBitmap(blob);
-        const sc = Math.min(1, 256 / Math.max(bmp.width, bmp.height));
-        const w = Math.max(1, Math.round(bmp.width * sc)), h = Math.max(1, Math.round(bmp.height * sc));
-        const oc = new OffscreenCanvas(w, h), g = oc.getContext('2d', { willReadFrequently: true });
-        g.drawImage(bmp, 0, 0, w, h);
-        const d = g.getImageData(0, 0, w, h).data;
-        let amin = 255, amax = 0, lmin = 255, lmax = 0;
-        for (let i = 0; i < d.length; i += 4) {
-          amin = Math.min(amin, d[i + 3]); amax = Math.max(amax, d[i + 3]);
-          if (d[i + 3] > 8) { const l = (d[i] + d[i + 1] + d[i + 2]) / 3; lmin = Math.min(lmin, l); lmax = Math.max(lmax, l); }
-        }
-        if (amax < 8) return false;                       // 전부 투명
-        if (amin > 247 && lmax - lmin < 8) return false;  // 불투명한 한 가지 색
-        return true;
-      } catch { return false; }
-    };
     const slot = async (m) => {
-      const ok = await usable(m.png);
-      return { key: ok ? await advPutImage(m.png) : null, thumbKey: m.thumb ? await advPutImage(m.thumb) : null, needPng: !ok };
+      const ok = await advUsable(m.png);
+      const t = { key: ok ? await advPutImage(m.png) : null, thumbKey: m.thumb ? await advPutImage(m.thumb) : null, needPng: !ok };
+      let dims = null;
+      if (!ok && m.png) { try { const bm = await createImageBitmap(m.png); dims = [bm.width, bm.height]; } catch { /* 크기 모름 */ } }
+      await advUseThumb(t, dims);
+      return t;
     };
     brush.id = 'b_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     brush.added = Date.now();
@@ -2310,6 +2345,9 @@ void main(){
       if (!item) continue;
       t.key = await advPutImage(await builtinBlob(item, item.size || 256)); t.bver = BUILTIN_VER; changed = true;
     }
+    // 예전에 가져온 .sut: 모양이 없던 것은 미리보기 그림으로 채우고, 대상이 꺼진 기본 입·출(20)은 끈다 (나머지 새 설정은 다시 가져와야 읽힘)
+    for (const t of [...(brush.tips || []), brush.texture, brush.dual && brush.dual.tip]) if (t && t.needPng && !(brush.ribbon && (brush.tips || []).includes(t)) && await advUseThumb(t)) changed = true;
+    if (brush.compositeRaw !== undefined && !brush.sutVer) { brush.sutVer = 1; if (brush.taperIn === 20) brush.taperIn = 0; if (brush.taperOut === 20) brush.taperOut = 0; changed = true; }
     // 예전 버전이 잘못 읽은 효과 곡선(새 클립 스튜디오 .sut): 그리기는 곧은 곡선으로 하고, 다시 가져오라고 한 번 알린다
     if (!brush.preset && !brush.badCurveWarned && advHasBadCurve(brush)) { brush.badCurveWarned = true; changed = true; toast(`'${brush.name}'의 필압·속도 곡선을 예전 버전이 잘못 읽었어요 — 지금은 곧은 곡선으로 그려요. .sut를 다시 가져오면 원래 곡선대로 돼요`); }
     // 수채 프리셋으로 만든 예전 브러시: 곱하기 → 물감 겹치기(감산 혼합)로 한 번만 바꿔 준다
@@ -2341,6 +2379,10 @@ void main(){
     if (S.advSize > 0 && S.advSize !== b.size) { b.size = S.advSize; advSaveSoon(); }
     const er = !!S.alpha || b.blend === 'erase';
     const s = { pts: [], acc: 0, dist: 0, last: null, speed: 0, idx: 0, dir: 1, box: null, color: er ? [0, 0, 0] : advColor(), erase: er, v: 0, n: 0, zoom: viewZoom() || 1 };
+    if (b.strokeJitter && !er) { // 획마다 색 바꾸기
+      const q = b.strokeJitter, [h, sat, v] = hsv(...s.color), rr = () => (Math.random() - 0.5) * 2;
+      s.color = rgb((h + rr() * q.h * 1.8 + 360) % 360, Math.max(0, Math.min(1, sat + rr() * q.s / 100)), Math.max(0, Math.min(1, v + rr() * q.v / 100)));
+    }
     s.hsv = hsv(...s.color);
     if (b.mix && b.mix.mode !== 'none' && !s.erase) s.mix = advMixStart(b);
     s.ctx = advCtxStart(s, b);
@@ -2404,16 +2446,18 @@ void main(){
   function advStamp(x, y, p, ang, stepLen) {
     const s = ADV.stroke, b = ADV.brush;
     const rnd = Math.random;
-    const taper = b.taperIn > 0 ? Math.min(1, 0.15 + s.dist / b.taperIn) : 1;
+    const io = b.inOut, tIn = b.taperIn > 0 ? Math.min(1, s.dist / b.taperIn) : 1, inF = (k) => (io && io[k] !== undefined ? io[k] + (1 - io[k]) * tIn : 1);
+    const taper = io ? inF('size') : b.taperIn > 0 ? Math.min(1, 0.15 + s.dist / b.taperIn) : 1;
     let size = b.size * effectorValue(b.sizeEff, p, s.speed, rnd()) * taper;
-    let flow = b.flow * effectorValue(b.flowEff, p, s.speed, rnd()) * effectorValue(b.opacityEff, p, s.speed, rnd());
+    if (b.minPx) size = Math.max(1, size);
+    let flow = b.flow * effectorValue(b.flowEff, p, s.speed, rnd()) * effectorValue(b.opacityEff, p, s.speed, rnd()) * inF('flow') * inF('opacity');
     // 물감 마름: 획 길이를 따라 붓의 물감이 줄어든다 (갈필·마른 붓). 깊이 결과 같이 쓰면 끝으로 갈수록 종이 결만 남는다
     const dryF = b.dryOut && b.dryOut.len > 0 ? 1 - (1 - (b.dryOut.min || 0)) * sstep(0, b.dryOut.len, s.dist) : 1;
     const br = advBristle(b);
     // 붓털 브러시는 물감이 마르면 털이 하나씩 갈라지고(남은 물감), 흐름은 조금만 준다. 살살 누르면 닿는 털도 적다
     let load = 1;
     if (br) { flow *= 0.6 + 0.4 * dryF; load = dryF * (0.55 + 0.45 * Math.min(1, p)); } else flow *= dryF;
-    let th = b.thickness * effectorValue(b.thickEff, p, s.speed, rnd());
+    let th = b.thickness * effectorValue(b.thickEff, p, s.speed, rnd()) * inF('thick');
     let sq = [1, 1];
     if (th < 1) sq = b.vertical ? [th, 1] : [1, th]; else if (th > 1) sq = b.vertical ? [1, 1 / th] : [1 / th, 1];
     let angle = (b.rotation * Math.PI) / 180;
@@ -2432,6 +2476,9 @@ void main(){
     const nTips = Math.max(1, ADV.tipTex.length);
     const pickTip = () => {
       if (nTips === 1) return 0;
+      if (b.sutVer >= 2 && b.tipOrder === 2) return Math.min(nTips - 1, s.idx++); // 한 번씩 쓰고 마지막 모양 유지
+      if (b.tipOrder === 4) return (ADV.turn || 0) % nTips; // 획마다 차례로
+      if (b.tipOrder === 5) { if (s.pickT == null) s.pickT = Math.floor(rnd() * nTips); return s.pickT; } // 획마다 무작위
       if (b.tipOrder === 2 || b.tipOrder === 3) return Math.floor(rnd() * nTips);
       if (b.tipOrder === 1) { const i = s.idx; s.idx += s.dir; if (s.idx >= nTips || s.idx < 0) { s.dir = -s.dir; s.idx += 2 * s.dir; } return Math.max(0, Math.min(nTips - 1, i)); }
       return s.idx++ % nTips;
@@ -2442,7 +2489,7 @@ void main(){
       let v = [0, 1];
       let sy = sqy * asp[1], sx = sqx * asp[0];
       if (b.ribbon) { const t = ADV.tipTex[ti]; const len = Math.max(0.5, stepLen || sz * 0.1); const rel = t ? (len / sz) * (t.w / t.h) : 0.01; v = [s.v, rel]; s.v = (s.v + rel) % 1; sy = len + 1; }
-      ADV.batch.push({ ti, dist: s.dist, d: [px, py, sz, a, sx, sy, alpha * mixA, col[0], col[1], col[2], fl[0], fl[1], v[0], v[1], s.dist / Math.max(1, b.size), load] });
+      ADV.batch.push({ ti, dist: s.dist, c: b.spray ? [x, y] : null, d: [px, py, sz, a, sx, sy, alpha * mixA, col[0], col[1], col[2], fl[0], fl[1], v[0], v[1], s.dist / Math.max(1, b.size), load] });
       const ext = sz * 0.75 * Math.max(sx, b.ribbon ? 1 : sy, 1) + (b.ribbon ? sy : 0) + 3;
       const bx = { x: Math.floor(px - ext), y: Math.floor(py - ext), w: Math.ceil(2 * ext) + 1, h: Math.ceil(2 * ext) + 1 };
       s.box = runion(s.box, bx);
@@ -2455,6 +2502,11 @@ void main(){
       for (let i = 0; i < n; i++) {
         const th2 = rnd() * Math.PI * 2, r = R * Math.pow(rnd(), ex);
         let a2 = (b.rotation * Math.PI) / 180 + ((b.rotMask & 0x80) ? (rnd() - 0.5) * 2 * Math.PI * b.rotRandom : 0) + ((b.rotMask & 0x40) ? ang : 0);
+        if (b.sprayRot) { // 입자 방향: 브러시 방향(뿌리는 전체)에 알갱이마다의 방향을 더함
+          const sr = b.sprayRot; let q = (sr.deg * Math.PI) / 180;
+          if (sr.mask & 0x10) q *= p; if (sr.mask & 0x40) q += ang; if (sr.mask & 0x80) q += (rnd() - 0.5) * 2 * Math.PI * sr.random;
+          a2 = angle + q;
+        }
         push(x + Math.cos(th2) * r, y + Math.sin(th2) * r, part, a2, sq[0], sq[1], flow, pickTip());
       }
     } else {
@@ -2470,15 +2522,32 @@ void main(){
       if (s.dualNext == null) s.dualNext = 0;
       while (s.dist >= s.dualNext) {
         let a2 = (du.rotation * Math.PI) / 180; if (du.rotMask & 0x40) a2 += ang; if (du.rotMask & 0x80) a2 += (rnd() - 0.5) * 2 * Math.PI * du.rotRandom;
-        const R = size / 2, th2 = rnd() * Math.PI * 2, rr = du.spray ? R * Math.sqrt(rnd()) : 0;
+        const sp = du.sprayP, nd = sp ? Math.min(200, Math.round(sp.density)) : 1;
+        for (let di = 0; di < nd; di++) {
+        const R = sp ? dsz / 2 : size / 2, th2 = rnd() * Math.PI * 2, rr = du.spray ? R * Math.pow(rnd(), sp ? Math.max(0.05, 0.5 * (1 + sp.bias)) : 0.5) : 0;
+        const dz = sp ? Math.max(0.5, sp.size * (sp.sync ? b.size / (b.baseSize || b.size) : 1)) : dsz;
         const fx = du.flipH === 2 ? (rnd() < 0.5 ? -1 : 1) : du.flipH === 1 ? -1 : 1, fy = du.flipV === 2 ? (rnd() < 0.5 ? -1 : 1) : du.flipV === 1 ? -1 : 1;
         const asp = ADV.dualTex ? (() => { const mx = Math.max(ADV.dualTex.w, ADV.dualTex.h); return [ADV.dualTex.w / mx, ADV.dualTex.h / mx]; })() : [1, 1];
-        ADV.dbatch.push([x + Math.cos(th2) * rr, y + Math.sin(th2) * rr, dsz, a2, asp[0], asp[1] * du.thickness, du.flow, 1, 1, 1, fx, fy, 0, 1, 0, 0]);
+        ADV.dbatch.push([x + Math.cos(th2) * rr, y + Math.sin(th2) * rr, dz, a2, asp[0], asp[1] * du.thickness, du.flow, 1, 1, 1, fx, fy, 0, 1, 0, 0]);
+        }
         s.dualNext += dstep;
       }
     }
     s.n++;
     advKick();
+  }
+  // 출(끝 가늘게): 붙잡아 둔 마지막 도장들을 적용 대상(크기·농도)에 맞춰 줄인다
+  function advTaperOut(s, b) {
+    if (!b || !(b.taperOut > 0)) return;
+    const io = b.inOut;
+    for (const it of ADV.batch) {
+      const t = Math.max(0, Math.min(1, (s.dist - it.dist) / b.taperOut));
+      if (!io) { it.d[2] *= Math.max(0.12, t); continue; }
+      const f = (k) => (io[k] !== undefined ? io[k] + (1 - io[k]) * t : 1);
+      if (it.c) { it.d[0] = it.c[0] + (it.d[0] - it.c[0]) * f('size'); it.d[1] = it.c[1] + (it.d[1] - it.c[1]) * f('size'); } // 스프레이: 뿌리는 범위가 줄어듦
+      else it.d[2] = Math.max(b.minPx ? 1 : 0.5, it.d[2] * f('size'));
+      it.d[6] *= f('flow') * f('opacity');
+    }
   }
   function advKick() { if (!ADV.raf) ADV.raf = requestAnimationFrame(advFrame); }
   // 모아 둔 도장들을 획 버퍼에 찍고 화면에 보여 준다
@@ -2491,6 +2560,8 @@ void main(){
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ADV.S, 0);
     gl.viewport(0, 0, ADV.W, ADV.H);
     gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    const tipMax = !!b.tipMax && !(ADV.stroke && ADV.stroke.mix) && !b.jitter; // 겹친 도장끼리 더 진한 쪽만 남김
+    if (tipMax) gl.blendEquation(gl.MAX);
     gl.useProgram(P.p); gl.bindVertexArray(ADV.vao);
     gl.uniform2f(P.u.uDoc, ADV.W, ADV.H);
     const round = !ADV.tipTex.length;
@@ -2518,7 +2589,7 @@ void main(){
     const st = ADV.stroke;
     if (st && !st.ending && b.taperOut > 0) { const lim = st.dist - b.taperOut; todo = ADV.batch.filter((it) => it.dist <= lim); ADV.batch = ADV.batch.filter((it) => it.dist > lim); }
     else ADV.batch = [];
-    if (!todo.length) { gl.bindVertexArray(null); gl.bindFramebuffer(gl.FRAMEBUFFER, null); return; }
+    if (!todo.length) { gl.blendEquation(gl.FUNC_ADD); gl.bindVertexArray(null); gl.bindFramebuffer(gl.FRAMEBUFFER, null); return; }
     const groups = new Map();
     const symT = symTransforms(false); // 대칭 자: 같은 도장을 축 건너편에도
     if (symT.length && st) st.box = symBox(st.box, symT);
@@ -2535,6 +2606,7 @@ void main(){
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ADV.S, 0);
       }
     }
+    gl.blendEquation(gl.FUNC_ADD);
     gl.bindVertexArray(null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
@@ -2778,7 +2850,8 @@ void main(){
     if (s.pend) { const p0 = s.pend; s.pend = null; advStamp(p0.x, p0.y, p0.p, 0, 0); } // 한 번 콕 찍기
     s.ending = true;
     const bb = ADV.brush;
-    if (bb && bb.taperOut > 0) for (const it of ADV.batch) { const f = Math.max(0.12, Math.min(1, (s.dist - it.dist) / bb.taperOut)); it.d[2] *= f; }
+    ADV.turn = (ADV.turn || 0) + 1;
+    advTaperOut(s, bb);
     advFlush();
     ADV.stroke = null;
     if (s.last) ADV.lastEnd = { x: s.last.x, y: s.last.y, p: s.last.p }; // Shift+클릭 직선용
@@ -3238,7 +3311,7 @@ void main(){
     if (brush.dual && !brush.dual.tip) brush.dual.tip = { key: null, thumbKey: null, needPng: true };
     const slots = [...brush.tips.map((t, i) => ({ t, label: `끝 모양 ${i + 1}`, list: BUILTIN_TIPS })), ...(brush.dual ? [{ t: brush.dual.tip, label: '2중 브러시 끝 모양', list: BUILTIN_TIPS }] : []), { t: texSlot, label: '텍스처', list: BUILTIN_TEX, tex: true }];
     const applyBlob = async (t, blob, isTex, extra) => {
-      t.key = await advPutImage(blob); t.needPng = false; delete t.empty; Object.assign(t, extra || {});
+      t.key = await advPutImage(blob); t.needPng = false; delete t.empty; delete t.approx; Object.assign(t, extra || {});
       if (isTex && !brush.texture) brush.texture = t;
       await advSaveBrush(brush);
       ADV.tips.clear();
@@ -3251,7 +3324,7 @@ void main(){
       const tx = document.createElement('div'); tx.className = 'mw-hist-info';
       tx.innerHTML = `<div class="mw-hist-time"></div><div class="mw-hist-meta"></div>`;
       tx.querySelector('.mw-hist-time').textContent = label;
-      tx.querySelector('.mw-hist-meta').textContent = t.empty ? '없음' : t.needPng ? '모양 필요 (미리보기는 소재 썸네일)' : '준비됨';
+      tx.querySelector('.mw-hist-meta').textContent = t.empty ? '없음' : t.needPng ? '모양 필요 (미리보기는 소재 썸네일)' : t.approx ? (tex ? '파일 속 미리보기 그림 사용 중 (무늬 크기는 어림)' : '파일 속 미리보기 그림 사용 중 (더 또렷하게 하려면 원본 PNG)') : '준비됨';
       const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/png,image/*'; inp.style.display = 'none';
       const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'sm btn secondary'; btn.textContent = 'PNG 고르기';
       btn.addEventListener('click', (e) => { e.preventDefault(); inp.click(); });
@@ -3776,7 +3849,7 @@ void main(){
         advAddPoint({ pressure: o.pr == null ? p : o.pr, pointerType: 'pen', timeStamp: i * (o.dt || 14) }, [pad + (W - 2 * pad) * f, H / 2 - Math.sin(f * Math.PI * 2) * amp]);
       }
       s.ending = true;
-      if (b.taperOut > 0) for (const it of ADV.batch) { const f = Math.max(0.12, Math.min(1, (s.dist - it.dist) / b.taperOut)); it.d[2] *= f; }
+      advTaperOut(s, b);
       advFlush();
       const out = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, out); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, W, H);
       gl.bindFramebuffer(gl.FRAMEBUFFER, ADV.fb);
