@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.37.1';
+  const VERSION = '0.38.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -7996,10 +7996,68 @@ void main(){
   const AAX = { rows: new Map(), busy: false, sig: '' };
   const aaTool = () => { const E = getEditor(), t = E && E.activeTool; return t && (t.name === 'Brush' || t.name === 'Eraser') && typeof t.pixelation === 'boolean' ? t : null; };
   const aaHardRow = () => { const l = [...document.querySelectorAll('editor-sliders .shape-slider .slider-label')].find((x) => isT(x.textContent, 'Hardness')); return l ? l.parentElement : null; };
-  const aaHard = (lv, size) => Math.max(lv === 'mid' ? 45 : 25, Math.min(99, Math.round(100 * (1 - AA_W[lv] / Math.max(0.5, size / 2))))); // 가는 붓은 가운데가 흐려지지 않게 아래 한도
-  // v0.37이 켜 둔 텍스처 설정(밝기 -100·Height·필압 깊이) 알아보기 — 끄는 데만 쓴다
-  const AA_TEX = 8, AA_HEIGHT = 5;
-  const aaTexOurs = (t) => !!(t.hasFeatures & AA_TEX) && t.patternBlendMode === AA_HEIGHT && !!t.patternEachStamp && !!t.patternDepthPressure && t.patternBrightness <= -0.99 && !!t.patternShape && Math.abs(t.patternMinDepth - 0.09) < 0.006;
+  const aaHard0 = (lv, size) => Math.max(lv === 'mid' ? 45 : 25, Math.min(99, Math.round(100 * (1 - AA_W[lv] / Math.max(0.5, size / 2))))); // 가는 붓은 가운데가 흐려지지 않게 아래 한도
+  // ----- 필압으로 가늘어져도 흐림 유지 (브러시 보통·강하게) -----
+  // 경도는 붓 굵기에 대한 비율이라, 필압으로 가늘어지면 흐림도 같이 사라져 사선에 계단이 생긴다(약한 필압에서는 '약하게'보다도 심함).
+  // 획 도중에는 경도를 바꿀 수 없으므로 Magma 붓의 '텍스처 깊이'(필압으로 조절, 도장마다 GPU에서 처리)를 쓴다: 합성 Color Dodge +
+  // 대비 -100 + 밝기 35면 무늬가 균일한 0.85가 되어(무늬 안 보임) 도장 농도가 min(1, 농도 / (1 - 0.85×깊이×필압))이 된다(셰이더 소스로 확인).
+  // Magma는 Color Dodge에서 깊이의 필압을 거꾸로(1-필압) 쓴다(소스·실제 보드에서 확인) → 최소 깊이 = d, 깊이 = 0으로 넣으면 다시 필압 순서가 된다.
+  // 세게 누르면 가팔라지고 약하게 누르면 완만해져서 굵기 변화를 상쇄한다. 심은 늘 불투명. 획마다 확장이 계산하는 것은 없다(설정 한 번).
+  // 경도는 '세게(100%) 눌렀을 때의 흐림'이 크기와 상관없이 AA_TC가 되도록 고른다(값은 예전 식이 중간 크기에서 내던 폭 그대로).
+  // 15px 아래의 가는 붓은 그만큼 번질 수 없어서 예전 식의 폭을 따른다. 예전 식은 큰 붓(보통 105px, 강하게 220px부터)에서 흐림이 꺼졌다.
+  // 중간 필압이 세게 누를 때보다 20% 넘게 흐려지지 않는 가장 센 깊이를 쓴다(사용자가 사선 비교 그림에서 고른 '개선안 B').
+  const AA_TEX = 8, AA_DODGE = 2, AA_M = 0.85, AA_TC = { mid: 1.2, strong: 2.26 }, AA_D1 = [1, 0.85, 0.7, 0.55, 0.4, 0.25];
+  const aaTexOurs = (t) => !!(t.hasFeatures & AA_TEX) && t.patternBlendMode === AA_DODGE && !!t.patternEachStamp && t.patternContrast <= -0.99 && Math.abs(t.patternBrightness - (AA_M - 0.5)) < 0.006 && !!t.patternShape && (!t.patternDepthPressure || t.patternDepth < 0.006);
+  const aaCurD = (t) => (t.patternDepthPressure ? t.patternMinDepth : t.patternDepth); // 지금 들어 있는 깊이
+  // v0.37.0이 켜 둔 텍스처(밝기 -100·Height) — 끄기만 한다
+  const aaTexOld = (t) => !!(t.hasFeatures & AA_TEX) && t.patternBlendMode === 5 && !!t.patternEachStamp && !!t.patternDepthPressure && t.patternBrightness <= -0.99 && !!t.patternShape && Math.abs(t.patternMinDepth - 0.09) < 0.006;
+  const aaNum = (v, d) => (Number.isFinite(v) ? v : d);
+  // 필압으로 굵기가 변하는 붓이면 깊이도 필압으로, 굵기가 안 변하는 붓(최소 크기 85% 이상·필압 크기 끔)이면 깊이 고정
+  const aaPress = (t) => !!t.sizePressure && aaNum(t.minSize, 0) < 0.85;
+  const aaTexCan = (t) => t.name === 'Brush' && !!(t.supportedFeatures & AA_TEX) && !(t.lockedFeatures & AA_TEX) && !t.sizeTilt && !t.shape && (!(t.hasFeatures & AA_TEX) || aaTexOurs(t) || aaTexOld(t));
+  // 획 가장자리가 진하기 90% → 10%로 떨어지는 거리(보드 픽셀). 도장이 겹쳐 찍히는 것까지 (Magma softBrush2 셰이더 식)
+  function aaEdgeW(size, hard, spacing, flow, k) {
+    const h = Math.max(size, 1) / 2 + 0.5, m = Math.max(0.5, Math.min(10, size * spacing)), n = Math.ceil(h / m) + 1, f = Math.min(size, 1) * flow;
+    const ease = (x) => { if (x > 1) return 0; if (x < hard) return 1; x = (x - hard) / (1 - hard) * 2; return 1 - (x < 1 ? 0.5 * x * x : -0.5 * ((x - 1) * (x - 3) - 1)); };
+    const at = (y) => {
+      let sum = 0;
+      for (const ph of [0, 0.5]) { let rest = 1; for (let i = -n; i <= n && rest > 1e-4; i++) rest *= 1 - f * Math.min(1, k * ease(Math.hypot((i + ph) * m, y) / h)); sum += 1 - rest; }
+      return sum / 2;
+    };
+    const top = at(0), cross = (v) => { let a = 0, b = h; for (let i = 0; i < 14; i++) { const c = (a + b) / 2; if (at(c) >= v * top) a = c; else b = c; } return a; };
+    return cross(0.1) - cross(0.9);
+  }
+  const AA_CACHE = new Map();
+  const aaMemo = (key, fn) => { let v = AA_CACHE.get(key); if (v === undefined) { v = fn(); if (AA_CACHE.size > 600) AA_CACHE.clear(); AA_CACHE.set(key, v); } return v; };
+  const aaBase = (t) => ({ S: t.size < 10 ? Math.max(0.5, Math.round(t.size * 10) / 10) : Math.round(t.size), m: aaPress(t) ? Math.min(1, Math.max(0, aaNum(t.minSize, 0))) : 1,
+    sp: Math.max(0.01, aaNum(t.spacing, 0.2) * Math.max(0.03, aaNum(t.roundness, 1))), fl: Math.max(0.05, aaNum(t.flow, 1) * (t.flowPressure ? 0.6 : 1)) });
+  const aaKey = (b) => b.S + '|' + b.m.toFixed(2) + '|' + b.sp.toFixed(3) + '|' + b.fl.toFixed(2);
+  const aaGain = (p, d1, b) => 1 / Math.max(0.01, 1 - AA_M * Math.floor(d1 * (b && b.m >= 1 ? 1 : p) * 255 + 0.5) / 255);
+  // 깊이 d1일 때: 세게 눌렀을 때의 흐림이 목표와 같아지는 경도와, 중간 필압에서 그보다 얼마나 더 흐려지는지. 맞출 수 없으면 bad
+  function aaFit(lv, b, d1) {
+    return aaMemo('f' + lv + '|' + aaKey(b) + '|' + d1, () => {
+      const T = aaMemo('T' + lv + '|' + aaKey(b), () => (b.S >= 15 ? AA_TC[lv] : Math.min(AA_TC[lv], aaEdgeW(b.S, aaHard0(lv, b.S) / 100, b.sp, b.fl, 1))));
+      const w = (hd) => aaEdgeW(b.S, hd / 100, b.sp, b.fl, aaGain(1, d1, b));
+      let hard, bad = false;
+      if (w(0) < T) { hard = 0; bad = w(0) < T * 0.95; } // 붓이 가늘어 이 깊이로는 세게 눌렀을 때의 흐림이 모자람
+      else if (w(95) > T) { hard = 95; bad = w(95) > T * 1.12; } // 붓이 커서 이 깊이로는 더 좁힐 수 없음 (경도 96부터는 흐림이 꺼짐)
+      else { let a = 0, c = 95; while (c - a > 1) { const q = (a + c) >> 1; if (w(q) >= T) a = q; else c = q; } hard = Math.abs(w(a) - T) <= Math.abs(w(c) - T) ? a : c; }
+      let over = 0; for (const p of [0.45, 0.6, 0.7, 0.8, 0.9]) over = Math.max(over, aaEdgeW(b.S * (b.m + (1 - b.m) * p), hard / 100, b.sp, b.fl, aaGain(p, d1, b)) / T);
+      return { hard, over, bad };
+    });
+  }
+  function aaDepth(lv, t) { // 이 붓에 알맞은 깊이 (0 = 텍스처를 쓰지 않음)
+    if (!aaTexCan(t)) return 0;
+    const b = aaBase(t);
+    return aaMemo('d' + lv + '|' + aaKey(b), () => { for (const d of b.m >= 1 ? [0, 0.55, 0.85, 1] : AA_D1) { const f = aaFit(lv, b, d); if (!f.bad && f.over <= 1.21) return d; } return 0; });
+  }
+  function aaHard(lv, t) {
+    if (aaTexOurs(t) && aaTexCan(t)) {
+      return aaFit(lv, aaBase(t), [...AA_D1].reduce((x, d) => (Math.abs(d - aaCurD(t)) < Math.abs(x - aaCurD(t)) ? d : x))).hard;
+    }
+    if (t.name === 'Brush' && !t.shape && !aaPress(t) && !(t.hasFeatures & AA_TEX)) { const f = aaFit(lv, aaBase(t), 0); if (!f.bad) return f.hard; } // 굵기가 안 변하는 붓은 경도만으로도 크기별 폭을 맞춤
+    return aaHard0(lv, t.size);
+  }
   function aaLevel(t) {
     if (t.pixelation) return 'none';
     const f = S.aaFollow && S.aaFollow[t.name], h = Math.round(t.hardness * 100);
@@ -8078,6 +8136,8 @@ void main(){
         if (!await waitFor(panel, 1000)) return false;
       }
       const P = () => panel(), box = (i) => P().querySelectorAll('custom-checkbox')[i], num = (i) => ({ querySelector: () => P().querySelectorAll('editable-number')[i] });
+      // 텍스처가 바뀐 바로 그 순간 경도도 함께 (사이에 그어도 어긋나지 않게)
+      const hardNow = () => { if (!cfg.lv || t.pixelation) return; const w = aaHard(cfg.lv, t), row = aaHardRow(); if (row && rowNumberNow(row, w) && Math.round(t.hardness * 100) === w) aaFollow(t.name, { lv: cfg.lv, hard: w, snap: aaSnap(t) }); };
       const tick = async (i, get, v) => {
         if (get() === v) return true;
         const b = box(i) && box(i).querySelector('button[role=checkbox]'); if (!b) return false;
@@ -8117,6 +8177,7 @@ void main(){
       if (cfg.min !== undefined) { await nextFrame(); if (!await set(4, () => t.patternMinDepth, cfg.min)) return false; }
       if (cfg.each === false && !await tick(2, () => !!t.patternEachStamp, false)) return false;
       if (cfg.on !== undefined && !await tick(0, () => !!(t.hasFeatures & AA_TEX), cfg.on)) return false; // 끄기는 맨 나중에(다른 값을 바꾸면 Magma가 다시 켬, 실측)
+      hardNow();
       return true;
     } catch (e) { console.warn('[MagmaWand] 텍스처 설정', e); return false; } finally {
       if (backTab && backTab.isConnected) press(backTab);
@@ -8128,26 +8189,37 @@ void main(){
       setTimeout(() => root.classList.remove('mw-bphide', 'mw-ctxhide', 'mw-ddhide'), 60);
     }
   }
-  async function aaTexOff(t) {
-    if (!aaTexOurs(t)) return true;
+  async function aaTexOn(t, d1, lv) {
+    const pr = aaPress(t), first = !aaTexOurs(t), o = (S.aaTex || {})[t.name];
+    if (first && !(o && (o.mine || aaTexOld(t)))) { // 원래 값 기억 (사용자가 정해 둔 텍스처가 있으면 끌 때 되돌림)
+      S.aaTex = { ...(S.aaTex || {}), [t.name]: { bright: t.patternBrightness, contrast: t.patternContrast, depth: t.patternDepth, min: t.patternMinDepth, each: !!t.patternEachStamp, press: !!t.patternDepthPressure, invert: !!t.patternInvert, shape: t.patternShape || '', blend: t.patternBlendMode, mine: true } };
+      saveSettings();
+    }
+    const ok = await aaTexUI(t, first ? { shape: true, blend: -4, blendVal: AA_DODGE, bright: AA_M - 0.5, contrast: -1, invert: false, depth: pr ? 0 : d1, each: true, press: pr, min: pr ? d1 : undefined, on: true, lv } : { depth: pr ? 0 : d1, press: pr, min: pr ? d1 : undefined, lv });
+    return ok && aaTexOurs(t);
+  }
+  async function aaTexOff(t, lv) {
+    if (!aaTexOurs(t) && !aaTexOld(t)) return true;
     const o = (S.aaTex || {})[t.name] || {};
     // 사용자가 정해 둔 무늬가 있었으면 그 값들을 되돌리고, 없었으면 끄기만 한다(바로 꺼짐)
-    const ok = await aaTexUI(t, o.shape ? { bright: o.bright ?? 0, contrast: o.contrast ?? 0, depth: o.depth ?? 1, invert: o.invert ?? false, min: o.press ? o.min ?? 0 : undefined, press: o.press ?? false, blendBack: o.blend, each: o.each ?? false, on: false } : { on: false });
-    if (S.aaTex && S.aaTex[t.name]) { S.aaTex = { ...S.aaTex, [t.name]: { ...S.aaTex[t.name], act: false } }; saveSettings(); }
-    return ok;
+    return aaTexUI(t, o.shape ? { bright: o.bright ?? 0, contrast: o.contrast ?? 0, depth: o.depth ?? 1, invert: o.invert ?? false, min: o.press ? o.min ?? 0 : undefined, press: o.press ?? false, blendBack: o.blend, each: o.each ?? false, on: false, lv } : { on: false, lv });
   }
+  const aaSnap = (t) => JSON.stringify([t.spacing, t.minSize, t.flow, t.flowPressure, t.opacityPressure, t.angle, t.shape, t.hasFeatures & ~AA_TEX, t.sizePressure]); // 다른 브러시로 바뀌었는지 짐작
+  const aaTexSame = (t, d1) => (d1 ? aaTexOurs(t) && Math.abs(aaCurD(t) - d1) < 0.006 && !!t.patternDepthPressure === aaPress(t) : !aaTexOurs(t) && !aaTexOld(t));
   async function aaSet(lv) {
     const t = aaTool();
     if (!t || AAX.busy) return;
-    AAX.busy = true;
+    AAX.busy = true; AAX.fail = 0;
     try {
-      if (aaTexOurs(t)) await aaTexOff(t);
+      if ((lv === 'none' || lv === 'weak') && (aaTexOurs(t) || aaTexOld(t))) { aaFollow(t.name, null); await aaTexOff(t); }
       if (lv === 'none') { if (!await aaSetPix(t, true)) toast('안티에일리어싱을 끄지 못했어요'); return; }
       if (!await aaSetPix(t, false)) { toast('안티에일리어싱을 켜지 못했어요'); return; }
       if (lv === 'weak') { aaFollow(t.name, null); if (!aaHardRow()) return; await aaSetHard(t, 100); return; }
       if (!aaHardRow()) { toast('이 끝 모양(그림)에는 경도가 없어서 없음·약하게만 쓸 수 있어요'); return; }
-      const h = aaHard(lv, t.size);
-      aaFollow(t.name, { lv, hard: h });
+      const d1 = aaDepth(lv, t);
+      if (!aaTexSame(t, d1) && !(d1 ? await aaTexOn(t, d1, lv) : await aaTexOff(t, lv))) await aaTexOff(t, lv);
+      const h = aaHard(lv, t);
+      aaFollow(t.name, { lv, hard: h, snap: aaSnap(t) });
       if (!await aaSetHard(t, h)) aaFollow(t.name, null);
     } catch (e) { console.warn('[MagmaWand] 안티에일리어싱', e); } finally { AAX.busy = false; aaRender(); }
   }
@@ -8158,9 +8230,9 @@ void main(){
     if (!t || AAX.busy || S.busy || S.active || t.pixelation) return;
     const f = S.aaFollow && S.aaFollow[t.name];
     if (!f || Math.round(t.hardness * 100) !== f.hard) return;
-    const E = getEditor(), want = aaHard(f.lv, t.size), row = want !== f.hard && !E.drawingInProgress ? aaHardRow() : null;
+    const E = getEditor(), want = aaHard(f.lv, t), row = want !== f.hard && !E.drawingInProgress ? aaHardRow() : null;
     if (!row || !rowNumberNow(row, want)) return;
-    if (Math.round(t.hardness * 100) === want) { aaFollow(t.name, { lv: f.lv, hard: want }); aaRender(); }
+    if (Math.round(t.hardness * 100) === want) { aaFollow(t.name, { lv: f.lv, hard: want, snap: f.snap }); aaRender(); }
   }
   // 펜을 대는 순간(캡처 단계, Magma보다 먼저): 아직 칸에 못 넣은 브러시 크기(Ctrl+Alt 끌기)·경도·올가미 투명도를 그 자리에서 맞춘다
   on(window, 'pointerdown', (e) => {
@@ -8176,7 +8248,8 @@ void main(){
     aaEnsure(t);
     aaNow();
     if (!t || AAX.busy || S.busy || S.active) return;
-    if (aaTexOurs(t) && (AAX.fail || 0) < 3 && SYM.down == null && !SYM.pump && !LB.down && !getEditor().drawingInProgress && !document.querySelector('.dropdown-menu.show, editor-brushes-popup editor-popup.visible')) {
+    const calm = () => !LB.down && SYM.down == null && !SYM.pump && !getEditor().drawingInProgress && !BSZ.on && BSZ.pending == null && !(document.activeElement && document.activeElement.tagName === 'INPUT') && !document.querySelector('.dropdown-menu.show, editor-brushes-popup editor-popup.visible');
+    if (aaTexOld(t) && (AAX.fail || 0) < 3 && calm()) { // v0.37.0이 켜 둔 것 끄기
       AAX.busy = true;
       aaTexOff(t).then((ok) => { if (!ok) AAX.fail = (AAX.fail || 0) + 1; }).catch(() => { AAX.fail = (AAX.fail || 0) + 1; }).finally(() => { AAX.busy = false; aaRender(); });
       return;
@@ -8184,14 +8257,32 @@ void main(){
     const f = S.aaFollow && S.aaFollow[t.name], E = getEditor();
     if (f && !t.pixelation) {
       const h = Math.round(t.hardness * 100);
-      if (h !== f.hard) aaFollow(t.name, null); // 손으로 바꿈·다른 브러시를 고름
+      if (h !== f.hard) { // 손으로 바꿈·다른 브러시를 고름
+        aaFollow(t.name, null);
+        if (aaTexOurs(t) && f.snap === aaSnap(t)) { AAX.busy = true; aaTexOff(t).catch(() => { }).finally(() => { AAX.busy = false; }); } // 같은 붓에서 경도만 손으로 바꿈 → 텍스처도 끔
+      }
       else {
-        const want = aaHard(f.lv, t.size), a = document.activeElement;
+        const want = aaHard(f.lv, t), a = document.activeElement;
         if (want !== f.hard && !LB.down && !E.drawingInProgress && !BSZ.on && BSZ.pending == null && !(a && a.tagName === 'INPUT')) {
           AAX.busy = true;
-          aaFollow(t.name, { lv: f.lv, hard: want });
+          aaFollow(t.name, { lv: f.lv, hard: want, snap: f.snap });
           aaSetHard(t, want).then((ok) => { if (!ok) aaFollow(t.name, null); }).catch(() => { }).finally(() => { AAX.busy = false; aaRender(); });
           return;
+        }
+        // 크기·최소 크기 등이 바뀌어 알맞은 깊이가 달라졌으면, 잠시 손을 멈췄을 때 한 번만 바꾼다
+        const key = aaKey(aaBase(t)) + aaTexOurs(t) + aaCurD(t) + t.patternDepthPressure;
+        if (AAX.dk !== key) { AAX.dk = key; AAX.dt = performance.now(); }
+        else if (AAX.dt && performance.now() - AAX.dt > 600 && (AAX.fail || 0) < 3 && calm()) {
+          AAX.dt = 0;
+          const d1 = aaDepth(f.lv, t);
+          if (!aaTexSame(t, d1)) {
+            AAX.busy = true;
+            (d1 ? aaTexOn(t, d1, f.lv) : aaTexOff(t, f.lv)).then(async (ok) => {
+              if (!ok) { AAX.fail = (AAX.fail || 0) + 1; if (d1) await aaTexOff(t, f.lv); }
+              const w = aaHard(f.lv, t); aaFollow(t.name, { lv: f.lv, hard: w, snap: aaSnap(t) }); await aaSetHard(t, w);
+            }).catch(() => { }).finally(() => { AAX.busy = false; AAX.dk = ''; aaRender(); });
+            return;
+          }
         }
       }
     }
@@ -11475,6 +11566,9 @@ void main(){
   // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
   // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
   const NEWS = [
+    { v: '0.38.0',
+      ko: ['안티에일리어싱 ‘보통·강하게’ 브러시: 약하게 눌러 가늘어진 곳도 흐림이 남아 사선의 계단이 줄었어요', '브러시 크기가 달라져도 흐림 폭이 거의 같아요 (큰 붓에서 흐림이 꺼지던 문제도 고침)'],
+      en: ['Anti-aliasing “Medium/Strong” for the Brush: thin, light-pressure parts stay soft, so slanted lines look less jagged', 'The softness also stays nearly the same at every brush size (large brushes no longer lose it)'] },
     { v: '0.37.1',
       ko: ['안티에일리어싱 ‘보통·강하게’의 흐림 정도를 v0.35 때로 되돌렸어요 (크기가 커질수록 더 흐려지던 문제)', '필압에 따른 흐림 유지 기능은 잠시 뺐어요'],
       en: ['Anti-aliasing “Medium/Strong” softness is back to how it was in v0.35 (it had become blurrier at larger sizes)', 'Pressure-based softness has been removed for now'] },
@@ -11606,7 +11700,7 @@ void main(){
     histCheck, histPoints, histCopyLayer, openHistoryDialog, histUsage, getBrushSize, sizeRow,
     openStrokeDialog, fxSet, fxGet, fxKick, fxState: () => FX,
     advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, dockState: () => DK, parseSut, sqliteTables, parseEffector, getAA, setAA, docToBuffer, selectionExists,
-    aaHard, aaTexOurs, aaTexUI, newsShow, newsTick, setAlpha, advEraseCommit, fillSelection, chatShowToast, chatIncoming, chatWidget, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt,
+    aaHard, aaHard0, aaEdgeW, aaDepth, aaFit, aaBase, aaGain, aaTexOurs, aaCurD, newsShow, newsTick, setAlpha, advEraseCommit, fillSelection, chatShowToast, chatIncoming, chatWidget, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt,
     ensureGroups, activateMember, selectLayerContent, advNewBrush, setMagmaFont, currentFontName, systemFonts, openTextImageDialog,
     blurDab, blurState: () => BLR, msState: () => MS, guState: () => GU, guRef, clipToggle, clipHitAt, advPutImage, builtinBlob, advSaveBrush, advPrepare, openBrushSettings, openPresetPicker, advNewFromPreset, ADV_PRESETS, advMixColor, setPrimaryHex, advState2: () => ADV, fgConfig, growMaskBy, ensureFillRow, rowLayer, msPick, msReplay, msDecompose, gapBridgeFill, qmState: () => QM, qmApply, msPropsApply, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons, smpRequest, smpState: () => SMP, smpRender, smpRes, smpCanvas, hexRgb, presetBrushObj, advCatOf, ADV_CATS };
   window.__magmaWand.ready = true; // 끝까지 시작됨 (실행기는 이 표시가 없으면 다시 넣는다)

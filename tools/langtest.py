@@ -46,10 +46,12 @@ def run(loc):
                 try: pg.locator('.mw-aarow .mw-aab[data-lv="%s"]' % lv).click(timeout=4000); time.sleep(2)
                 except Exception as e: check('AA ' + lv, False, str(e)[:60]); continue
                 s = st(); check('AA ' + lv, s[0] == lv and s[1] == (lv == 'none') and (s[2] == 100 if lv == 'weak' else True), s)
+            # 필압·크기에 따라 흐림 유지: 강하게 → 텍스처 깊이 켜짐(약하게 → 꺼짐은 아래에서)
+            x = I("(()=>{const t=I.getEditor().activeTool;return [I.aaDepth('strong',t),I.aaTexOurs(t),I.aaCurD(t),t.patternDepthPressure]})()"); check('필압 흐림 설정', x[0] > 0 and x[1] and abs(x[2] - x[0]) < .006 and x[3] is True, x)
             # 크기를 바꾸면 경도가 따라가고, 번지는 폭이 같은지
             for sz in (20, 100):
                 pg.evaluate("(v)=>{const r=window.__magmaWand.internals.sizeRow(),en=r.querySelector('editable-number'),b=en.querySelector('button'),i=en.querySelector('input');b.click();i.value=String(v);i.dispatchEvent(new FocusEvent('blur'))}", sz); time.sleep(2.6)
-                s = I("(()=>{const t=I.getEditor().activeTool;return [t.size,Math.round(t.hardness*100),I.aaHard('strong',t.size)]})()")
+                s = I("(()=>{const t=I.getEditor().activeTool;return [t.size,Math.round(t.hardness*100),I.aaHard('strong',t)]})()")
                 check('AA 크기 %d 따라감' % sz, s[0] == sz and s[1] == s[2], s)
             pg.locator('.mw-aarow .mw-aab[data-lv="weak"]').click(); time.sleep(1)
             time.sleep(1); check('약하게로 텍스처 꺼짐', not I('I.aaTexOurs(I.getEditor().activeTool)') and I('!(I.getEditor().activeTool.hasFeatures & 8)')); check('숨긴 창 닫힘', not ev("!!document.querySelector('editor-brushes-popup editor-popup.visible, .dropdown-menu.context-menu')||document.documentElement.classList.contains('mw-bphide')"))
