@@ -55,6 +55,16 @@ if (!kill) {
       }
     }
   }
+  // 언어 검사 (tools/langcheck.js): 영어 글자로만 Magma 칸을 찾는 코드·업데이트 소식 빠짐·언어 시험 안 함 → 배포 중단
+  {
+    const lc = require('./langcheck.js');
+    const bad = [...lc.checkSource(wand), ...lc.news(wand, version)];
+    if (publish) {
+      let st = null; try { st = JSON.parse(fs.readFileSync(p('tools', '.langtest.json'), 'utf8')); } catch { /* 없음 */ }
+      if (!st || st.digest !== lc.digest(wand)) bad.push('언어 시험을 이 코드로 통과하지 않았어요 → python tools/langtest.py (여러 언어)');
+    }
+    if (bad.length) { console.error(['배포 중단:', ...bad].join(String.fromCharCode(10))); process.exit(1); }
+  }
   wand = wand.replace(/const VERSION = '[^']*';/, `const VERSION = '${version}';`);
   fs.writeFileSync(wandPath, wand);
   fs.copyFileSync(wandPath, p('extension', 'wand.js')); // 크롬 확장 기본 버전

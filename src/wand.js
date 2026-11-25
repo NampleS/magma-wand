@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.35.3';
+  const VERSION = '0.36.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -19,6 +19,7 @@
     try { prev.destroy && prev.destroy(); } catch (e) { console.warn('[MagmaWand] 옛 버전 정리 실패', e); }
   }
   const upgradedFrom = prev ? prev.version : null;
+  const hadSettings = (() => { try { return localStorage.getItem('magmaWand.settings') != null; } catch { return false; } })(); // 전부터 쓰던 사람인지(새 설치면 소식을 안 띄움)
   window.__magmaWand = { version: VERSION };
 
   // 나중에 깨끗하게 걷어낼 수 있도록 등록한 것들을 모아 둔다
@@ -4966,7 +4967,19 @@ void main(){
     '<path fill="currentColor" d="M240 144h40v104l72 44-20 34-92-56z"/>';
   const FX_SVG = '<path fill="none" stroke="currentColor" stroke-width="40" d="M150 120h212a40 40 0 0 1 40 40v192a40 40 0 0 1-40 40H150a40 40 0 0 1-40-40V160a40 40 0 0 1 40-40z"/>' +
     '<path fill="currentColor" d="M196 206h120v100H196z"/>';
+  // Help 메뉴 맨 아래: 확장 버전(작게). 누르면 업데이트 소식 전체. 메뉴는 글자가 아니라 Magma 요소 이름(help-dropdown-content)으로 찾는다
+  function ensureHelpVersion() {
+    for (const hc of document.querySelectorAll('help-dropdown-content')) {
+      if (hc.querySelector('.mw-ver')) continue;
+      const d = document.createElement('div'); d.className = 'dropdown-divider mw-el mw-ver';
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'dropdown-item mw-el mw-ver mw-verb mw-noi18n';
+      b.textContent = 'Magma Extension v' + VERSION; b.title = L('업데이트 소식 보기', 'See what’s new');
+      b.addEventListener('click', () => { setTimeout(() => newsShow(true), 0); });
+      hc.append(d, b);
+    }
+  }
   function ensureMenuItems() {
+    ensureHelpVersion();
     for (const menu of document.querySelectorAll('.dropdown-menu')) {
       const items = [...menu.querySelectorAll('command-menu-item')];
       const inv = items.find((it) => hasT(it.textContent, 'Invert selection'));
@@ -7887,14 +7900,45 @@ void main(){
 
   // ---------- 안티에일리어싱 4단계 (Magma 브러시·지우개, 클립 스튜디오처럼 없음·약하게·보통·강하게) ----------
   // Magma에는 'Pixelation'(끄고 켜기)뿐이다. 없음 = Pixelation 켜기, 약하게 = Magma 원래 가장자리(경도 100),
-  // 보통·강하게 = 가장자리가 번지는 폭이 정해진 픽셀(AA_W)이 되도록 경도를 브러시 크기에 맞춰 넣는다(크기를 바꾸면 따라감).
+  // 보통·강하게 = 가장자리가 번지는 폭이 정해진 픽셀(AA_T)이 되도록 경도를 브러시 크기에 맞춰 넣는다(크기를 바꾸면 따라감).
   // 경도를 손으로 바꾸거나 다른 브러시를 고르면 따라가기를 멈춘다. 바꾸는 건 모두 화면 조작(경도 칸·Pixelation 칸)으로.
   const AA_LV = [['none', '없음', 'None'], ['weak', '약하게', 'Weak'], ['mid', '보통', 'Medium'], ['strong', '강하게', 'Strong']];
-  const AA_W = { mid: 2.5, strong: 5 };
+  // 번지는 폭 = 획 가장자리에서 진하기가 90% → 10%로 떨어지는 거리(보드 픽셀). 경도 하나로 정해지지 않는다: Magma는 붓 도장을 겹쳐 찍어
+  // 획을 만들므로(간격 = 크기×간격%, 0.5~10px) 같은 경도라도 크기·간격·흐름에 따라 폭이 다르다. 그래서 Magma 셰이더 식(소스로 확인)으로
+  // 겹친 뒤의 폭을 계산해, 목표 폭이 되는 경도를 찾는다. 필압으로 굵기가 바뀌는 붓은 보통 누르는 힘(0.6)일 때의 굵기를 기준으로.
+  // (예전엔 도장 하나의 폭만 맞춰서 2px 붓 0.45px, 50px 붓 2.4px, 300px 붓은 또렷하게 나왔다 — 사용자 보고)
+  const AA_T = { mid: 1.25, strong: 2.1 }, AA_HARDW = 0.8; // AA_HARDW = 경도 96 이상(또렷한 원)의 폭
   const AAX = { rows: new Map(), busy: false, sig: '' };
   const aaTool = () => { const E = getEditor(), t = E && E.activeTool; return t && (t.name === 'Brush' || t.name === 'Eraser') && typeof t.pixelation === 'boolean' ? t : null; };
   const aaHardRow = () => { const l = [...document.querySelectorAll('editor-sliders .shape-slider .slider-label')].find((x) => isT(x.textContent, 'Hardness')); return l ? l.parentElement : null; };
-  const aaHard = (lv, size) => Math.max(lv === 'mid' ? 45 : 25, Math.min(99, Math.round(100 * (1 - AA_W[lv] / Math.max(0.5, size / 2))))); // 가는 붓은 가운데가 흐려지지 않게 아래 한도
+  function aaEdgeW(size, hard, spacing, flow) {
+    const h = Math.max(size, 1) / 2 + 0.5, m = Math.max(0.5, Math.min(10, size * spacing)), n = Math.ceil(h / m) + 1, f = Math.min(size, 1) * flow;
+    const ease = (x) => { if (x > 1) return 0; if (x < hard) return 1; x = (x - hard) / (1 - hard) * 2; return 1 - (x < 1 ? 0.5 * x * x : -0.5 * ((x - 1) * (x - 3) - 1)); };
+    const at = (y) => { // 도장 사이·도장 위 두 자리의 평균
+      let sum = 0;
+      for (const ph of [0, 0.5]) { let rest = 1; for (let k = -n; k <= n && rest > 1e-4; k++) rest *= 1 - f * ease(Math.hypot((k + ph) * m, y) / h); sum += 1 - rest; }
+      return sum / 2;
+    };
+    const top = at(0), cross = (v) => { let a = 0, b = h; for (let i = 0; i < 18; i++) { const c = (a + b) / 2; if (at(c) >= v * top) a = c; else b = c; } return a; };
+    return cross(0.1) - cross(0.9);
+  }
+  const AA_CACHE = new Map();
+  function aaHard(lv, t) {
+    const num = (v, d) => (Number.isFinite(v) ? v : d), press = t.sizePressure ? num(t.minSize, 0) + (1 - num(t.minSize, 0)) * 0.6 : 1;
+    const size = Math.max(0.5, t.size * press), sp = Math.max(0.01, num(t.spacing, 0.2) * Math.max(0.03, num(t.roundness, 1))), fl = Math.max(0.05, num(t.flow, 1) * (t.flowPressure ? 0.6 : 1));
+    const key = lv + '|' + size.toFixed(2) + '|' + sp.toFixed(3) + '|' + fl.toFixed(2);
+    let v = AA_CACHE.get(key);
+    if (v !== undefined) return v;
+    const w = (hd) => aaEdgeW(size, hd / 100, sp, fl), w0 = w(0);
+    // 아주 가는 붓은 붓 자체보다 넓게 번질 수 없다 → 낼 수 있는 만큼(보통은 강하게보다 좁게, 약하게보다 또렷해지지는 않게)
+    const want = lv === 'mid' ? Math.min(AA_T.mid, Math.max(0.62 * w0, Math.min(w0, 0.85))) : Math.min(AA_T.strong, w0);
+    const w95 = w(95);
+    if (w95 >= want) v = w95 / want > want / AA_HARDW ? 100 : 95; // 아주 큰 붓: 경도 95(가장 좁은 흐림)와 또렷한 원 중 목표에 가까운 쪽
+    else { let a = 0, b = 95; while (b - a > 1) { const c = (a + b) >> 1; if (w(c) >= want) a = c; else b = c; } v = Math.abs(w(a) - want) <= Math.abs(w(b) - want) ? a : b; }
+    if (AA_CACHE.size > 300) AA_CACHE.clear();
+    AA_CACHE.set(key, v);
+    return v;
+  }
   function aaLevel(t) {
     if (t.pixelation) return 'none';
     const f = S.aaFollow && S.aaFollow[t.name], h = Math.round(t.hardness * 100);
@@ -7940,7 +7984,7 @@ void main(){
     } finally {
       if (backTab) press(backTab);
       if (!wasOpen) {
-        const p = pop(), x = p && (p.querySelector('.popup-close, button[aria-label=Close], .btn-close') || [...p.querySelectorAll('button')].slice(0, 4).find((q) => q.querySelector('svg[class*=faTimes], svg[class*=faXmark]')));
+        const p = pop(), x = p && (p.querySelector('.popup-close, button[aria-label=Close], .btn-close' /* lang-ok: 다른 길도 있음 */) || [...p.querySelectorAll('button')].slice(0, 4).find((q) => q.querySelector('svg[class*=faTimes], svg[class*=faXmark]')));
         if (x) press(x);
         await waitFor(() => !pop(), 800);
       }
@@ -7956,7 +8000,7 @@ void main(){
       if (!await aaSetPix(t, false)) { toast('안티에일리어싱을 켜지 못했어요'); return; }
       if (lv === 'weak') { aaFollow(t.name, null); if (!aaHardRow()) return; await aaSetHard(t, 100); return; }
       if (!aaHardRow()) { toast('이 끝 모양(그림)에는 경도가 없어서 없음·약하게만 쓸 수 있어요'); return; }
-      const h = aaHard(lv, t.size);
+      const h = aaHard(lv, t);
       aaFollow(t.name, { lv, hard: h });
       if (!await aaSetHard(t, h)) aaFollow(t.name, null);
     } catch (e) { console.warn('[MagmaWand] 안티에일리어싱', e); } finally { AAX.busy = false; aaRender(); }
@@ -7968,7 +8012,7 @@ void main(){
     if (!t || AAX.busy || S.busy || S.active || t.pixelation) return;
     const f = S.aaFollow && S.aaFollow[t.name];
     if (!f || Math.round(t.hardness * 100) !== f.hard) return;
-    const E = getEditor(), want = aaHard(f.lv, t.size), row = want !== f.hard && !E.drawingInProgress ? aaHardRow() : null;
+    const E = getEditor(), want = aaHard(f.lv, t), row = want !== f.hard && !E.drawingInProgress ? aaHardRow() : null;
     if (!row || !rowNumberNow(row, want)) return;
     if (Math.round(t.hardness * 100) === want) { aaFollow(t.name, { lv: f.lv, hard: want }); aaRender(); }
   }
@@ -7991,7 +8035,7 @@ void main(){
       const h = Math.round(t.hardness * 100);
       if (h !== f.hard) aaFollow(t.name, null); // 손으로 바꿈·다른 브러시를 고름
       else {
-        const want = aaHard(f.lv, t.size), a = document.activeElement;
+        const want = aaHard(f.lv, t), a = document.activeElement;
         if (want !== f.hard && !LB.down && !E.drawingInProgress && !BSZ.on && BSZ.pending == null && !(a && a.tagName === 'INPUT')) {
           AAX.busy = true;
           aaFollow(t.name, { lv: f.lv, hard: want });
@@ -9924,6 +9968,17 @@ void main(){
     .mw-chattoast.mw-ct-right { border-radius: 6px 0 0 6px; transform: translateX(100%); }
     .mw-chattoast.mw-ct-show { opacity: 1; transform: none; pointer-events: auto; }
     .mw-chattoast b { color: #9cc3ff; font-weight: 600; } /* 그림판 위, 사용자 지정 UI 패널(4) 아래 */
+    .mw-verb { font-size: 11px !important; opacity: .6; padding-top: 2px !important; padding-bottom: 2px !important; }
+    .mw-verb:hover { opacity: 1; }
+    .mw-news { position: fixed; z-index: 2147480500; width: 290px; max-width: calc(100vw - 20px); box-sizing: border-box; background: rgba(30,30,32,.96); color: #dcdcdc;
+      font: 12px/1.45 system-ui, sans-serif; border: 1px solid rgba(255,255,255,.12); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.4); user-select: text; }
+    .mw-news-h { display: flex; align-items: center; justify-content: space-between; padding: 8px 6px 6px 12px; }
+    .mw-news-h b { font-weight: 600; color: #fff; }
+    .mw-news-x { border: 0; background: transparent; color: #bbb; font: 18px/1 system-ui, sans-serif; width: 26px; height: 26px; border-radius: 5px; cursor: pointer; padding: 0; }
+    .mw-news-x:hover { background: rgba(255,255,255,.12); color: #fff; }
+    .mw-news-b { max-height: min(40vh, 320px); overflow: auto; padding: 0 12px 10px; }
+    .mw-news-v { color: #9cc3ff; font-weight: 600; margin-top: 4px; }
+    .mw-news ul { margin: 2px 0 6px; padding-left: 16px; list-style: disc; } .mw-news li { margin: 1px 0; }
     html.mw-on.mw-symtool .editor-view, html.mw-on.mw-symtool .editor-view * { cursor: default !important; }
     html.mw-on .editor-view, html.mw-on .editor-view * { cursor: crosshair !important; }
     .mw-hide, html.mw-on editor-sliders .tool-sliders:not(.layers-options) > :not(.mw-el):not(.selection-tool) {
@@ -10094,7 +10149,7 @@ void main(){
     html.mx-dock-on .editor-right, html.mx-dock-on .editor-left { visibility: hidden !important; pointer-events: none !important; }
     html.mx-dock-on:not(.mx-uihidden) .editor { inset: var(--mx-t, 43px) var(--mx-r, 261px) var(--mx-b, 0px) var(--mx-l, 40px) !important; }
     html.mx-uihidden .mx-dock { display: none !important; }
-    html.mx-dock-on editor-color button[tooltip="Layout options"], html.mx-dock-on editor-color button.mx-cog, html.mx-dock-on [command="toggle-hide-column"] { display: none !important; }
+    html.mx-dock-on editor-color button[tooltip="Layout options"] /* lang-ok: 다른 언어는 mx-cog로 */, html.mx-dock-on editor-color button.mx-cog, html.mx-dock-on [command="toggle-hide-column"] { display: none !important; }
     .mx-dock { position: absolute; left: 0; right: 0; bottom: 0; top: 43px; pointer-events: none; z-index: 4; }
     .mx-hold { display: none !important; }
     .mx-frame { position: absolute; pointer-events: auto; display: flex; flex-direction: column; box-sizing: border-box; isolation: isolate;
@@ -11254,6 +11309,75 @@ void main(){
   }
   cleanups.push(() => { I18N.obs?.disconnect(); I18N.obs = null; });
 
+  // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
+  // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
+  const NEWS = [
+    { v: '0.36.0',
+      ko: ['안티에일리어싱 ‘보통·강하게’가 브러시 크기와 상관없이 같은 폭으로 번져요', 'Help 메뉴 맨 아래에 확장 버전이 보여요 (누르면 업데이트 소식)', '업데이트되면 바뀐 점을 이 창으로 한 번 알려 드려요'],
+      en: ['Anti-aliasing “Medium/Strong” now spreads the same distance at every brush size', 'The extension version is shown at the bottom of the Help menu (click it to see what’s new)', 'After an update, this window tells you once what changed'] },
+    { v: '0.35.3',
+      ko: ['선을 긋고 멈추는 도형 보정: 데스크톱 앱에서 가끔 끝과 끝이 곧은 선으로 이어지던 문제를 고쳤어요'],
+      en: ['QuickShape (hold at the end of a stroke): fixed strokes sometimes turning into a straight line between the ends in the desktop app'] },
+    { v: '0.35.2',
+      ko: ['영어가 아닌 Magma 화면(한국어·일본어 등)에서 안티에일리어싱·브러시 크기·페인트통 등이 안 되던 문제를 고쳤어요'],
+      en: ['Fixed anti-aliasing, brush size, paint bucket and more not working when Magma is not in English'] },
+    { v: '0.35.1',
+      ko: ['브러시 크기나 올가미 투명도를 바꾸자마자 그어도 새 값으로 그려져요'],
+      en: ['Brush size and lasso opacity changes apply instantly, even if you draw right away'] },
+    { v: '0.35.0',
+      ko: ['브러시·지우개 안티에일리어싱 4단계 (없음·약하게·보통·강하게)', 'Ctrl+T 변형 상자가 그림이 있는 곳에 딱 맞아요 (여러 레이어는 합쳐서)'],
+      en: ['Four anti-aliasing levels for brush and eraser (None, Weak, Medium, Strong)', 'The Ctrl+T box fits the painted area (combined for several layers)'] },
+    { v: '0.34.0',
+      ko: ['브러시 크기 패널', '클립 스튜디오 기본 브러시 45종', '고급 브러시 깜빡임을 없애고 페인트통이 빨라졌어요'],
+      en: ['Brush Size panel', '45 Clip Studio default brushes', 'No more flicker with advanced brushes, and a faster paint bucket'] },
+  ];
+  const NW = { el: null, all: false, sig: '', seen: null };
+  function newsSeen() { try { return localStorage.getItem('magmaWand.seen'); } catch { return VERSION; } }
+  function newsMark() { try { localStorage.setItem('magmaWand.seen', VERSION); } catch { /* 무시 */ } }
+  function newsList() {
+    if (NW.all) return NEWS;
+    let seen = newsSeen();
+    if (!seen) { // 소식 기능이 처음 들어온 순간: 새로 설치한 사람은 띄우지 않고, 쓰던 사람은 이번 버전부터
+      if (!hadSettings && !upgradedFrom) { newsMark(); return []; }
+      seen = '0.35.3'; try { localStorage.setItem('magmaWand.seen', seen); } catch { return []; }
+    }
+    return NEWS.filter((n) => isNewer(n.v, seen) && !isNewer(n.v, VERSION));
+  }
+  function newsHide() { NW.el?.remove(); NW.el = null; NW.all = false; }
+  function newsShow(all) { NW.all = !!all; NW.el?.remove(); NW.el = null; newsTick(); }
+  function newsTick() {
+    const list = newsList();
+    if (!list.length || !getCanvas()) { if (NW.el) newsHide(); return; }
+    const sig = list.map((n) => n.v).join() + '|' + LANG_EN() + '|' + NW.all;
+    if (!NW.el || NW.sig !== sig || !NW.el.isConnected) {
+      NW.el?.remove(); NW.sig = sig;
+      const el = NW.el = document.createElement('div'); el.className = 'mw-news mw-el mw-noi18n';
+      const h = document.createElement('div'); h.className = 'mw-news-h';
+      const tt = document.createElement('b'); tt.textContent = NW.all ? L('Magma Extension 업데이트 소식', 'Magma Extension: what’s new') : L('Magma Extension이 업데이트됐어요', 'Magma Extension was updated');
+      const x = document.createElement('button'); x.type = 'button'; x.className = 'mw-news-x'; x.textContent = '×'; x.title = L('닫기', 'Close'); x.setAttribute('aria-label', x.title);
+      x.addEventListener('click', () => { newsMark(); newsHide(); });
+      h.append(tt, x);
+      const body = document.createElement('div'); body.className = 'mw-news-b';
+      for (const n of list) {
+        const v = document.createElement('div'); v.className = 'mw-news-v'; v.textContent = 'v' + n.v;
+        const ul = document.createElement('ul');
+        for (const line of L(n.ko, n.en)) { const li = document.createElement('li'); li.textContent = line; ul.appendChild(li); }
+        body.append(v, ul);
+      }
+      el.append(h, body);
+      for (const t of ['pointerdown', 'pointerup', 'mousedown', 'wheel', 'dblclick', 'contextmenu']) el.addEventListener(t, (e) => e.stopPropagation());
+      document.body.appendChild(el);
+    }
+    // 그림판 오른쪽 아래 구석(채팅 칸이 거기 있으면 왼쪽 아래)
+    const c = getCanvas().getBoundingClientRect(), bar = document.querySelector('chat-widget-bar'), cls = bar ? bar.className : '';
+    const left = /corner-[a-z]*-right/.test(cls) && !/corner-top/.test(cls), st = NW.el.style;
+    const set = (k, v) => { if (st[k] !== v) st[k] = v; };
+    set('bottom', Math.max(10, Math.round(window.innerHeight - Math.min(c.bottom, window.innerHeight)) + 14) + 'px');
+    set('left', left ? Math.max(10, Math.round(c.left) + 14) + 'px' : 'auto');
+    set('right', left ? 'auto' : Math.max(10, Math.round(window.innerWidth - Math.min(c.right, window.innerWidth)) + 14) + 'px');
+  }
+  cleanups.push(newsHide);
+
   // Magma는 페이지 이동 없이 화면을 바꾸므로 주기적으로 상태를 맞춘다
   const tick = setInterval(() => {
     try { i18nStart(); i18nTick(); } catch (e) { /* 무시 */ }
@@ -11264,6 +11388,7 @@ void main(){
     ensureKoRow();
     ensureFillRow();
     try { chatTick(); } catch (e) { /* 무시 */ }
+    try { newsTick(); } catch (e) { /* 무시 */ }
     koToolTick();
     alphaTick();
     aaTick();
@@ -11309,7 +11434,7 @@ void main(){
     histCheck, histPoints, histCopyLayer, openHistoryDialog, histUsage, getBrushSize, sizeRow,
     openStrokeDialog, fxSet, fxGet, fxKick, fxState: () => FX,
     advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, dockState: () => DK, parseSut, sqliteTables, parseEffector, getAA, setAA, docToBuffer, selectionExists,
-    setAlpha, advEraseCommit, fillSelection, chatShowToast, chatIncoming, chatWidget, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt,
+    aaHard, aaEdgeW, newsShow, newsTick, setAlpha, advEraseCommit, fillSelection, chatShowToast, chatIncoming, chatWidget, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt,
     ensureGroups, activateMember, selectLayerContent, advNewBrush, setMagmaFont, currentFontName, systemFonts, openTextImageDialog,
     blurDab, blurState: () => BLR, msState: () => MS, guState: () => GU, guRef, clipToggle, clipHitAt, advPutImage, builtinBlob, advSaveBrush, advPrepare, openBrushSettings, openPresetPicker, advNewFromPreset, ADV_PRESETS, advMixColor, setPrimaryHex, advState2: () => ADV, fgConfig, growMaskBy, ensureFillRow, rowLayer, msPick, msReplay, msDecompose, gapBridgeFill, qmState: () => QM, qmApply, msPropsApply, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons, smpRequest, smpState: () => SMP, smpRender, smpRes, smpCanvas, hexRgb, presetBrushObj, advCatOf, ADV_CATS };
   window.__magmaWand.ready = true; // 끝까지 시작됨 (실행기는 이 표시가 없으면 다시 넣는다)
