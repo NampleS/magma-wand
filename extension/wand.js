@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.35.0';
+  const VERSION = '0.35.1';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -1592,6 +1592,16 @@
     const v = parseFloat(sizeRow()?.querySelector('editable-number')?.textContent.trim());
     return Number.isFinite(v) ? v : null;
   }
+  // 숫자 칸에 값을 그 자리에서 바로 넣는다(프레임을 기다리지 않음). Magma 숫자 칸은 '단추 클릭 → 편집 시작, blur → 값 확정'이고
+  // 둘 다 이벤트 안에서 곧바로 처리된다(소스로 확인). 넣은 뒤 값이 들어갔는지는 부른 쪽에서 도구 값으로 확인한다.
+  function rowNumberNow(row, v) {
+    const en = row && (row.querySelector('editable-number') || null), btn = en && en.querySelector('button'), inp = en && en.querySelector('input');
+    if (!btn || !inp || btn.disabled) return false;
+    btn.click();
+    inp.value = String(v);
+    inp.dispatchEvent(new FocusEvent('blur'));
+    return true;
+  }
   async function setRowNumber(row, v) {
     const en = row?.querySelector('editable-number');
     if (!en) return false;
@@ -1710,7 +1720,7 @@
           await waitFor(() => SIZE_TOOLS.has(currentTool()) && sizeRow() && !BSZ.on, 120000);
           const want = BSZ.pending;
           if (want == null || !sizeRow() || !SIZE_TOOLS.has(currentTool())) { BSZ.pending = null; break; } // 다른 도구로 갔음
-          if (getBrushSize() !== want) { await setRowNumber(sizeRow(), want); await waitFor(() => getBrushSize() === want, 600); }
+          if (getBrushSize() !== want && !(rowNumberNow(sizeRow(), want) && getBrushSize() === want)) { await setRowNumber(sizeRow(), want); await waitFor(() => getBrushSize() === want, 600); }
           if (BSZ.pending === want) BSZ.pending = null;
         }
       } catch (err) { console.warn('[MagmaWand] 브러시 크기 바꾸기 실패', err); BSZ.pending = null; }
@@ -5791,6 +5801,16 @@ void main(){
   const LB = { busy: false, mode: null, tries: 0, warned: false, down: false };
   const lbOpRow = () => magmaRows().find((r) => r.querySelector('.slider-label')?.textContent.trim() === 'Opacity');
   // 편집기를 아직 못 잡았을 때(열린 채 업데이트된 직후)는 화면의 설정 칸에서 읽는다
+  function lbNow() {
+    const t = lbTool();
+    if (!t || LB.busy || !LB.mode || !lbIdle()) return;
+    const m = lbMode(t);
+    if (m === LB.mode) return;
+    const op = lbOp(t), o = S.lassoOp || {}, want = o[m];
+    if (o[LB.mode] !== op) { S.lassoOp = { ...o, [LB.mode]: op }; saveSettings(); }
+    if (want !== undefined && want !== op) { if (!rowNumberNow(lbOpRow(), want) || lbOp(t) !== want) return; }
+    LB.mode = m; LB.tries = 0;
+  }
   const LB_DOM = { get mode() { const m = getBrushMode(); return m === 'erase' ? 1 : m === 'draw' ? 0 : -1; }, get opacity() { return parseFloat(lbOpRow()?.querySelector('editable-number')?.textContent) / 100; } };
   function lbTool() {
     const E = getEditor(), t = E && E.activeTool;
@@ -5834,7 +5854,7 @@ void main(){
       if (LB.tries === 0) keep(LB.mode, op); // 바뀌기 직전까지 쓰던 값은 앞 모드 몫
       const want = (S.lassoOp || {})[m];
       if (want !== undefined && want !== op) {
-        if (ui.row) await setRowNumber(ui.row, want);
+        if (ui.row && !(rowNumberNow(ui.row, want) && lbOp(t) === want)) await setRowNumber(ui.row, want);
         if (!(ui.row && await waitFor(() => lbOp(t) === want, 300)) && ++LB.tries < 4) return; // 다음 번에 다시
       }
       LB.mode = m; LB.tries = 0;
@@ -5842,7 +5862,7 @@ void main(){
     const t2 = lbTool(); if (t2 && LB.mode && lbMode(t2) !== LB.mode && lbIdle() && !LB.tries) setTimeout(lbSync, 0); // 바꾸는 사이 또 바뀜(E를 짧게)
   }
   // 모드는 키(E)·단추로 바뀐다 → Magma가 처리한 바로 뒤에 맞춘다. 펜을 떼고 나서도(그리는 중엔 미뤄 둠)
-  on(window, 'pointerdown', (e) => { if (e.isTrusted && e.target === getCanvas()) LB.down = true; }, true);
+  on(window, 'pointerdown', (e) => { if (e.isTrusted && e.target === getCanvas()) { try { lbNow(); } catch { /* 무시 */ } LB.down = true; } }, true);
   for (const ev of ['pointerup', 'pointercancel', 'blur']) on(window, ev, (e) => { if (e.isTrusted) LB.down = false; }, true);
   for (const ev of ['keydown', 'keyup', 'pointerup']) on(window, ev, (e) => { if (e.isTrusted && !e.repeat && lbTool()) setTimeout(lbSync, 0); }, true);
   on(window, 'click', (e) => {
@@ -7847,6 +7867,7 @@ void main(){
     if (Math.round(t.hardness * 100) === v) return true;
     const row = aaHardRow();
     if (!row) return false;
+    if (rowNumberNow(row, v) && Math.round(t.hardness * 100) === v) return true;
     await setRowNumber(row, v);
     return waitFor(() => Math.round(t.hardness * 100) === v, 500);
   }
@@ -7902,9 +7923,29 @@ void main(){
     } catch (e) { console.warn('[MagmaWand] 안티에일리어싱', e); } finally { AAX.busy = false; aaRender(); }
   }
   // 크기를 바꾸면 번지는 폭이 그대로이도록 경도를 다시 맞춘다 (그리는 중·숫자 입력 중이 아닐 때 한 번)
+  // 바로 맞추기: 크기를 바꾼 즉시, 그리고 펜을 대는 순간(Magma가 획을 시작하기 전)에 부른다 → 크기를 바꾸자마자 그어도 새 경도로 그어짐
+  function aaNow() {
+    const t = aaTool();
+    if (!t || AAX.busy || S.busy || S.active || t.pixelation) return;
+    const f = S.aaFollow && S.aaFollow[t.name];
+    if (!f || Math.round(t.hardness * 100) !== f.hard) return;
+    const E = getEditor(), want = aaHard(f.lv, t.size), row = want !== f.hard && !E.drawingInProgress ? aaHardRow() : null;
+    if (!row || !rowNumberNow(row, want)) return;
+    if (Math.round(t.hardness * 100) === want) { aaFollow(t.name, { lv: f.lv, hard: want }); aaRender(); }
+  }
+  // 펜을 대는 순간(캡처 단계, Magma보다 먼저): 아직 칸에 못 넣은 브러시 크기(Ctrl+Alt 끌기)·경도·올가미 투명도를 그 자리에서 맞춘다
+  on(window, 'pointerdown', (e) => {
+    if (!e.isTrusted || e.button !== 0 || e.target !== getCanvas() || e.ctrlKey || e.altKey) return;
+    try {
+      if (BSZ.pending != null && !BSZ.on && SIZE_TOOLS.has(currentTool()) && sizeRow()) { const v = BSZ.pending; if (rowNumberNow(sizeRow(), v) && getBrushSize() === v) BSZ.pending = null; }
+      aaNow(); lbNow();
+    } catch (err) { console.warn('[MagmaWand] 획 직전 설정', err); }
+  }, true);
+  for (const t of ['pointerup', 'keyup', 'input', 'change', 'wheel']) on(window, t, () => { if (S.aaFollow) setTimeout(() => { try { if (!(document.activeElement && document.activeElement.tagName === 'INPUT')) aaNow(); } catch { /* 무시 */ } }, 0); }, { capture: true, passive: true });
   function aaTick() {
     const t = aaTool();
     aaEnsure(t);
+    aaNow();
     if (!t || AAX.busy || S.busy || S.active) return;
     const f = S.aaFollow && S.aaFollow[t.name], E = getEditor();
     if (f && !t.pixelation) {
@@ -10370,8 +10411,9 @@ void main(){
       try {
         BSZ.pending = null; BSZ.lastSize = v;
         const row = sizeRow();
-        if (row && getBrushSize() !== v) { await setRowNumber(row, v); await waitFor(() => getBrushSize() === v, 500); }
+        if (row && getBrushSize() !== v && !(rowNumberNow(row, v) && getBrushSize() === v)) { await setRowNumber(row, v); await waitFor(() => getBrushSize() === v, 500); }
       } finally { BSP.busy = false; }
+      aaNow();
     } else if (OWN_SIZE[kind]) { OWN_SIZE[kind].set(v); saveSettings(); rowsEl?.__mwSync?.(); }
     bszSync();
   }
