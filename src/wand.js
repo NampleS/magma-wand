@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.35.2';
+  const VERSION = '0.35.3';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -6609,6 +6609,8 @@ void main(){
   }
   function symNative(e) {
     if (!e.isTrusted || e.__magmaWand) return;
+    // 보정된 획·대칭 획을 다시 긋는 중(획이 열려 있는 동안): 실제 펜의 움직임·뗌이 끼어들어 획을 끊지 않게
+    if (SYM.hold != null && e.type !== 'pointerdown' && (e.type === 'pointermove' || e.pointerId === SYM.hold)) { SYM.held = (SYM.held || 0) + 1; e.stopImmediatePropagation(); if (e.cancelable) e.preventDefault(); return; }
     const R = SYM.rec;
     if (R) {
       if (e.pointerId !== R.pid) return;
@@ -6627,7 +6629,7 @@ void main(){
         if (e.type === 'pointerup' && R.snap) { R.snap.lock = QS.shift || !!e.shiftKey; try { const g = SYM.ghost = qsPreview(); setTimeout(() => { if (SYM.ghost === g) { SYM.ghost = null; symKick(); } }, 6000); } catch { SYM.ghost = null; } } // 다 그을 때까지 그대로 보여 줌(혹시 못 그으면 6초 뒤 치움)
         SYM.rec = null;
         qsHoldStop();
-        if (e.type === 'pointercancel') { symKick(); return; }
+        if (e.type === 'pointercancel') { if (R.snap) qsLog({ what: 'cancel', tool: R.tool }); symKick(); return; }
         if (!R.snap && !symOn()) { symKick(); return; } // 대칭 없이 그냥 그린 획
         const V = symView();
         if (V) { const p = symRecPt(V, e, R.ext), q = R.pts[R.pts.length - 1]; if (q) p.p = q.p; R.pts.push(p); } // 손 뗀 점의 필압 0은 빼고(획이 그 앞에서 끊김)
@@ -6672,7 +6674,7 @@ void main(){
     try {
       const a = JSON.parse(localStorage.getItem('magmaWand.qslog') || '[]');
       a.push(Object.assign({ at: new Date().toISOString().slice(11, 19), v: VERSION }, o));
-      while (a.length > 30) a.shift();
+      while (a.length > 24) a.shift();
       localStorage.setItem('magmaWand.qslog', JSON.stringify(a));
     } catch { /* 무시 */ }
   }
@@ -6690,7 +6692,7 @@ void main(){
     if (R.snap) {
       // 보정된 도형: 원래 획의 같은 자리 필압 + 새 시각. 펜은 맨 앞에 필압을 아주 조금 낮춘 점을 하나 더 둔다
       // (Magma는 펜 획 첫머리에서 필압이 오르기 전 점들을 건너뜀 → 바로 다음 점부터 그려지게)
-      const Q = qsStroke(R.snap, R.pen, R.ext ? 100 : 170); // 와콤 앱은 실제 시간으로 그으므로 점을 줄여 빨리
+      const Q = qsStroke(R.snap, R.pen, 170);
       const t0 = performance.now() - (Q.length + 2) * 6 - 30;
       pts = [{ x: Q[0].x, y: Q[0].y, p: R.pen ? Math.max(0.005, Q[0].p - 0.003) : 0.5, tx: 0, ty: 0, w: 1, h: 1, t: t0 }]
         .concat(Q.map((q, i) => ({ x: q.x, y: q.y, p: q.p, tx: 0, ty: 0, w: 1, h: 1, t: t0 + (i + 1) * 6 })));
@@ -6701,14 +6703,14 @@ void main(){
       if (pts.length > 190) { const k = (pts.length - 1) / 189; pts = Array.from({ length: 190 }, (_, i) => pts[Math.round(i * k)]); }
       T = symTransforms(R.blockAll);
     }
-    SYM.replaying = true;
+    SYM.replaying = true; SYM.held = 0;
     let made = 0;
     const DG = { what: R.snap ? 'shape:' + R.snap.fit.kind : 'sym', tool: R.tool, ptype: R.ptype, ext: !!R.ext, pen: !!R.pen, n: pts.length, copies: T.length,
       pmin: +Math.min(...pts.map((q) => q.p)).toFixed(3), pmax: +Math.max(...pts.map((q) => q.p)).toFixed(3),
       zeros: R.pts.filter((q) => !(q.p > 0.001)).length, dip0: !!(getEditor() && getEditor().drawingInProgress), idle: [], stab: null, stop: '' };
     try {
       // 보정된 도형은 손떨림 보정 없이 (있으면 모서리가 둥글어지고 원이 작아짐). 끝나면 원래 값으로
-      if (R.snap) { await symIdle(); const v = getStabilizer(); DG.stab = v; if (v && await setStabilizer(0)) stab = v; }
+      if (R.snap) { await symIdle(); const v = getStabilizer(); DG.stab = v; if (v) { if (await setStabilizer(0)) stab = v; DG.stab0 = getStabilizer(); } }
       for (const t of T) {
         const ok = await symIdle();
         DG.idle.push(ok ? SYM.idleMs : 'TIMEOUT');
@@ -6729,32 +6731,47 @@ void main(){
         const Tb = R.ext && tabletExt();
         DG.path = Tb ? 'wintab' : 'pointer';
         if (Tb) {
-          // 와콤 앱: 포인터 필압은 무시되므로(늘 1) 점마다 Magma가 쓰는 필압 통로(Tablet.gotPressure)로 넣고, 실제 시간에 맞춰 긋는다.
-          // (과거 시각을 붙여 한 번에 보내면 필압이 시각으로 짝지어지지 않음) 그동안 펜의 실제 신호(떼고 난 뒤 0)는 끼어들지 않게 막아 둔다
-          const fireRT = (type, p) => {
+          // 와콤 앱: 포인터 필압은 무시되므로(늘 1) 점마다 Magma가 쓰는 필압 통로(Tablet.gotPressure)로 넣는다.
+          // Magma는 '점의 시각보다 뒤에 온 첫 필압'을 그 점에 붙인다(소스로 확인). 필압에는 넣는 순간의 performance.now()가 찍히므로,
+          // 넣는 동안만 시각을 점의 시각 바로 뒤로 보이게 해서 한 획을 한 번에(기다림 없이) 넣는다.
+          // 예전엔 실제 시간(0.2초쯤)에 걸쳐 그었는데, 그 사이 실제 펜이 떠서 움직이는 신호(같은 포인터, 단추 안 눌림)를
+          // Magma가 '펜을 뗐다'로 보고 획을 끊어서 끝과 끝이 곧게 이어지거나 중간에 끊겼다(사용자 보고).
+          // 시작 전에 움직임을 막고 Magma의 입력 줄이 빌 때까지 잠깐 기다린다: 방금 전의 '떠서 움직임'이 줄에 남아 있으면
+          // 그 시각까지의 필압을 Magma가 먼저 버려서 필압이 1로 그어졌다(모의 시험)
+          SYM.hold = R.pid;
+          try { await sleep(12); await nextFrame(); await nextFrame(); } catch { /* 무시 */ }
+          const dt = R.snap ? 6 : 0, base0 = pts[0].t, rel = (i) => (dt ? i * dt : Math.max(i * 0.5, Math.min(pts[i].t - base0, i * 40)));
+          const ts0 = performance.now() - rel(pts.length - 1) - 60, at = (i) => ts0 + rel(i);
+          const own = Object.prototype.hasOwnProperty.call(performance, 'now'), oldNow = performance.now;
+          const fireAt = (type, p, ts) => {
             const [x, y] = symPt(t, p.x, p.y), [cx, cy] = V.toClient(x, y);
             const ev = new PointerEvent(type, { ...base, clientX: cx, clientY: cy, screenX: cx, screenY: cy, button: type === 'pointermove' ? -1 : 0,
               buttons: type === 'pointerup' ? 0 : 1, pressure: type === 'pointerup' ? 0 : 1, width: p.w, height: p.h });
+            try { Object.defineProperty(ev, 'timeStamp', { value: ts }); } catch { /* 무시 */ }
             ev.__magmaWand = true;
             canvas.dispatchEvent(ev);
           };
-          fireRT('pointerdown', pts[0]); // 이때 Magma가 Tablet.gotPressure를 자기 받는 함수로 바꿔 끼운다
-          const feed = typeof Tb.gotPressure === 'function' ? Tb.gotPressure : null;
-          DG.feed = feed ? (feed.name || 'fn') + ':' + String(feed).length : 'none';
-          Tb.gotPressure = () => { }; // 다시 긋는 동안 실제 펜 신호는 버림
+          let feed = null;
+          const feedAt = (ts, p) => { if (!feed) return; try { performance.now = () => ts; feed(p, 0); } finally { if (own) performance.now = oldNow; else delete performance.now; } };
+          const pr = (i) => Math.max(0.03, Math.min(1, pts[i].p));
           try {
-            const t0 = performance.now(), base0 = pts[0].t;
-            feed && feed(Math.max(0.03, Math.min(1, pts[0].p)), 0);
+            fireAt('pointerdown', pts[0], at(0)); // 이때 Magma가 Tablet.gotPressure를 자기 받는 함수로 바꿔 끼운다
+            feed = typeof Tb.gotPressure === 'function' ? Tb.gotPressure : null;
+            DG.feed = feed ? (feed.name || 'fn') + ':' + String(feed).length : 'none';
+            Tb.gotPressure = () => { }; // 다시 긋는 동안 실제 펜 신호는 버림
+            for (let k = 0; k < 100; k++) feedAt(ts0 - 5000 + k, 0); // 필압 줄(100칸)에 남은 예전 신호를 밀어냄
+            feedAt(at(0) + 0.3, pr(0));
             for (let i = 1; i < pts.length; i++) {
-              const due = R.snap ? i * 2 : Math.min(pts[i].t - base0, i * 40); // 보정 도형 = 점마다 2ms, 대칭 복사본 = 원래 속도
-              const wait = due - (performance.now() - t0);
-              if (wait > 1) await sleep(wait);
-              feed && feed(Math.max(0.03, Math.min(1, pts[i].p)), 0);
-              fireRT('pointermove', pts[i]);
+              if (i % 85 === 0) { await nextFrame(); await nextFrame(); await nextFrame(); } // 필압 줄은 100칸 → 85점마다 Magma가 가져갈 때까지
+              fireAt('pointermove', pts[i], at(i));
+              feedAt(at(i) + 0.3, pr(i));
             }
-            await sleep(12);
-            fireRT('pointerup', pts[pts.length - 1]);
-          } finally { if (feed) Tb.gotPressure = feed; }
+            const L1 = pts.length - 1;
+            fireAt('pointerup', pts[L1], at(L1) + 1);
+            feedAt(at(L1) + 2, pr(L1));
+            SYM.hold = null;
+            await nextFrame(); await nextFrame(); await nextFrame();
+          } finally { SYM.hold = null; if (feed) Tb.gotPressure = feed; }
         } else {
           // 한 획(누르기~떼기)은 한 번에 보낸다 (프레임을 나누면 손떨림 보정이 뒷부분을 곧게 펴 버림)
           fire('pointerdown', pts[0]);
@@ -6767,9 +6784,19 @@ void main(){
     } catch (err) { DG.stop = 'error ' + (err && err.message || err); throw err; } finally {
       if (SYM.ghost) { await nextFrame(); await nextFrame(); SYM.ghost = null; symKick(); } // Magma 획이 화면에 나온 뒤에 미리보기 치움
       if (stab != null) { try { await setStabilizer(stab); } catch { /* 무시 */ } }
-      SYM.replaying = false;
-      DG.made = made;
+      SYM.replaying = false; SYM.hold = null;
+      DG.made = made; DG.held = SYM.held;
       { const E = getEditor(); DG.dipEnd = !!(E && E.drawingInProgress); }
+      if (R.snap) {
+        const thin = (l, n) => { const k = Math.max(1, l.length / n), o = []; for (let i = 0; i < l.length; i += k) o.push(l[Math.floor(i)]); if (l.length) o.push(l[l.length - 1]); return o; };
+        DG.raw = thin(R.snap.raw, 60).map((q) => [Math.round(q.x), Math.round(q.y), Math.round(q.p * 100)]);
+        DG.fit = thin(pts, 24).map((q) => [Math.round(q.x), Math.round(q.y)]);
+        DG.zoom = +(viewZoom() || 1).toFixed(2); DG.size = getBrushSize();
+        try { // 맞춘 선 위 점들이 레이어에 실제로 칠해졌는지 (지우개는 빼고)
+          const E = getEditor(), L = E && msActive(E);
+          if (L && R.tool !== 'faEraser') { let n = 0, h = 0; for (const [x, y] of DG.fit) { if (x < 0 || y < 0 || x >= E.drawing.w || y >= E.drawing.h) continue; n++; if (readLayerEff(E, L, { x, y, w: 1, h: 1 })[3] > 10) h++; } DG.hit = n ? +(h / n).toFixed(2) : null; }
+        } catch { /* 무시 */ }
+      }
       qsLog(DG);
     }
     if (R.tool !== 'lassoBrushIcon') SYM.lastEnd = { ...pts[pts.length - 1], tool: R.tool };
