@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.34.0';
+  const VERSION = '0.35.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -51,7 +51,7 @@
     tool: 'wand', brush: 20, qtol: 12, qexpand: 1, qref: 'all', qkeys: ['Shift+KeyW'],
     bkeys: ['Shift+KeyB'], akeys: ['KeyC'], advBrushId: null, advOpacity: 100, advSize: 10,
     blurSize: 40, blurStrength: 6, blurDensity: 50, koAuto: true, koFont: 'Paperlogy', groupLast: {},
-    gap: 0, qmSize: 30, qmMode: 'add', fillGrow: 0, lkeys: [], mkeys: ['KeyQ'], ykeys: [], symOn: true, symN: 2, symMirror: true, qsOn: true, chatToast: true, lassoOp: null, lassoBack: null, bszList: null };
+    gap: 0, qmSize: 30, qmMode: 'add', fillGrow: 0, lkeys: [], mkeys: ['KeyQ'], ykeys: [], symOn: true, symN: 2, symMirror: true, qsOn: true, chatToast: true, lassoOp: null, lassoBack: null, bszList: null, aaFollow: null };
   const S = Object.assign({}, DEFAULTS, loadSettings(), { active: false, busy: false, switching: false });
   if (!['select', 'fill'].includes(S.action)) S.action = 'select';
   if (!['all', 'layer'].includes(S.ref)) S.ref = 'all';
@@ -79,9 +79,9 @@
   }
   function saveSettings() {
     try {
-      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn, chatToast, lassoOp, lassoBack, bszList } = S;
+      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn, chatToast, lassoOp, lassoBack, bszList, aaFollow } = S;
       localStorage.setItem('magmaWand.settings',
-        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn, chatToast, lassoOp, lassoBack, bszList }));
+        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn, chatToast, lassoOp, lassoBack, bszList, aaFollow }));
     } catch { /* 저장 못 해도 동작에는 지장 없음 */ }
   }
 
@@ -3077,7 +3077,7 @@ void main(){
   // Magma는 붙인 그림을 '화면 가운데'에 놓고 보드 밖으로 나가지 않게 밀어 넣는다(소스로 확인: floor(화면 가운데 − 크기/2)를 0~보드−크기로 자름).
   // → 그 규칙을 거꾸로 써서, 칠할 곳을 포함하면서 '그 규칙대로 놓일 자리가 정확히 계산되는' 가장 작은 그림을 만든다.
   //    3840×3840 보드에서 매 획마다 보드 크기 그림(픽셀 1470만)을 만들고 풀던 일이 없어져 훨씬 빠르고, 다른 사람에게 가는 양도 준다.
-  // 작은 보드·돌리거나 뒤집은 화면·'새 레이어로 붙이기' 설정에서는 예전처럼 보드 크기로 붙인다. 붙은 자리는 매번 확인하고 어긋나면 되돌린 뒤 보드 크기로 다시 붙인다.
+  // 아주 작은 보드·돌리거나 뒤집은 화면·'새 레이어로 붙이기' 설정에서는 예전처럼 보드 크기로 붙인다. 붙은 자리는 매번 확인하고 어긋나면 되돌린 뒤 보드 크기로 다시 붙인다.
   const PASTE = { hold: 0 };
   function pasteSpan(c, b0, b1, B) {
     for (let W = b1 - b0; W < B; W++) { let x = Math.floor(c - W / 2); x = x < B - W ? (x > 0 ? x : 0) : B - W; if (x <= b0 && x + W >= b1) return [x, W]; }
@@ -3087,7 +3087,7 @@ void main(){
     const D = E.drawing, W = D.w, H = D.h, full = { x: 0, y: 0, w: W, h: H, small: false };
     try {
       const v = E.view, m = E.computedView.inverseTransform;
-      if ((W * H < 2e6 && !S.pasteTest) || v.rotation || v.flipped || D.x || D.y || (E.model.settings && E.model.settings.pasteNewLayer) || !(v.width > 0)) return full;
+      if ((W * H < 1e5 && !S.pasteTest) || v.rotation || v.flipped || D.x || D.y || (E.model.settings && E.model.settings.pasteNewLayer) || !(v.width > 0)) return full;
       const px = v.width / 2, py = v.height / 2, cx = m[0] * px + m[2] * py + m[4], cy = m[1] * px + m[3] * py + m[5];
       const bx = Math.max(0, box.x), by = Math.max(0, box.y), bx1 = Math.min(W, box.x + box.w), by1 = Math.min(H, box.y + box.h);
       const [x, w] = pasteSpan(cx, bx, bx1, W), [y, h] = pasteSpan(cy, by, by1, H);
@@ -7763,13 +7763,13 @@ void main(){
     if (!kind || MS.skip === act) return;
     const others = msOthers(E);
     if (!others.length) return;
-    const sel = msSelOf(u);
+    const own = !!(TBX.on && TBX.on.L === act), sel = own ? null : msSelOf(u);
     if (sel && sel.bad) { MS.skip = act; toast('여러 조각(또는 구멍)으로 된 선택은 지금 레이어만 바뀌어요'); return; }
     if (sel && others.length > MS_MAX_SEL) { MS.skip = act; toast(`선택 영역이 있을 때는 함께 고른 레이어 ${MS_MAX_SEL}개까지만 같이 바뀌어요(레이어마다 되돌리기 3칸) — 지금 레이어만 바뀌어요`); return; }
     const locked = others.filter((L) => L.locked);
     if (locked.length) { MS.skip = act; toast(`잠긴 레이어(${locked.map((L) => L.name).join(', ')})가 있어 지금 레이어만 바뀌어요`); return; }
     MS.arm = false;
-    const nss = { kind, tool, L: act, H: msMat(s), others, sel, ref0: MS.ref };
+    const nss = { kind, tool, L: act, H: msMat(s), others, sel, own, ref0: own ? TBX.on.ref0 : MS.ref };
     MS.sess = nss;
     nss.hiding = msPreviewStart(nss).catch((err) => console.warn('[MagmaWand] 함께 변형 미리보기', err));
   }
@@ -7785,6 +7785,7 @@ void main(){
       await ss.hiding; // 숨기는 중이었다면 끝날 때까지 (MS.sess가 비었으니 곧 멈춤)
       for (const it of ss.items || []) if (it.was && it.was !== 'hidden') await msSetPersonal(it.L, it.was);
       if (msIdentity(H)) return;
+      if (ss.own) { TBX.on = null; if (!await deselectAll(E)) { toast('선택을 풀지 못해 함께 변형하지 못했어요'); return; } } // 확장이 맞춘 선택을 먼저 푼다
       MS.mode0 = null;
       const todo = ss.others.filter((L) => E.drawing.layers.includes(L) && msMine(E, L) && !L.locked);
       msGuard(true, `레이어 ${todo.length}개에 같은 ${ss.kind === 'move' ? '이동' : '변형'}을 하는 중…`);
@@ -7824,6 +7825,290 @@ void main(){
   });
   cleanups.push(() => { clearInterval(msTimer); MS.sess?.wrap?.remove(); MS.guard?.remove(); document.querySelectorAll('.mw-msel').forEach((r) => r.classList.remove('mw-msel')); });
   on(window, 'scroll', () => { if (MS.set.size) requestAnimationFrame(msPaint); }, true);
+
+  // ---------- 안티에일리어싱 4단계 (Magma 브러시·지우개, 클립 스튜디오처럼 없음·약하게·보통·강하게) ----------
+  // Magma에는 'Pixelation'(끄고 켜기)뿐이다. 없음 = Pixelation 켜기, 약하게 = Magma 원래 가장자리(경도 100),
+  // 보통·강하게 = 가장자리가 번지는 폭이 정해진 픽셀(AA_W)이 되도록 경도를 브러시 크기에 맞춰 넣는다(크기를 바꾸면 따라감).
+  // 경도를 손으로 바꾸거나 다른 브러시를 고르면 따라가기를 멈춘다. 바꾸는 건 모두 화면 조작(경도 칸·Pixelation 칸)으로.
+  const AA_LV = [['none', '없음', 'None'], ['weak', '약하게', 'Weak'], ['mid', '보통', 'Medium'], ['strong', '강하게', 'Strong']];
+  const AA_W = { mid: 2.5, strong: 5 };
+  const AAX = { rows: new Map(), busy: false, sig: '' };
+  const aaTool = () => { const E = getEditor(), t = E && E.activeTool; return t && (t.name === 'Brush' || t.name === 'Eraser') && typeof t.pixelation === 'boolean' ? t : null; };
+  const aaHardRow = () => { const l = [...document.querySelectorAll('editor-sliders .shape-slider .slider-label')].find((x) => x.textContent.trim() === 'Hardness'); return l ? l.parentElement : null; };
+  const aaHard = (lv, size) => Math.max(lv === 'mid' ? 45 : 25, Math.min(99, Math.round(100 * (1 - AA_W[lv] / Math.max(0.5, size / 2))))); // 가는 붓은 가운데가 흐려지지 않게 아래 한도
+  function aaLevel(t) {
+    if (t.pixelation) return 'none';
+    const f = S.aaFollow && S.aaFollow[t.name], h = Math.round(t.hardness * 100);
+    if (f && f.hard === h) return f.lv;
+    return h >= 100 ? 'weak' : null;
+  }
+  function aaFollow(name, f) { const o = { ...(S.aaFollow || {}) }; if (f) o[name] = f; else delete o[name]; S.aaFollow = o; saveSettings(); }
+  async function aaSetHard(t, v) {
+    if (Math.round(t.hardness * 100) === v) return true;
+    const row = aaHardRow();
+    if (!row) return false;
+    await setRowNumber(row, v);
+    return waitFor(() => Math.round(t.hardness * 100) === v, 500);
+  }
+  const aaPixBox = () => [...document.querySelectorAll('editor-brushes-popup custom-checkbox')].find((c) => c.textContent.trim() === 'Pixelation') || null;
+  // Pixelation 칸은 Magma 'Brush Advanced Settings' 창에만 있다 → 닫혀 있으면 안 보이게 잠깐 열어 누르고 닫는다
+  async function aaSetPix(t, on) {
+    if (t.pixelation === on) return true;
+    const pop = () => document.querySelector('editor-brushes-popup editor-popup.visible');
+    const wasOpen = !!pop();
+    let backTab = null;
+    document.documentElement.classList.toggle('mw-bphide', !wasOpen);
+    try {
+      if (!wasOpen) {
+        const b = [...document.querySelectorAll('editor-sliders .tool-sliders button')].find((x) => /Open Advanced Settings/.test(x.textContent));
+        if (!b) return false;
+        press(b);
+        if (!await waitFor(pop, 2000)) return false;
+      }
+      if (!await waitFor(aaPixBox, wasOpen ? 50 : 700)) { // 다른 탭이 열려 있음 → 첫 탭(Brush Tip Shape)으로
+        const tabs = [...document.querySelectorAll('editor-brushes-popup button, editor-brushes-popup .brush-tab, editor-brushes-popup [role=tab]')];
+        const tip = tabs.find((x) => x.textContent.trim() === 'Brush Tip Shape');
+        backTab = wasOpen ? tabs.find((x) => x !== tip && (x.classList.contains('active') || x.classList.contains('on'))) || null : null;
+        if (!tip) return false;
+        press(tip);
+        if (!await waitFor(aaPixBox, 1000)) return false;
+      }
+      const box = aaPixBox(), btn = box.querySelector('button.tgl, button[role=checkbox]') || box;
+      press(btn);
+      if (!await waitFor(() => t.pixelation === on, 300)) { const lb = box.querySelector('label'); if (lb) { press(lb); await waitFor(() => t.pixelation === on, 400); } }
+      return t.pixelation === on;
+    } finally {
+      if (backTab) press(backTab);
+      if (!wasOpen) {
+        const p = pop(), x = p && (p.querySelector('.popup-close, button[aria-label=Close], .btn-close') || [...p.querySelectorAll('button')].slice(0, 4).find((q) => q.querySelector('svg[class*=faTimes], svg[class*=faXmark]')));
+        if (x) press(x);
+        await waitFor(() => !pop(), 800);
+      }
+      setTimeout(() => document.documentElement.classList.remove('mw-bphide'), 60);
+    }
+  }
+  async function aaSet(lv) {
+    const t = aaTool();
+    if (!t || AAX.busy) return;
+    AAX.busy = true;
+    try {
+      if (lv === 'none') { if (!await aaSetPix(t, true)) toast('안티에일리어싱을 끄지 못했어요'); return; }
+      if (!await aaSetPix(t, false)) { toast('안티에일리어싱을 켜지 못했어요'); return; }
+      if (lv === 'weak') { aaFollow(t.name, null); if (!aaHardRow()) return; await aaSetHard(t, 100); return; }
+      if (!aaHardRow()) { toast('이 끝 모양(그림)에는 경도가 없어서 없음·약하게만 쓸 수 있어요'); return; }
+      const h = aaHard(lv, t.size);
+      aaFollow(t.name, { lv, hard: h });
+      if (!await aaSetHard(t, h)) aaFollow(t.name, null);
+    } catch (e) { console.warn('[MagmaWand] 안티에일리어싱', e); } finally { AAX.busy = false; aaRender(); }
+  }
+  // 크기를 바꾸면 번지는 폭이 그대로이도록 경도를 다시 맞춘다 (그리는 중·숫자 입력 중이 아닐 때 한 번)
+  function aaTick() {
+    const t = aaTool();
+    aaEnsure(t);
+    if (!t || AAX.busy || S.busy || S.active) return;
+    const f = S.aaFollow && S.aaFollow[t.name], E = getEditor();
+    if (f && !t.pixelation) {
+      const h = Math.round(t.hardness * 100);
+      if (h !== f.hard) aaFollow(t.name, null); // 손으로 바꿈·다른 브러시를 고름
+      else {
+        const want = aaHard(f.lv, t.size), a = document.activeElement;
+        if (want !== f.hard && !LB.down && !E.drawingInProgress && !BSZ.on && BSZ.pending == null && !(a && a.tagName === 'INPUT')) {
+          AAX.busy = true;
+          aaFollow(t.name, { lv: f.lv, hard: want });
+          aaSetHard(t, want).then((ok) => { if (!ok) aaFollow(t.name, null); }).catch(() => { }).finally(() => { AAX.busy = false; aaRender(); });
+          return;
+        }
+      }
+    }
+    aaRender();
+  }
+  const AA_ICON = {
+    none: '<path d="M6 2h4v2h2v2h2v4h-2v2h-2v2H6v-2H4v-2H2V6h2V4h2z" fill="currentColor"/>',
+    weak: '<circle cx="8" cy="8" r="5.6" fill="currentColor"/>',
+    mid: '<circle cx="8" cy="8" r="6.6" fill="currentColor" opacity=".35"/><circle cx="8" cy="8" r="4.9" fill="currentColor"/>',
+    strong: '<circle cx="8" cy="8" r="7.4" fill="currentColor" opacity=".22"/><circle cx="8" cy="8" r="5.6" fill="currentColor" opacity=".4"/><circle cx="8" cy="8" r="3.4" fill="currentColor"/>',
+  };
+  function aaSeg() {
+    const g = document.createElement('div'); g.className = 'mw-aaseg mw-el';
+    for (const [lv, ko, en] of AA_LV) {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'mw-aab mw-noi18n'; b.dataset.lv = lv; b.title = L(ko, en);
+      b.innerHTML = `<svg viewBox="0 0 16 16" width="16" height="16">${AA_ICON[lv]}</svg>`;
+      b.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); });
+      b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (!b.classList.contains('off')) aaSet(lv); });
+      g.appendChild(b);
+    }
+    return g;
+  }
+  // 설정 칸의 '끝 모양' 줄 아래 + Advanced Settings 창의 Pixelation 자리. Magma가 칸을 다시 그리면 같은 줄을 옮기기만 한다(깜빡임 없음)
+  function aaEnsure(t) {
+    const anchor = t && !S.active ? document.querySelector('editor-sliders .tool-sliders > .shape-slider') : null;
+    let row = AAX.rows.get('main');
+    if (!anchor) { if (row && row.isConnected) row.remove(); }
+    else {
+      if (!row) {
+        row = document.createElement('div'); row.className = 'tool-slider mw-el mw-aarow';
+        const lb = document.createElement('div'); lb.className = 'slider-label mw-noi18n'; lb.textContent = L('안티에일리어싱', 'Anti-aliasing');
+        row.append(lb, aaSeg()); AAX.rows.set('main', row);
+      }
+      if (row.previousElementSibling !== anchor) anchor.after(row);
+    }
+    const box = t ? aaPixBox() : null;
+    let seg = AAX.rows.get('pop');
+    if (!box) { if (seg && seg.isConnected) seg.remove(); }
+    else {
+      if (!seg) { seg = aaSeg(); seg.classList.add('mw-aapop'); AAX.rows.set('pop', seg); }
+      if (box.previousElementSibling !== seg) box.before(seg);
+      box.classList.add('mw-aahide');
+    }
+  }
+  function aaRender() {
+    const t = aaTool(), lv = t ? aaLevel(t) : null, hard = !!aaHardRow();
+    for (const el of AAX.rows.values()) {
+      if (!el.isConnected) continue;
+      for (const b of el.querySelectorAll('.mw-aab')) {
+        b.classList.toggle('on', b.dataset.lv === lv);
+        b.classList.toggle('off', !hard && (b.dataset.lv === 'mid' || b.dataset.lv === 'strong'));
+      }
+    }
+  }
+  cleanups.push(() => { for (const el of AAX.rows.values()) el.remove(); document.querySelectorAll('.mw-aahide').forEach((x) => x.classList.remove('mw-aahide')); document.documentElement.classList.remove('mw-bphide'); });
+
+  // ---------- 변형(Ctrl+T): 그림이 있는 곳에만 상자 맞추기 ----------
+  // Magma 변형 상자 = 레이어가 차지한 사각형(L.rect). 지워서 투명해진 곳·붙여넣은 큰 그림의 빈 곳까지 들어가 헐렁하다.
+  // → 변형을 켜기 직전에 투명하지 않은 부분을 감싸는 사각형을 선택해 둔다(Magma는 선택이 있으면 그 사각형을 변형 상자로 쓴다).
+  //   여러 레이어를 함께 골랐으면 모두를 합친 사각형. 변형을 마치고 다른 도구로 가면 선택을 풀고 되돌리기 한 번으로 묶는다.
+  //   아무것도 안 바꾸고 나가면 선택 자체를 되돌려 기록을 남기지 않는다. 이미 선택이 있거나 딱 맞으면 Magma 그대로.
+  const TBX = { on: null, busy: false };
+  function alphaBox(E, L) {
+    const srcs = layerSources(E, L);
+    let x0 = Infinity, y0 = Infinity, x1 = -1, y1 = -1;
+    for (const src of srcs) {
+      const R = src.r, d = E.renderer.getLayerImageData(src.obj, { x: R.x, y: R.y, w: R.w, h: R.h }).data;
+      const u = new Uint32Array(d.buffer, d.byteOffset, R.w * R.h);
+      for (let y = 0; y < R.h; y++) {
+        const o = y * R.w; let a = -1, b = -1;
+        for (let x = 0; x < R.w; x++) if (u[o + x] >>> 24) { a = x; break; }
+        if (a < 0) continue;
+        for (let x = R.w - 1; x >= a; x--) if (u[o + x] >>> 24) { b = x; break; }
+        x0 = Math.min(x0, R.x + a); x1 = Math.max(x1, R.x + b); y0 = Math.min(y0, R.y + y); y1 = Math.max(y1, R.y + y);
+      }
+    }
+    return x1 < 0 ? null : { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+  }
+  // 맞출 상자. 맞출 필요가 없거나 할 수 없으면 null
+  function tbxPlan(E) {
+    const u = E.model.user, L = msActive(E), D = E.drawing;
+    if (!L || L.textData || L.ref || L.locked || L.mask || !layerShown(L)) return null;
+    if (u.selection && u.selection.bounds && u.selection.bounds.w > 0) return null;
+    const Ls = [L, ...(MS.set.size ? msOthers(E).filter((x) => !x.textData && !x.ref && !x.locked) : [])];
+    let box = null;
+    for (const X of Ls) {
+      const r = X.rect;
+      if (r && r.w > 0 && (r.x < 0 || r.y < 0 || r.x + r.w > D.w || r.y + r.h > D.h)) { // 보드 밖으로 나간 그림: 선택으로 감쌀 수 없음
+        return null;
+      }
+      const b = alphaBox(E, X); if (b) box = runion(box, b);
+    }
+    if (!box) return null;
+    const f = floatingOn(E, L), R = f ? runion(L.rect && L.rect.w > 0 ? L.rect : null, { x: f.rect.x + (f.translateX || 0), y: f.rect.y + (f.translateY || 0), w: f.rect.w, h: f.rect.h }) : L.rect;
+    if (R && Math.abs(R.x - box.x) <= 1 && Math.abs(R.y - box.y) <= 1 && Math.abs(R.w - box.w) <= 2 && Math.abs(R.h - box.h) <= 2) return null;
+    if (box.w < 3 || box.h < 3) { box = rclip({ x: box.x - 1, y: box.y - 1, w: box.w + 2, h: box.h + 2 }, D.w, D.h); } // 너무 작으면 올가미가 점을 버림
+    return { L, box };
+  }
+  async function tbxStart() {
+    if (TBX.busy) return;
+    TBX.busy = true;
+    try {
+      const E = getEditor();
+      let plan = null;
+      try { plan = E && !E.drawingInProgress ? tbxPlan(E) : null; } catch (e) { console.warn('[MagmaWand] 변형 상자', e); }
+      if (!plan) { await selectTool('faVectorSquare'); return; }
+      const ref0 = guRef(), u = E.model.user;
+      let err = null;
+      for (const pad of [0, 1]) { // 축소해 놓아 한 칸 어긋나면 한 칸 넓혀 다시
+        const b = pad ? rclip({ x: plan.box.x - 1, y: plan.box.y - 1, w: plan.box.w + 2, h: plan.box.h + 2 }, E.drawing.w, E.drawing.h) : plan.box;
+        err = await msRestoreSel({ pts: [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]], soft: false, b });
+        const q = u.selection.bounds;
+        if (!err && q.x <= plan.box.x && q.y <= plan.box.y && q.x + q.w >= plan.box.x + plan.box.w && q.y + q.h >= plan.box.y + plan.box.h) break;
+        err = err || '선택이 그림보다 작음';
+      }
+      if (err) { // 못 맞추면 선택을 풀고 Magma 그대로
+        console.warn('[MagmaWand] 변형 상자', err);
+        await deselectAll(E);
+        await selectTool('faVectorSquare');
+        guAdd(ref0, '변형 상자');
+        return;
+      }
+      await selectTool('faVectorSquare');
+      TBX.on = { ref0, selRef: guRef(), L: plan.L };
+    } finally { TBX.busy = false; }
+  }
+  async function deselectAll(E) {
+    const u = E.model.user, has = () => u.selection && u.selection.bounds && u.selection.bounds.w > 0;
+    if (!has()) return true;
+    const b = [...document.querySelectorAll('button[command=deselect]')].find((x) => !x.disabled && !x.classList.contains('disabled'));
+    if (b) press(b);
+    else {
+      const sc = (E.model.settings.shortcuts && E.model.settings.shortcuts.deselect || ['ctrl+d'])[0] || 'ctrl+d', parts = sc.split('+'), k = parts[parts.length - 1];
+      if (/^[a-z]$/.test(k)) {
+        const o = { key: k, code: 'Key' + k.toUpperCase(), keyCode: k.toUpperCase().charCodeAt(0), which: k.toUpperCase().charCodeAt(0), ctrlKey: parts.includes('ctrl'), shiftKey: parts.includes('shift'), altKey: parts.includes('alt'), bubbles: true, cancelable: true };
+        document.dispatchEvent(new KeyboardEvent('keydown', o)); document.dispatchEvent(new KeyboardEvent('keyup', o));
+      }
+    }
+    return waitFor(() => !has(), 1500);
+  }
+  // 변형 도구를 떠나면: 바뀐 게 없으면 선택을 되돌리고, 바뀌었으면 선택을 풀어 되돌리기 하나로 묶는다
+  async function tbxEnd() {
+    const T = TBX.on; TBX.on = null;
+    if (!T) return;
+    TBX.busy = true;
+    try {
+      const E = getEditor();
+      if (!E) return;
+      await waitFor(() => !E.drawingInProgress, 3000);
+      if (guRef() === T.selRef) { await guPress('undo', 1, guHist()); return; }
+      await deselectAll(E);
+      await nextFrame();
+      guAdd(T.ref0, '변형');
+    } catch (e) { console.warn('[MagmaWand] 변형 상자 정리', e); } finally { TBX.busy = false; }
+  }
+  function tbxTick() {
+    if (!TBX.on || TBX.busy || MS.busy || MS.sess || S.busy) return;
+    const E = getEditor();
+    if (!E) { TBX.on = null; return; }
+    const t = E.selectedTool || E.activeTool;
+    if (t && t.name === 'Transform') return;
+    tbxEnd();
+  }
+  const tbxCan = () => !!(getCanvas() && getEditor() && !S.busy && !MS.busy && !TBX.busy && !TBX.on && !document.querySelector('.modal-dialog'));
+  on(window, 'keydown', (e) => {
+    if (!e.isTrusted || e.repeat || capturingKey) return;
+    const q = e.target;
+    if (q && (q.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(q.tagName))) return;
+    const E = getEditor();
+    if (!E || !tbxCan()) return;
+    const list = (E.model.settings.shortcuts && E.model.settings.shortcuts.transform) || ['shift+t', 'ctrl+t'];
+    const k = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : String(e.key).toLowerCase();
+    const c = [(e.ctrlKey || e.metaKey) && 'ctrl', e.altKey && 'alt', e.shiftKey && 'shift', k].filter(Boolean).join('+');
+    const norm = (x) => { const p = String(x).split('+'), last = p.pop(); return ['ctrl', 'alt', 'shift'].filter((m) => p.includes(m)).concat(last).join('+'); };
+    if (!list.some((x) => norm(x) === c)) return;
+    const t = E.selectedTool || E.activeTool;
+    if (t && t.name === 'Transform') return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (S.active) setActive(false);
+    tbxStart().catch((err) => console.warn('[MagmaWand] 변형 상자', err));
+  }, true);
+  for (const ev of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) on(window, ev, (e) => {
+    if (!e.isTrusted || e.button !== 0) return;
+    const b = e.target.closest && e.target.closest('button.tool');
+    if (!b || b.classList.contains('mw-tool') || b.classList.contains('mw-fly-btn') || toolName(b) !== 'faVectorSquare') { if (ev === 'pointerdown') TBX.press = false; return; }
+    if (ev === 'pointerdown') { const E = getEditor(), t = E && (E.selectedTool || E.activeTool); TBX.press = tbxCan() && !S.active && !(t && t.name === 'Transform'); }
+    if (!TBX.press) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (ev === 'click') { TBX.press = false; tbxStart().catch((err) => console.warn('[MagmaWand] 변형 상자', err)); }
+  }, true);
+  const tbxTimer = setInterval(() => { try { tbxTick(); } catch { /* 무시 */ } }, 60);
+  cleanups.push(() => clearInterval(tbxTimer));
 
   // ----- 함께 고른 레이어의 속성(불투명도·합성 모드·투명 픽셀 잠금·잠금·클리핑) 같이 바꾸기 -----
   // 레이어 칸 머리(Lock·합성 모드·Opacity)에서 지금 레이어 속성을 바꾸면, 손을 뗀 뒤 함께 고른 레이어에도
@@ -9758,6 +10043,17 @@ void main(){
     .mx-tab.mx-empty { opacity: .45; }
     .mx-fbody { position: relative; z-index: 1; flex: 1 1 auto; min-height: 0; }
     .mx-pbody { position: absolute; inset: 0; }
+    .mw-aarow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .mw-aaseg { display: inline-flex; border-radius: 4px; overflow: hidden; background: rgba(255,255,255,.08); flex: 0 0 auto; }
+    .mw-aab { width: 32px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border: 0; padding: 0; background: transparent; color: #d9d9de; cursor: pointer; }
+    .mw-aab + .mw-aab { border-left: 1px solid rgba(0,0,0,.3); }
+    .mw-aab:hover { background: rgba(255,255,255,.1); }
+    .mw-aab.on { background: #4c6fae; color: #fff; }
+    .mw-aab.off { opacity: .3; cursor: default; }
+    .mw-aapop { margin-left: auto; }
+    .mw-aapop .mw-aab { width: 26px; }
+    .mw-aahide { display: none !important; }
+    html.mw-bphide editor-brushes-popup editor-popup { opacity: 0 !important; pointer-events: none !important; }
     .mw-bsz { position: absolute; inset: 0; overflow: hidden auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); grid-auto-rows: 36px; align-content: start; gap: 1px; padding: 1px; background: rgba(0,0,0,.38); box-sizing: border-box; }
     .mw-bszc { position: relative; min-width: 0; height: 36px; background: #37373c; overflow: hidden; cursor: pointer; user-select: none; }
     .mw-bszc:hover { background: #46464d; }
@@ -10887,6 +11183,7 @@ void main(){
     try { chatTick(); } catch (e) { /* 무시 */ }
     koToolTick();
     alphaTick();
+    aaTick();
     ensureLayerProps();
     if (S.active) {
       // 단축키 등으로 Magma가 다른 도구로 바뀌었으면 마법봉 끄기
