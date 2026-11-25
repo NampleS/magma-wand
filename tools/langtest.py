@@ -81,6 +81,12 @@ def run(loc):
                 # 여러 버전이 쌓였을 때 한 창에
                 ev("localStorage.setItem('magmaWand.seen','0.35.0')"); time.sleep(1.2); a = ev("document.querySelectorAll('.mw-news').length+'/'+document.querySelectorAll('.mw-news-v').length")
                 check('쌓인 소식 한 창에', a.startswith('1/') and int(a[2:]) >= 4, a); ev("localStorage.setItem('magmaWand.seen','%s')" % ver); time.sleep(1.2); check('다른 창에서 닫으면 같이 닫힘', not ev("!!document.querySelector('.mw-news')"))
+            # 켜기·끄기 단추, 레이어 우클릭 래스터화
+            check('전원 단추', ev("!!document.querySelector('editor-menu .mx-power')"))
+            ev("(()=>{const I=window.__magmaWand.internals,L=I.getEditor().drawing.layers[0];I.fxSet('UJfZeagVT3',L.uid,{on:true,color:'#ff0000',width:3,aa:true,blur:0})})()"); time.sleep(.5)
+            pg.locator('editor-layers .layer').first.click(button='right'); time.sleep(1.3); a = ev("[...document.querySelectorAll('.context-menu button.mw-fxm')].map(b=>{const r=b.getBoundingClientRect();return b.textContent+'|'+(r.height>5&&r.bottom<=innerHeight&&r.top>0)}).join()")
+            check('래스터화 메뉴', a == ('경계 효과 래스터화' if loc == 'ko-KR' else 'Rasterize border effect') + '|true', a); pg.keyboard.press('Escape'); time.sleep(.4)
+            ev("(()=>{const I=window.__magmaWand.internals,L=I.getEditor().drawing.layers[0];I.fxSet('UJfZeagVT3',L.uid,null)})()"); time.sleep(.3)
             # 한국어가 아니면 확장 화면에 한글이 없어야 함 (사용자가 정한 이름 등은 빼고)
             if loc != 'ko-KR':
                 h = ev("[...new Set([...document.querySelectorAll('[class*=\"mw-\"],[class*=\"mx-\"]')].filter(e=>!e.closest('.mw-noi18n')&&e.offsetParent).flatMap(e=>[...e.childNodes].filter(x=>x.nodeType===3).map(x=>x.data.trim()).concat([e.title||''])).filter(t=>/[가-힣]/.test(t)))]")

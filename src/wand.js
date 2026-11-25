@@ -4,9 +4,9 @@
 //       그 테두리를 픽셀 그대로 따라 Magma 자체 올가미(선택 / 올가미 채우기)를 한 번 대신 그어 준다.
 // 화면: 왼쪽 도구 막대에 마법봉 버튼, 오른쪽 도구 설정 칸에 설정 (Magma 선택 도구 설정과 함께 표시)
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
-(() => {
+(function mwBoot() {
   'use strict';
-  const VERSION = '0.39.0';
+  const VERSION = '0.40.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -22,8 +22,49 @@
   const hadSettings = (() => { try { return localStorage.getItem('magmaWand.settings') != null; } catch { return false; } })(); // 전부터 쓰던 사람인지(새 설치면 소식을 안 띄움)
   window.__magmaWand = { version: VERSION };
 
+  // ----- 켜기·끄기 (위쪽 막대의 단추) -----
+  // 끄면 확장이 만든 것을 모두 걷어내고(원래 Magma 그대로) 이 단추만 남긴다. 다시 누르면 새로고침 없이 켜진다. 웹·데스크톱 앱 공통.
+  // 꺼 둔 상태는 저장되고, 업데이트가 들어와도 꺼진 채로 있는다.
+  const OFF_KEY = 'magmaWand.off';
+  const isOff = () => { try { return localStorage.getItem(OFF_KEY) === '1'; } catch { return false; } };
+  const POWER = { el: null, timer: 0 };
+  const powerKo = () => { try { const o = JSON.parse(localStorage.getItem('magmaWand.settings') || '{}').lang; if (o === 'ko' || o === 'en') return o === 'ko'; } catch { /* 무시 */ } return /^ko/i.test(document.documentElement.getAttribute('lang') || 'ko'); };
+  function powerBtn(off) {
+    const host = document.querySelector('editor-menu .menu-items');
+    if (!host) return;
+    if (POWER.el && POWER.el.isConnected && POWER.el.parentNode === host) return;
+    POWER.el?.remove();
+    const tpl = host.querySelector('button.dropdown-toggle');
+    const wrap = document.createElement('div'); wrap.className = 'dropdown mx-powerwrap';
+    const b = document.createElement('button'); b.type = 'button'; b.className = (tpl ? tpl.className.replace(/(active|show)/g, '') : 'dropdown-toggle no-arrow menu-dropdown md') + ' mx-power';
+    b.title = off ? (powerKo() ? 'Magma Extension 켜기 (지금 꺼짐)' : 'Turn on Magma Extension (off)') : (powerKo() ? 'Magma Extension 끄기' : 'Turn off Magma Extension');
+    b.setAttribute('aria-pressed', String(!off));
+    b.style.opacity = off ? '.45' : '1';
+    b.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" class="svg-icon"><path d="M12 3v9" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/><path d="M7.2 6.2a8 8 0 1 0 9.6 0" stroke="' + (off ? 'currentColor' : '#6cc04a') + '" stroke-width="2.4" stroke-linecap="round" fill="none"/></svg>';
+    b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); powerSet(off); });
+    wrap.appendChild(b); host.appendChild(wrap); POWER.el = wrap;
+  }
+  function powerSet(on) { // on = 켜기
+    try { if (on) localStorage.removeItem(OFF_KEY); else localStorage.setItem(OFF_KEY, '1'); } catch { return; }
+    powerApply();
+  }
+  function powerApply() {
+    try { window.__magmaWand && window.__magmaWand.destroy && window.__magmaWand.destroy(); } catch (e) { console.warn('[MagmaWand] 끄고 켜기', e); }
+    window.__magmaWand = null;
+    mwBoot();
+  }
+  const powerStore = (e) => { if (e.key === OFF_KEY && isOff() !== !!(window.__magmaWand && window.__magmaWand.off)) powerApply(); }; // 다른 탭에서 켜고 끔
+  const powerClean = () => { clearInterval(POWER.timer); POWER.el?.remove(); POWER.el = null; window.removeEventListener('storage', powerStore); document.querySelectorAll('.mx-powerwrap').forEach((x) => x.remove()); };
+  window.addEventListener('storage', powerStore);
+  POWER.timer = setInterval(() => { try { powerBtn(isOff()); } catch { /* 무시 */ } }, 700);
+  if (isOff()) {
+    window.__magmaWand = { version: VERSION, off: true, ready: true, destroy: powerClean };
+    powerBtn(true);
+    return;
+  }
+
   // 나중에 깨끗하게 걷어낼 수 있도록 등록한 것들을 모아 둔다
-  const cleanups = [];
+  const cleanups = [powerClean];
   // ----- 언어: Magma 계정 언어가 영어면 확장 문구도 영어로 (한국어가 기본) -----
   let LANG = null, LANG_AT = 0;
   // 확장 언어: Window 메뉴에서 고른 값(magmaWand.settings의 lang: 'ko'|'en'), 없으면(자동) Magma 계정 언어를 따른다.
@@ -80,9 +121,9 @@
   }
   function saveSettings() {
     try {
-      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn, chatToast, lassoOp, lassoBack, bszList, aaFollow, aaTex, euOn } = S;
+      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn, chatToast, lassoOp, lassoBack, bszList, aaFollow, aaTex, aaLast, euOn } = S;
       localStorage.setItem('magmaWand.settings',
-        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn, chatToast, lassoOp, lassoBack, bszList, aaFollow, aaTex, euOn }));
+        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn, chatToast, lassoOp, lassoBack, bszList, aaFollow, aaTex, aaLast, euOn }));
     } catch { /* 저장 못 해도 동작에는 지장 없음 */ }
   }
 
@@ -108,10 +149,14 @@
     return b ? toolName(b) : null;
   }
   // 버튼을 사람이 누른 것처럼 (Magma는 click 하나로는 반응하지 않음)
+  // 확장이 만드는 포인터 신호의 번호: 실제 펜·마우스(1번 등)와 절대 겹치지 않게.
+  // (예전엔 1번을 썼는데, 사용자가 펜을 대고 있는 순간 단추를 대신 누르면 Magma가 '펜을 그 단추 자리에서 뗐다'고 받아들여
+  //  획이 엉뚱한 곳까지 곧게 튀고 끊겼다 — 사용자 보고, 모의 시험으로 재현)
+  const PID = { ui: 91001, lasso: 91002, copy: 91003, drag: 91004 };
   function press(el) {
     const r = el.getBoundingClientRect();
     const o = { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true, cancelable: true,
-      composed: true, view: window, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+      composed: true, view: window, button: 0, buttons: 1, pointerId: PID.ui, pointerType: 'mouse', isPrimary: true };
     el.dispatchEvent(new PointerEvent('pointerdown', o));
     el.dispatchEvent(new MouseEvent('mousedown', o));
     el.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0 }));
@@ -1018,7 +1063,7 @@
     const sx = rect.width / canvas.width, sy = rect.height / canvas.height;
     const P = poly.map(([x, y]) => [rect.left + x * sx, rect.top + y * sy]);
     P.push(P[0]);
-    const base = { bubbles: true, cancelable: true, composed: true, view: window, pointerId: 1,
+    const base = { bubbles: true, cancelable: true, composed: true, view: window, pointerId: PID.lasso,
       pointerType: 'mouse', isPrimary: true, width: 1, height: 1,
       shiftKey: !!mods.shift, altKey: !!mods.alt, ctrlKey: false, metaKey: false };
     const fire = (type, x, y, down) => {
@@ -1313,7 +1358,7 @@
           const [mx, my] = lastReal || [clientX, clientY];
           lastReal = null;
           const ev = new PointerEvent('pointermove', { clientX: mx, clientY: my, bubbles: true, composed: true,
-            view: window, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: -1, buttons: 0 });
+            view: window, pointerId: PID.ui, pointerType: 'mouse', isPrimary: true, button: -1, buttons: 0 });
           ev.__magmaWand = true;
           c.dispatchEvent(ev);
         }
@@ -5349,6 +5394,10 @@ void main(){
   }
   const FX_VS = `#version 300 es
 void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2)); gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }`;
+  // 만드는 순서(모두 보드 픽셀 크기, 바뀐 둘레만): 알파 A → 시드(알파 10% 이상) → 점프 플러딩 → 띠 마스크 M → (흐리기: 가우시안) → 자기 그림 밖만 F
+  //  - 흐리기를 '가장 가까운 선까지의 거리'로 하면 두 선 사이에 막처럼 줄이 생긴다 → 띠를 먼저 만들고 그 띠를 흐린다(서로 겹쳐 자연스럽게 섞임)
+  //  - 보드 픽셀로 만들어 두고 Magma 그림과 같은 방식(3배 이상 확대 = 픽셀 그대로)으로 보여 준다
+  const FX_THR = 0.1;
   const FX_SEED = `#version 300 es
 precision highp float; precision highp int;
 uniform sampler2D uA; uniform float uThr;
@@ -5356,13 +5405,13 @@ out ivec4 o;
 void main(){ ivec2 p = ivec2(gl_FragCoord.xy); float a = texelFetch(uA, p, 0).r; o = a >= uThr ? ivec4(0) : ivec4(-128); }`;
   const FX_JFA = `#version 300 es
 precision highp float; precision highp int;
-uniform highp isampler2D uS; uniform int uK; uniform ivec2 uSize;
+uniform highp isampler2D uS; uniform int uK; uniform ivec2 uMin; uniform ivec2 uMax;
 out ivec4 o;
 void main(){
   ivec2 p = ivec2(gl_FragCoord.xy); ivec2 best = ivec2(-128); float bd = 1e20;
   for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
     ivec2 q = p + ivec2(i, j) * uK;
-    if (q.x < 0 || q.y < 0 || q.x >= uSize.x || q.y >= uSize.y) continue;
+    if (q.x < uMin.x || q.y < uMin.y || q.x >= uMax.x || q.y >= uMax.y) continue;
     ivec2 s = texelFetch(uS, q, 0).xy;
     if (s.x == -128) continue;
     ivec2 c = q + s; vec2 dv = vec2(c - p); float d = dot(dv, dv);
@@ -5371,31 +5420,56 @@ void main(){
   if (best.x != -128 && (abs(best.x) > 127 || abs(best.y) > 127)) best = ivec2(-128);
   o = ivec4(best, 0, 0);
 }`;
+  const FX_LM = `
+float lm(ivec2 c){ float m = 0.004; for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) m = max(m, texelFetch(uA, clamp(c + ivec2(i, j), ivec2(0), uSize - 1), 0).r); return m; }`;
+  const FX_MASK = `#version 300 es
+precision highp float; precision highp int;
+uniform highp isampler2D uS; uniform sampler2D uA; uniform ivec2 uSize; uniform float uW; uniform float uAA; uniform float uThr;
+out vec4 o;` + FX_LM + `
+void main(){
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  float a = texelFetch(uA, p, 0).r, v = 0.0;
+  if (a >= uThr) v = 1.0;
+  else {
+    ivec2 s = texelFetch(uS, p, 0).xy;
+    if (s.x != -128) { float d = length(vec2(s)); if (uAA > 0.5) { ivec2 c = p + s; v = clamp(uW + min(1.0, texelFetch(uA, c, 0).r / lm(c)) - d, 0.0, 1.0); } else v = d <= uW + 0.5 ? 1.0 : 0.0; }
+  }
+  o = vec4(v);
+}`;
+  const FX_BLUR = `#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D uT; uniform ivec2 uDir; uniform int uRad; uniform float uSig; uniform ivec2 uSize;
+out vec4 o;
+void main(){
+  ivec2 p = ivec2(gl_FragCoord.xy); float s = 0.0, w = 0.0;
+  for (int k = -uRad; k <= uRad; k++) { float g = exp(-float(k * k) / (2.0 * uSig * uSig)); s += g * texelFetch(uT, clamp(p + uDir * k, ivec2(0), uSize - 1), 0).r; w += g; }
+  o = vec4(s / w);
+}`;
+  const FX_OUT = `#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D uT; uniform sampler2D uA;
+out vec4 o;
+void main(){ ivec2 p = ivec2(gl_FragCoord.xy); o = vec4(texelFetch(uT, p, 0).r * (1.0 - texelFetch(uA, p, 0).r)); }`; // 테두리는 그림 바로 아래(반투명한 곳은 비쳐 보임, 클립 스튜디오와 같음)
   const FX_DRAW = `#version 300 es
 precision highp float; precision highp int;
-uniform highp isampler2D uS; uniform sampler2D uA; uniform sampler2D uU;
+uniform sampler2D uF; uniform sampler2D uU; uniform sampler2D uC;
+uniform float uMix;
 uniform vec3 uInv0; uniform vec3 uInv1; uniform float uH; uniform vec2 uDoc;
-uniform vec4 uColor; uniform float uW; uniform float uB; uniform float uAA; uniform float uOp; uniform float uUseU;
+uniform vec4 uColor; uniform float uOp; uniform float uUseU; uniform float uSharp;
 out vec4 o;
 void main(){
   vec2 sp = vec2(gl_FragCoord.x, uH - gl_FragCoord.y);
   vec2 p = vec2(dot(uInv0, vec3(sp, 1.0)), dot(uInv1, vec3(sp, 1.0)));
   if (p.x < 0.0 || p.y < 0.0 || p.x >= uDoc.x || p.y >= uDoc.y) discard;
-  ivec2 ip = ivec2(floor(p));
-  ivec2 s = texelFetch(uS, ip, 0).xy;
-  if (s.x == -128) discard;
-  vec2 c = vec2(ip + s) + 0.5;
-  float d = length((uAA > 0.5 ? p : vec2(ip) + 0.5) - c);
-  float cov;
-  if (uB > 0.0) cov = 1.0 - smoothstep(uW + 0.5 - uB, uW + 0.5 + uB, d);
-  else if (uAA > 0.5) cov = clamp(uW + 1.0 - d, 0.0, 1.0);
-  else cov = d <= uW + 0.5 ? 1.0 : 0.0;
-  vec2 uv = p / uDoc;
-  cov *= 1.0 - texture(uA, uv).r;
-  cov *= 1.0 - texture(uU, uv).r * uUseU;
-  cov *= uOp * uColor.a;
+  float f, u; vec4 c = vec4(0.0);
+  if (uSharp > 0.5) { ivec2 ip = ivec2(floor(p)); f = texelFetch(uF, ip, 0).r; u = texelFetch(uU, ip, 0).r; if (uMix > 0.5) c = texelFetch(uC, ip, 0); }
+  else { vec2 uv = p / uDoc; f = texture(uF, uv).r; u = texture(uU, uv).r; if (uMix > 0.5) c = texture(uC, uv); }
+  vec3 rgb = uColor.rgb;
+  // 테두리는 그림 '아래'에 깔려야 하지만 이 화면은 그림 위에 있다 → 반투명한 가장자리는 '테두리 위에 그림을 얹은 색'으로 칠해 준다(안 그러면 희끗한 막이 생김)
+  if (uMix > 0.5 && c.a > 0.004 && c.a < 0.996) { f = min(1.0, f / (1.0 - c.a)); rgb = c.rgb + uColor.rgb * (1.0 - c.a); }
+  float cov = f * (1.0 - u * uUseU) * uOp;
   if (cov <= 0.002) discard;
-  o = vec4(uColor.rgb * cov, cov);
+  o = vec4(rgb * cov, cov);
 }`;
   function fxCompile(gl, fs) {
     const mk = (type, src) => {
@@ -5421,8 +5495,8 @@ void main(){
       FX.gl = FX.cv.getContext('webgl2', { premultipliedAlpha: true, alpha: true, antialias: false });
       if (!FX.gl) throw new Error('WebGL2를 쓸 수 없어요');
       FX.cv.addEventListener('webglcontextlost', (e) => { e.preventDefault(); FX.lost = true; });
-      FX.cv.addEventListener('webglcontextrestored', () => { FX.lost = false; FX.prog = {}; FX.layers.clear(); FX.upper = null; fxKick(); });
-      FX.prog = {}; FX.layers.clear(); FX.upper = null;
+      FX.cv.addEventListener('webglcontextrestored', () => { FX.lost = false; FX.prog = {}; FX.layers.clear(); FX.upper = null; FX.tmp = null; fxKick(); });
+      FX.prog = {}; FX.layers.clear(); FX.upper = null; FX.tmp = null;
       canvas.after(FX.cv);
     }
     // Magma 캔버스와 같은 자리·크기
@@ -5432,7 +5506,7 @@ void main(){
     if (FX.cv.width !== canvas.width || FX.cv.height !== canvas.height) { FX.cv.width = canvas.width; FX.cv.height = canvas.height; FX.lastXf = ''; }
     const gl = FX.gl;
     if (!FX.prog.seed) {
-      FX.prog.seed = fxCompile(gl, FX_SEED); FX.prog.jfa = fxCompile(gl, FX_JFA); FX.prog.draw = fxCompile(gl, FX_DRAW);
+      FX.prog.seed = fxCompile(gl, FX_SEED); FX.prog.jfa = fxCompile(gl, FX_JFA); FX.prog.mask = fxCompile(gl, FX_MASK); FX.prog.blur = fxCompile(gl, FX_BLUR); FX.prog.out = fxCompile(gl, FX_OUT); FX.prog.draw = fxCompile(gl, FX_DRAW);
       FX.vao = gl.createVertexArray();
       FX.fb = gl.createFramebuffer();
     }
@@ -5452,10 +5526,12 @@ void main(){
   function fxLayerState(gl, uid, W, H) {
     let st = FX.layers.get(uid);
     if (st && st.W === W && st.H === H) return st;
-    if (st) { gl.deleteTexture(st.A); gl.deleteTexture(st.S0); gl.deleteTexture(st.S1); }
-    st = { uid, W, H, base: new Uint8Array(W * H), A: fxTex(gl, gl.R8, W, H, gl.RED, gl.UNSIGNED_BYTE, gl.LINEAR),
-      S0: fxTex(gl, gl.RG8I, W, H, gl.RG_INTEGER, gl.BYTE, gl.NEAREST), S1: fxTex(gl, gl.RG8I, W, H, gl.RG_INTEGER, gl.BYTE, gl.NEAREST),
-      sig: null, ready: false, R: 0, cur: 0 };
+    if (st) { gl.deleteTexture(st.A); gl.deleteTexture(st.F); if (st.C) gl.deleteTexture(st.C); }
+    st = { uid, W, H, base: new Uint8Array(W * H), A: fxTex(gl, gl.R8, W, H, gl.RED, gl.UNSIGNED_BYTE, gl.NEAREST), F: fxTex(gl, gl.R8, W, H, gl.RED, gl.UNSIGNED_BYTE, gl.LINEAR), col: W * H <= 16e6 ? new Uint8Array(W * H * 4) : null, C: W * H <= 16e6 ? fxTex(gl, gl.RGBA8, W, H, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR) : null, sig: null, ready: false, key: '' };
+    if (!FX.tmp || FX.tmp.W !== W || FX.tmp.H !== H) { // 계산용 (레이어끼리 함께 씀)
+      if (FX.tmp) for (const t of [FX.tmp.S0, FX.tmp.S1, FX.tmp.B0, FX.tmp.B1]) gl.deleteTexture(t);
+      FX.tmp = { W, H, S0: fxTex(gl, gl.RG8I, W, H, gl.RG_INTEGER, gl.BYTE, gl.NEAREST), S1: fxTex(gl, gl.RG8I, W, H, gl.RG_INTEGER, gl.BYTE, gl.NEAREST), B0: fxTex(gl, gl.R8, W, H, gl.RED, gl.UNSIGNED_BYTE, gl.NEAREST), B1: fxTex(gl, gl.R8, W, H, gl.RED, gl.UNSIGNED_BYTE, gl.NEAREST) };
+    }
     FX.layers.set(uid, st);
     return st;
   }
@@ -5476,6 +5552,15 @@ void main(){
     gl.texSubImage2D(gl.TEXTURE_2D, 0, dx, dy, rect.w, rect.h, gl.RED, gl.UNSIGNED_BYTE, src);
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
   }
+  // 그림 색(미리 곱한 RGBA)도 같은 방식으로
+  function fxUpC(st, rect, src = st.col, W = st.W, sx = rect && rect.x, sy = rect && rect.y) {
+    const gl = FX.gl;
+    if (!gl || FX.lost || !st.C || !rect) return;
+    gl.bindTexture(gl.TEXTURE_2D, st.C);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1); gl.pixelStorei(gl.UNPACK_ROW_LENGTH, W); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, sx); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, sy);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, rect.x, rect.y, rect.w, rect.h, gl.RGBA, gl.UNSIGNED_BYTE, src);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+  }
   const rclip = (r, W, H) => {
     const x0 = Math.max(0, Math.floor(r.x)), y0 = Math.max(0, Math.floor(r.y));
     const x1 = Math.min(W, Math.ceil(r.x + r.w)), y1 = Math.min(H, Math.ceil(r.y + r.h));
@@ -5485,62 +5570,62 @@ void main(){
   const runion = (a, b) => !a ? b : !b ? a : (() => { const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
     return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y }; })();
 
-  // 레이어 전체(또는 rect 부분)의 알파를 Magma에서 읽어 base에 넣는다
+  // 레이어(떠 있는 붙여넣기 포함)의 알파를 Magma에서 읽어 base에 넣고, 실제로 달라진 사각형을 돌려준다(없으면 null)
   function fxReadLayer(E, L, st, rect) {
-    const lr = L.rect;
     const W = st.W, H = st.H;
-    if (!rect) { st.base.fill(0); rect = { x: 0, y: 0, w: W, h: H }; }
-    else for (let y = rect.y; y < rect.y + rect.h; y++) st.base.fill(0, y * W + rect.x, y * W + rect.x + rect.w);
-    if (!lr || !(lr.w > 0 && lr.h > 0) || !L.texture) return rect;
-    const ir = rclip({ x: Math.max(rect.x, lr.x), y: Math.max(rect.y, lr.y),
-      w: Math.min(rect.x + rect.w, lr.x + lr.w) - Math.max(rect.x, lr.x), h: Math.min(rect.y + rect.h, lr.y + lr.h) - Math.max(rect.y, lr.y) }, W, H);
-    if (!ir) return rect;
-    if (ir.x === lr.x && ir.y === lr.y && ir.w === lr.w && ir.h === lr.h) {
-      const raw = E.renderer.getLayerRawData(L); // 읽기 전용
-      fxPutAlpha(st.base, W, ir, raw.data, raw.width);
-    } else {
-      const img = E.renderer.getLayerImageData(L, ir); // 읽기 전용 (레이어 안쪽 rect)
-      fxPutAlpha(st.base, W, ir, img.data, img.width);
+    rect = rect ? rclip(rect, W, H) : { x: 0, y: 0, w: W, h: H };
+    if (!rect) return null;
+    let cover = st.box ? { ...st.box } : null; // 예전에 그림이 있던 곳
+    const srcs = layerSources(E, L).map((q) => [q, risect(rect, q.r, W, H)]).filter((q) => q[1]);
+    for (const q of srcs) cover = runion(cover, q[1]);
+    cover = cover && risect(rect, cover, W, H);
+    if (!cover) return null;
+    const now = new Uint8Array(cover.w * cover.h), nc = st.col ? new Uint8Array(cover.w * cover.h * 4) : null;
+    for (const [q, ir] of srcs) {
+      const d = E.renderer.getLayerImageData(q.obj, ir).data; // 읽기 전용
+      for (let y = 0; y < ir.h; y++) { let a = (y * ir.w) * 4 + 3, o = (ir.y - cover.y + y) * cover.w + (ir.x - cover.x); for (let x = 0; x < ir.w; x++, a += 4, o++) { const v = d[a]; if (v && nc) { const p = o * 4, k = 255 - v; for (let t = 0; t < 3; t++) nc[p + t] = Math.round((d[a - 3 + t] * v + nc[p + t] * k) / 255); nc[p + 3] = Math.round(v + nc[p + 3] * k / 255); } if (v) now[o] = now[o] ? 255 - (((255 - now[o]) * (255 - v)) / 255 | 0) : v; } }
     }
-    return rect;
+    let x0 = cover.w, y0 = cover.h, x1 = -1, y1 = -1;
+    for (let y = 0; y < cover.h; y++) {
+      const o = y * cover.w, b = (cover.y + y) * W + cover.x;
+      for (let x = 0; x < cover.w; x++) if (now[o + x] !== st.base[b + x]) { st.base[b + x] = now[o + x]; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    }
+    if (nc) {
+      const N = new Uint32Array(nc.buffer), K = new Uint32Array(st.col.buffer); let u0 = cover.w, v0 = cover.h, u1 = -1, v1 = -1;
+      for (let y = 0; y < cover.h; y++) { const o = y * cover.w, b = (cover.y + y) * W + cover.x; for (let x = 0; x < cover.w; x++) if (N[o + x] !== K[b + x]) { K[b + x] = N[o + x]; if (x < u0) u0 = x; if (x > u1) u1 = x; if (y < v0) v0 = y; if (y > v1) v1 = y; } }
+      if (u1 >= 0) fxUpC(st, { x: cover.x + u0, y: cover.y + v0, w: u1 - u0 + 1, h: v1 - v0 + 1 });
+    }
+    st.box = runion(st.box && risect(st.box, { x: 0, y: 0, w: W, h: H }, W, H), cover);
+    return x1 < 0 ? null : { x: cover.x + x0, y: cover.y + y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
   }
-  // 거리장 다시 계산 (rect 둘레만)
-  function fxJfa(gl, st, rect, R) {
-    const W = st.W, H = st.H;
-    const area = rclip(rgrow(rect, 2 * R + 2), W, H);
-    if (!area) return;
-    gl.bindVertexArray(FX.vao);
-    gl.disable(gl.BLEND);
-    gl.viewport(0, 0, W, H);
-    gl.enable(gl.SCISSOR_TEST);
-    gl.scissor(area.x, area.y, area.w, area.h);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, FX.fb);
-    // 시드
-    let src = st.S0, dst = st.S1;
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, src, 0);
-    gl.useProgram(FX.prog.seed.p);
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, st.A);
-    gl.uniform1i(FX.prog.seed.u.uA, 0); gl.uniform1f(FX.prog.seed.u.uThr, 0.5);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    // 점프 플러딩
-    gl.useProgram(FX.prog.jfa.p);
-    gl.uniform2i(FX.prog.jfa.u.uSize, W, H);
-    gl.uniform1i(FX.prog.jfa.u.uS, 0);
-    let k = 1; while (k * 2 <= R + 2) k *= 2;
-    const steps = [];
-    for (; k >= 1; k = k >> 1) steps.push(k);
-    steps.push(1); // 마지막 한 번 더 (정확도)
-    for (const kk of steps) {
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, dst, 0);
-      gl.bindTexture(gl.TEXTURE_2D, src);
-      gl.uniform1i(FX.prog.jfa.u.uK, kk);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-      const t = src; src = dst; dst = t;
+  // 바뀐 곳(rect) 둘레의 테두리를 다시 만든다
+  function fxBuild(gl, st, rect, cfg) {
+    const W = st.W, H = st.H, T = FX.tmp, w = Math.min(100, Math.max(0, cfg.width)), blur = Math.max(0, cfg.blur || 0), rad = blur > 0 ? Math.max(1, Math.ceil(blur * 1.5)) : 0, sig = Math.max(0.3, blur * 0.5);
+    const O = rclip(rgrow(rect, w + rad + 3), W, H); // 결과가 달라질 수 있는 곳
+    if (!O) return;
+    const M = rclip(rgrow(O, rad + 1), W, H), I = rclip(rgrow(M, w + 3), W, H);
+    const pass = (prog, target, R, set) => {
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, target, 0);
+      gl.scissor(R.x, R.y, R.w, R.h); gl.useProgram(prog.p); set(prog.u); gl.drawArrays(gl.TRIANGLES, 0, 3);
+    };
+    const bind = (n, t) => { gl.activeTexture(gl.TEXTURE0 + n); gl.bindTexture(gl.TEXTURE_2D, t); };
+    gl.bindVertexArray(FX.vao); gl.disable(gl.BLEND); gl.viewport(0, 0, W, H); gl.enable(gl.SCISSOR_TEST); gl.bindFramebuffer(gl.FRAMEBUFFER, FX.fb);
+    let a = T.S0, b = T.S1;
+    pass(FX.prog.seed, a, I, (u) => { bind(0, st.A); gl.uniform1i(u.uA, 0); gl.uniform1f(u.uThr, FX_THR); });
+    let k = 1; while (k * 2 <= w + 3) k *= 2;
+    const steps = []; for (; k >= 1; k >>= 1) steps.push(k); steps.push(1);
+    for (const kk of steps) { pass(FX.prog.jfa, b, I, (u) => { bind(0, a); gl.uniform1i(u.uS, 0); gl.uniform1i(u.uK, kk); gl.uniform2i(u.uMin, I.x, I.y); gl.uniform2i(u.uMax, I.x + I.w, I.y + I.h); }); const t = a; a = b; b = t; }
+    pass(FX.prog.mask, T.B0, M, (u) => { bind(0, a); bind(1, st.A); gl.uniform1i(u.uS, 0); gl.uniform1i(u.uA, 1); gl.uniform2i(u.uSize, W, H); gl.uniform1f(u.uW, w); gl.uniform1f(u.uAA, cfg.aa === false ? 0 : 1); gl.uniform1f(u.uThr, FX_THR); });
+    let res = T.B0;
+    if (rad) {
+      const Hr = rclip({ x: O.x, y: M.y, w: O.w, h: M.h }, W, H);
+      pass(FX.prog.blur, T.B1, Hr, (u) => { bind(0, T.B0); gl.uniform1i(u.uT, 0); gl.uniform2i(u.uDir, 1, 0); gl.uniform1i(u.uRad, rad); gl.uniform1f(u.uSig, sig); gl.uniform2i(u.uSize, W, H); });
+      pass(FX.prog.blur, T.B0, O, (u) => { bind(0, T.B1); gl.uniform1i(u.uT, 0); gl.uniform2i(u.uDir, 0, 1); gl.uniform1i(u.uRad, rad); gl.uniform1f(u.uSig, sig); gl.uniform2i(u.uSize, W, H); });
+      res = T.B0;
     }
-    // 결과가 S0에 오도록 맞춘다
-    if (src !== st.S0) { st.S1 = st.S0; st.S0 = src; }
-    gl.disable(gl.SCISSOR_TEST);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    pass(FX.prog.out, st.F, O, (u) => { bind(0, res); bind(1, st.A); gl.uniform1i(u.uT, 0); gl.uniform1i(u.uA, 1); });
+    gl.disable(gl.SCISSOR_TEST); gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.activeTexture(gl.TEXTURE0);
+    st.ver = (st.ver || 0) + 1;
   }
   function fxUpperState(gl, W, H) {
     if (FX.upper && FX.upper.W === W && FX.upper.H === H) return FX.upper;
@@ -5587,14 +5672,21 @@ void main(){
     const replace = !!(tool && tool.moveLayerToSurface);
     const op = s.opacity == null ? 1 : s.opacity;
     const out = new Uint8Array(rect.w * rect.h);
-    const W = st.W;
+    const W = st.W, oc = st.col ? new Uint8Array(rect.w * rect.h * 4) : null, lock = !!L.opacityLocked && !erase;
+    // 긋는 중인 획의 색: 보통 붓은 알파만 있고 색은 따로(s.color = RRGGBBAA), 색이 섞이는 붓·변형은 픽셀에 들어 있다(읽은 값은 곱하지 않은 색 — 실측)
+    const flat = !replace && !s.useAllChannels && Number.isFinite(s.color), sc = flat ? [(s.color >>> 24) & 255, (s.color >>> 16) & 255, (s.color >>> 8) & 255] : null;
     for (let y = 0; y < rect.h; y++) {
       for (let x = 0; x < rect.w; x++) {
         const i = y * rect.w + x, a = rgba[i * 4 + 3] * op, b = st.base[(rect.y + y) * W + rect.x + x];
-        out[i] = replace ? a : erase ? (b * (255 - a)) / 255 : Math.max(b, a);
+        out[i] = replace ? a : erase ? (b * (255 - a)) / 255 : lock ? b : b + a - a * b / 255;
+        if (oc) {
+          const p = i * 4, q = ((rect.y + y) * W + rect.x + x) * 4, kb = replace ? 0 : (255 - a) / 255, ks = erase ? 0 : (lock ? a * b / 255 : a) / 255;
+          if (a || b) { for (let t = 0; t < 3; t++) oc[p + t] = Math.min(255, (flat ? sc[t] : rgba[p + t]) * ks + st.col[q + t] * kb); oc[p + 3] = out[i]; }
+        }
       }
     }
     fxUpload(gl, st.A, rect.w, { x: 0, y: 0, w: rect.w, h: rect.h }, out, rect.x, rect.y);
+    if (oc) fxUpC(st, rect, oc, rect.w, 0, 0);
     return rect;
   }
   function fxKick() { if (!FX.raf) FX.raf = requestAnimationFrame(fxFrame); FX.lastXf = ''; }
@@ -5605,6 +5697,13 @@ void main(){
   function fxFrame() {
     FX.raf = 0;
     try { fxStep(); } catch (e) { console.warn('[MagmaWand] 레이어 스트로크', e); FX.lastErr = String(e); }
+  }
+  // 이 레이어가 바뀌었을 수 있다는 표시: 되돌리기 기록 맨 위·떠 있는 붙여넣기 (읽기만)
+  const FXID = new WeakMap(); let fxIdN = 0;
+  const fxId = (o) => { if (!o) return 0; let n = FXID.get(o); if (!n) { n = ++fxIdN; FXID.set(o, n); } return n; };
+  function histSig(E, L) {
+    const u = E.model.user, h = u.history, a = guTop(h.undos), b = guTop(h.redos), f = floatingOn(E, L);
+    return fxId(a && a[a.length - 1]) + '/' + fxId(b && b[b.length - 1]) + '/' + h.undos.length + '/' + (f ? f.rect.w + ',' + f.rect.h + ',' + (f.translateX || 0) + ',' + (f.translateY || 0) : '') + '/' + (L.rect ? L.rect.x + ',' + L.rect.y + ',' + L.rect.w + ',' + L.rect.h : '') + '/' + (L.visible === false ? 0 : 1);
   }
   function fxStep() {
     const board = boardId();
@@ -5632,38 +5731,35 @@ void main(){
       if (idx < 0) continue;
       const L = d.layers[idx];
       const st = fxLayerState(gl, uid, W, H);
-      const R = Math.min(FX_MAXR, Math.ceil(cfg.width + (cfg.blur || 0) + 2));
       const sig = (L.rect ? `${L.rect.x},${L.rect.y},${L.rect.w},${L.rect.h}` : '0') + ':' + (L.thumbData && L.thumbData.data ? hash32(L.thumbData.data) : '');
-      const live = drawing && surf.layer === L;
-      if (!st.ready || st.R < R) {
+      const live = drawing && surf.layer === L && surf.toolId !== 4;
+      const key = cfg.width + '|' + (cfg.blur || 0) + '|' + (cfg.aa !== false), hs = histSig(E, L);
+      const refresh = (rect) => { const ch = fxReadLayer(E, L, st, rect); if (ch) { fxUpload(gl, st.A, W, ch, st.base); fxBuild(gl, st, ch, cfg); changed = true; } return ch; };
+      if (!st.ready) {
         fxReadLayer(E, L, st, null);
         fxUpload(gl, st.A, W, { x: 0, y: 0, w: W, h: H }, st.base);
-        fxJfa(gl, st, { x: 0, y: 0, w: W, h: H }, R);
-        st.ready = true; st.R = R; st.sig = sig; changed = true;
+        fxBuild(gl, st, { x: 0, y: 0, w: W, h: H }, cfg);
+        st.ready = true; st.key = key; st.sig = sig; st.hs = hs; changed = true;
+      } else if (st.key !== key) { // 설정이 바뀜
+        st.key = key; fxBuild(gl, st, { x: 0, y: 0, w: W, h: H }, cfg); changed = true;
       } else if (live) {
         // 긋는 중: 지금까지 그은 범위(surface.rect)를 읽는다. 아주 크면(200만 픽셀 넘음) 두 프레임에 한 번
         const region = surf.rect;
         st.liveTick = (st.liveTick || 0) + 1;
         if (region && region.w * region.h > 2e6 && st.liveTick % 2) { targets.push({ L, idx, st, cfg }); continue; }
-        st.liveStarted = true;
         st.liveRect = runion(st.liveRect, rclip(surf.rect, W, H));
-        const r = fxApplySurface(E, gl, st, L, region);
-        if (r) { fxJfa(gl, st, r, R); changed = true; }
+        const q = fxApplySurface(E, gl, st, L, region);
+        if (q) { fxBuild(gl, st, q, cfg); changed = true; }
       } else if (st.liveRect) {
-        // 획이 끝남: 레이어에 들어간 결과로 그 부분만 다시 읽는다
-        const r = rclip(rgrow(st.liveRect, 2), W, H);
-        st.liveRect = null; st.liveStarted = false; st.lastPt = null;
-        if (r) { fxReadLayer(E, L, st, r); fxUpload(gl, st.A, W, r, st.base); fxJfa(gl, st, r, R); changed = true; }
-        st.sig = null; // 다음 확인 때 썸네일 기준을 새로 잡음
-      } else if (doCheck && sig !== st.sig) {
-        if (st.sig !== null) { // 다른 사람이 그렸거나 되돌리기 등 → 전체 다시
-          fxReadLayer(E, L, st, null);
-          fxUpload(gl, st.A, W, { x: 0, y: 0, w: W, h: H }, st.base);
-          fxJfa(gl, st, { x: 0, y: 0, w: W, h: H }, R);
-          changed = true;
-        }
-        st.sig = sig;
-      }
+        // 획이 끝남(또는 취소): 그 부분을 레이어의 실제 그림으로 되돌려 놓고 다시 만든다 — 취소된 획의 흔적이 남지 않게 무조건
+        const q = rclip(rgrow(st.liveRect, 2), W, H);
+        st.liveRect = null;
+        if (q) { fxReadLayer(E, L, st, q); fxUpload(gl, st.A, W, q, st.base); fxUpC(st, q); fxBuild(gl, st, q, cfg); changed = true; }
+        st.sig = sig; st.hs = hs; st.late = now + 250;
+      } else if (hs !== st.hs) { // 되돌리기·다시 하기·붙여넣기·변형 등 → 바로 다시 읽어 달라진 곳만
+        st.hs = hs; st.sig = sig; refresh(null); st.late = now + 250;
+      } else if (st.late && now > st.late) { st.late = 0; refresh(null); // 조금 뒤 한 번 더(늦게 들어가는 변화)
+      } else if (doCheck && sig !== st.sig) { st.sig = sig; refresh(null); } // 다른 사람이 그림
       targets.push({ L, idx, st, cfg });
     }
     if (!targets.length) { fxStop(); return; }
@@ -5689,16 +5785,15 @@ void main(){
         if (L.visible === false) continue;
         const up = fxUpdateUpper(E, gl, W, H, t.idx, false);
         const cm = /^#?([0-9a-f]{6})$/i.exec(cfg.color || ''), col = cm ? parseInt(cm[1], 16) : 0xffffff;
-        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, t.st.S0);
-        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, t.st.A);
-        gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, up.U);
-        gl.uniform1i(P.u.uS, 0); gl.uniform1i(P.u.uA, 1); gl.uniform1i(P.u.uU, 2);
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, t.st.F);
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, up.U);
+        gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, t.st.C || t.st.F);
+        gl.uniform1i(P.u.uF, 0); gl.uniform1i(P.u.uU, 1); gl.uniform1i(P.u.uC, 2);
+        gl.uniform1f(P.u.uMix, t.st.C && (L.opacity == null || L.opacity > 0.99) && (!L.mode || /^normal$/i.test(L.mode)) && !L.clippingGroup ? 1 : 0);
         gl.uniform3f(P.u.uInv0, i0[0], i0[1], i0[2]); gl.uniform3f(P.u.uInv1, i1[0], i1[1], i1[2]);
         gl.uniform1f(P.u.uH, FX.cv.height); gl.uniform2f(P.u.uDoc, W, H);
         gl.uniform4f(P.u.uColor, ((col >> 16) & 255) / 255, ((col >> 8) & 255) / 255, (col & 255) / 255, 1);
-        gl.uniform1f(P.u.uW, Math.max(0, cfg.width)); gl.uniform1f(P.u.uB, Math.max(0, cfg.blur || 0));
-        gl.uniform1f(P.u.uAA, cfg.aa === false ? 0 : 1);
-        gl.uniform1f(P.u.uOp, L.opacity == null ? 1 : L.opacity); gl.uniform1f(P.u.uUseU, t.idx > 0 ? 1 : 0);
+        gl.uniform1f(P.u.uOp, L.opacity == null ? 1 : L.opacity); gl.uniform1f(P.u.uUseU, t.idx > 0 ? 1 : 0); gl.uniform1f(P.u.uSharp, viewSharp(E) ? 1 : 0);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
       }
       gl.activeTexture(gl.TEXTURE0);
@@ -5706,6 +5801,265 @@ void main(){
     FX.raf = requestAnimationFrame(fxFrame);
   }
   cleanups.push(() => { cancelAnimationFrame(FX.raf); FX.raf = 0; FX.cv?.remove(); FX.cv = null; });
+
+  // ----- 래스터화: 테두리를 레이어의 진짜 그림으로 -----
+  const fxUid = (L) => L.uid || 'id' + L.id;
+  function fxCfgOf(L) { const b = boardId(), c = b && L && fxGet(b, fxUid(L)); return c && c.on ? c : null; }
+  // 지금 테두리(0~255)를 보드 사각형으로 읽는다 (내 WebGL 캔버스에서)
+  function fxReadF(E, L, cfg, R) {
+    const gl = FX.gl, W = E.drawing.w, H = E.drawing.h;
+    if (!gl || FX.lost) return null;
+    const st = fxLayerState(gl, fxUid(L), W, H);
+    fxReadLayer(E, L, st, null);
+    fxUpload(gl, st.A, W, { x: 0, y: 0, w: W, h: H }, st.base);
+    fxBuild(gl, st, { x: 0, y: 0, w: W, h: H }, cfg);
+    st.ready = true; st.key = cfg.width + '|' + (cfg.blur || 0) + '|' + (cfg.aa !== false);
+    const px = new Uint8Array(R.w * R.h * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, FX.fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, st.F, 0);
+    gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
+    gl.readPixels(R.x, R.y, R.w, R.h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return px;
+  }
+  async function fxReady(L) { // 테두리 그리기 준비(WebGL)가 안 됐으면 잠깐 기다림
+    fxKick();
+    return waitFor(() => FX.gl && FX.tmp && !FX.lost, 1500);
+  }
+  // 테두리가 닿는 사각형
+  function fxBox(E, L, cfg) {
+    const b = alphaBox0(E, L); if (!b) return null;
+    const m = Math.ceil(cfg.width + (cfg.blur || 0) * 1.5 + 3);
+    return rclip(rgrow(b, m), E.drawing.w, E.drawing.h);
+  }
+  function alphaBox0(E, L) { let u = null; for (const q of layerSources(E, L)) u = runion(u, q.r); return u && rclip(u, E.drawing.w, E.drawing.h); }
+  const fxRgb = (c) => { const m = /^#?([0-9a-f]{6})$/i.exec(c || ''), n = m ? parseInt(m[1], 16) : 0xffffff; return [n >> 16, (n >> 8) & 255, n & 255]; };
+  async function fxBake(L, quiet) {
+    const E = getEditor();
+    L = L && E && (fxLayerByUid(E, fxUid(L)) || L); // 병합을 되돌리면 레이어가 새로 만들어진다
+    const cfg = fxCfgOf(L);
+    if (!E || !cfg) return false;
+    if (FXS.busy || S.busy) await waitFor(() => !FXS.busy && !S.busy, 8000);
+    if (FXS.busy || S.busy || EU.busy || SYM.pump) { toast(L10('잠시 뒤에 다시 해 주세요', 'Please try again in a moment')); return false; }
+    if (!msMine(E, L) || L.locked || L.opacityLocked || L.textData || selectionExists()) { toast(L10('잠긴 레이어·다른 사람 레이어이거나 선택이 있으면 래스터화할 수 없어요', 'Cannot rasterize a locked layer, someone else’s layer, or while something is selected')); return false; }
+    if (!await fxReady(L)) return false;
+    const U = fxBox(E, L, cfg);
+    if (!U) return false;
+    if (U.w * U.h > 3e7) { toast(L10('그림이 너무 커서 래스터화할 수 없어요', 'Too large to rasterize')); return false; }
+    const act = msActive(E);
+    const held = !SYM.hold; if (held) symHold(1);
+    FXS.baking = true;
+    try {
+      if (act !== L) { if (!await msSelectLayer(L)) { toast(L10('레이어를 고르지 못했어요', 'Could not select the layer')); return false; } await nextFrame(); }
+      const F = fxReadF(E, L, cfg, U);
+      if (!F) return false;
+      const before = new Uint8ClampedArray(readLayerEff(E, L, U)), after = new Uint8ClampedArray(before), [cr, cg, cb] = fxRgb(cfg.color);
+      for (let i = 0; i < after.length; i += 4) {
+        const f = F[i]; if (!f) continue;
+        const a = after[i + 3], oa = Math.min(255, a + f), ka = a / oa, kf = 1 - ka; // F는 이미 (1-a)가 곱해진 값 → 그림 아래에 깔린 양
+        after[i] = after[i] * ka + cr * kf; after[i + 1] = after[i + 1] * ka + cg * kf; after[i + 2] = after[i + 2] * ka + cb * kf; after[i + 3] = oa;
+      }
+      const ok = await replaceLayerRegion(E, L, U, before, after, L10('경계 효과 래스터화하지', 'Rasterize border'), null, euEdge(U, before, after));
+      if (ok === false) return false;
+      const share = cfg.share;
+      fxSet(boardId(), fxUid(L), { ...cfg, on: false });
+      FXB.push({ board: boardId(), uid: fxUid(L), ref: [...(guRef() || [])], off: true }); if (FXB.length > 30) FXB.shift();
+      if (share) await fxShareOff(L, true); // 테두리가 두 겹이 되지 않게 따로 둔 레이어는 비운다
+      if (!quiet) note(L10('"' + L.name + '" 경계 효과를 그림으로 만들었어요 (Ctrl+Z로 되돌리기)', 'Rasterized the border of "' + L.name + '" (Ctrl+Z to undo)'));
+      LP.uid = null; // 속성 칸 새로 그리기
+      return true;
+    } finally {
+      FXS.baking = false;
+      if (act && act !== L && E.drawing.layers.includes(act)) { try { await msSelectLayer(act); } catch { /* 무시 */ } }
+      if (held) symFlush();
+    }
+  }
+  // 래스터화를 되돌리면 경계 효과를 다시 켜고, 다시 하면 다시 끈다
+  const FXB = [];
+  function fxBakeWatch(h) {
+    for (const q of FXB) {
+      if (q.board !== boardId()) continue;
+      const has = (a) => a.some((s) => s.some((f) => q.ref.includes(f))); // 되돌리면 칸(배열)은 새로 만들어지지만 그 안의 항목은 그대로(실측)
+      const want = has(h.redos) ? false : has(h.undos) ? true : q.off;
+      if (want === q.off) continue;
+      q.off = want; const c = fxGet(q.board, q.uid);
+      if (c) { fxSet(q.board, q.uid, { ...c, on: !want }); LP.uid = null; }
+    }
+  }
+  // 레이어 우클릭 메뉴: 경계 효과 래스터화
+  const FXM = { L: null, at: 0 };
+  on(window, 'contextmenu', (e) => { const row = e.target.closest && e.target.closest('editor-layers .layer'); FXM.L = row ? rowLayer(row) : null; FXM.at = performance.now(); if (FXM.L && fxCfgOf(FXM.L)) for (const t of [30, 120, 300, 800]) setTimeout(fxMenuAdd, t); }, true);
+  on(window, 'pointerdown', (e) => { const b = e.target.closest && e.target.closest('editor-layers .layer button.btn-layer-more, editor-layers .layer .btn-layer-more'); if (b) { const row = b.closest('.layer'); FXM.L = row ? rowLayer(row) : null; if (FXM.L && fxCfgOf(FXM.L)) for (const t of [60, 200, 400]) setTimeout(fxMenuAdd, t); } }, true);
+  function fxMenuAdd() {
+    const L = FXM.L, menu = [...document.querySelectorAll('.dropdown-menu.context-menu, .context-menu, .dropdown-menu.show')].find((m) => m.getClientRects().length && !m.closest('editor-menu') && m.querySelector('.dropdown-item') && !m.querySelector('.mw-fxm') && !m.classList.contains('mx-winmenu') && !m.querySelector('.shape-buttons'));
+    if (!L || !menu || !fxCfgOf(L)) return;
+    const d = document.createElement('div'); d.className = 'dropdown-divider mw-fxm mw-el';
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'dropdown-item mw-fxm mw-el mw-noi18n'; { const ref = menu.querySelector('command-menu-item .dropdown-item'), tx = ref && [...ref.querySelectorAll('*'), ...ref.childNodes].reverse().find((n) => n.textContent.trim() && !n.children?.length); if (tx) { const g = document.createRange(); g.selectNodeContents(tx); const pad = g.getBoundingClientRect().left - ref.getBoundingClientRect().left; if (pad > 0 && pad < 80) b.style.paddingLeft = pad + 'px'; } } b.textContent = L10('경계 효과 래스터화', 'Rasterize border effect');
+    b.addEventListener('click', () => { document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); document.body.dispatchEvent(new MouseEvent('click', { bubbles: true })); menu.classList.remove('show'); setTimeout(() => fxBake(L).catch((err) => console.warn('[MagmaWand] 래스터화', err)), 60); });
+    const at = [...menu.children].find((x) => /transfer-layer|merge-layer/.test((x.getAttribute('name') || '') + (x.getAttribute('command') || '')) && !/transfer-layer|merge-layer/.test(x.nextElementSibling ? (x.nextElementSibling.getAttribute('name') || '') + (x.nextElementSibling.getAttribute('command') || '') : ''));
+    if (at) at.after(b); else menu.append(d, b);
+    const over = menu.getBoundingClientRect().bottom - innerHeight + 4; // 늘어난 만큼 화면 밖으로 나가지 않게
+    if (over > 0) { const top = parseFloat(menu.style.top), cur = parseFloat(getComputedStyle(menu).marginTop) || 0; if (Number.isFinite(top) && top - over > 0) menu.style.top = (top - over) + 'px'; else menu.style.marginTop = (cur - over) + 'px'; }
+  }
+  // 아래로 병합·옮겨 합치기 전에: 경계 효과가 켜진 레이어(와 바로 아래 레이어)를 먼저 래스터화하고 이어서 병합
+  const FX_MERGE = ['merge-layer', 'transfer-layer'];
+  function fxMergeTargets() { const E = getEditor(), L = E && msActive(E); if (!L) return []; const below = E.drawing.layers[E.drawing.layers.indexOf(L) + 1]; return [L, below].filter((x) => x && fxCfgOf(x) && msMine(E, x)); }
+  async function fxBeforeMerge(go) {
+    const E = getEditor(), A = msActive(E), comp = A && fxGet(boardId(), fxUid(A)), N = comp && comp.share ? fxLayerByUid(E, comp.share) : null;
+    for (const L of fxMergeTargets()) if (!await fxBake(L, true)) return;
+    await waitFor(() => !E.drawingInProgress && !S.busy, 2500); await sleep(120);
+    if (N && E.drawing.layers[E.drawing.layers.indexOf(A) + 1] === N) { // 바로 아래가 테두리용 (이제 빈) 레이어 → 그것과 먼저 합치고 한 번 더
+      const n = E.drawing.layers.length; go();
+      if (!await waitFor(() => E.drawing.layers.length < n && !E.drawingInProgress, 4000)) return;
+      await sleep(400);
+    }
+    go();
+  }
+  let fxPass = 0;
+  on(window, 'keydown', (e) => {
+    if (!e.isTrusted || e.repeat || performance.now() < fxPass) return;
+    const q = e.target; if (q && (q.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(q.tagName))) return;
+    const E = getEditor(), sc = E && E.model.settings && E.model.settings.shortcuts; if (!E || !getCanvas()) return;
+    const k = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : String(e.key).toLowerCase(), c = [(e.ctrlKey || e.metaKey) && 'ctrl', e.altKey && 'alt', e.shiftKey && 'shift', k].filter(Boolean).join('+');
+    const hit = FX_MERGE.find((m) => ((sc && sc[m]) || (m === 'merge-layer' ? ['ctrl+e'] : ['f'])).includes(c));
+    if (!hit || !fxMergeTargets().length) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    const o = { key: e.key, code: e.code, keyCode: e.keyCode, which: e.which, ctrlKey: e.ctrlKey, altKey: e.altKey, shiftKey: e.shiftKey, metaKey: e.metaKey, bubbles: true, cancelable: true };
+    fxBeforeMerge(() => { fxPass = performance.now() + 500; document.dispatchEvent(new KeyboardEvent('keydown', o)); document.dispatchEvent(new KeyboardEvent('keyup', o)); }).catch((err) => console.warn('[MagmaWand] 병합 전 래스터화', err));
+  }, true);
+  for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) on(window, t, (e) => {
+    if (!e.isTrusted || performance.now() < fxPass) return;
+    const b = e.target.closest && e.target.closest('[command="merge-layer"], [command="transfer-layer"], command-menu-item[name="merge-layer"], command-menu-item[name="transfer-layer"]');
+    if (!b || !fxMergeTargets().length) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (t !== 'click') return;
+    const name = b.getAttribute('command') || b.getAttribute('name'), btn = document.querySelector('editor-layers button[command="' + name + '"]') || b.querySelector('button') || b;
+    fxBeforeMerge(() => { fxPass = performance.now() + 500; btn.click(); }).catch((err) => console.warn('[MagmaWand] 병합 전 래스터화', err));
+  }, true);
+
+  // ----- 상대에게도 보이기: 테두리를 담은 진짜 레이어를 바로 아래에 두고, 그리기를 멈추면 맞춰 준다 -----
+  //  - 내 화면에서는 실시간 테두리를 그대로 쓰고, 그 레이어는 '개인 보이기'로 나한테만 숨긴다.
+  //  - 그린 뒤 4초쯤 멈췄을 때 달라진 사각형만 한 번 보낸다(비우기+붙여넣기). 되돌린 뒤에는 다음 획을 그을 때까지 보내지 않는다(다시 하기가 사라지지 않게).
+  //  - 맞추기는 바로 앞 획과 한 묶음이라 Ctrl+Z 한 번에 함께 되돌아간다.
+  const FXS = { busy: false, seen: new Map(), at: 0, fail: 0 };
+  const FXS_IDLE = 4000;
+  function fxShareOf(L) { const c = fxCfgOf(L); return c && c.share ? c : null; }
+  const fxLayerByUid = (E, uid) => E.drawing.layers.find((x) => fxUid(x) === uid) || null;
+  async function fxShareMake(L) { // 바로 아래에 새 레이어를 만든다
+    const E = getEditor(), before = new Set(E.drawing.layers);
+    if (!await msSelectLayer(L)) return null;
+    await nextFrame();
+    const add = document.querySelector('editor-layers button[command="add-layer"]') || document.querySelector('button[command="add-layer"]');
+    if (!add) return null;
+    add.click();
+    if (!await waitFor(() => E.drawing.layers.some((x) => !before.has(x)) && !E.drawingInProgress, 5000)) return null;
+    const N = E.drawing.layers.find((x) => !before.has(x));
+    for (let k = 0; k < 3 && E.drawing.layers.indexOf(N) !== E.drawing.layers.indexOf(L) + 1; k++) { // 새 레이어는 위에 생긴다 → 한 칸 아래로
+      if (E.drawing.layers.indexOf(N) > E.drawing.layers.indexOf(L) + 1) break;
+      const sc = (E.model.settings.shortcuts && E.model.settings.shortcuts['move-layer-down'] || ['ctrl+['])[0].split('+'), key = sc[sc.length - 1];
+      const btn = document.querySelector('button[command="move-layer-down"]');
+      if (btn && !btn.disabled) btn.click();
+      else { const o = { key, code: key === '[' ? 'BracketLeft' : 'Key' + key.toUpperCase(), keyCode: key === '[' ? 219 : key.toUpperCase().charCodeAt(0), which: key === '[' ? 219 : key.toUpperCase().charCodeAt(0), ctrlKey: sc.includes('ctrl'), altKey: sc.includes('alt'), shiftKey: sc.includes('shift'), bubbles: true, cancelable: true }; document.dispatchEvent(new KeyboardEvent('keydown', o)); document.dispatchEvent(new KeyboardEvent('keyup', o)); }
+      await sleep(350);
+    }
+    return E.drawing.layers.indexOf(N) === E.drawing.layers.indexOf(L) + 1 ? N : null;
+  }
+  async function fxPersonal(N, want) { const row = await msRevealRow(N); const i = row ? layerRows().indexOf(row) : -1; return i >= 0 && setPersonal(i, want); }
+  // 원래 레이어로 돌아가기 (새 레이어를 만든 직후엔 서버 응답이 늦게 와서 선택이 다시 바뀔 때가 있다 → 잠깐 지켜본다)
+  async function fxBackTo(act, watch) {
+    const E = getEditor();
+    if (!act || !E.drawing.layers.includes(act)) return;
+    for (let k = 0; k < 3; k++) { if (msActive(E) !== act) await msSelectLayer(act); if (!watch) return; await sleep(350); if (msActive(E) === act && k) return; }
+  }
+  async function fxShareSet(L, on1) {
+    const E = getEditor(); L = L && E && (fxLayerByUid(E, fxUid(L)) || L);
+    const b = boardId(), cfg = fxGet(b, fxUid(L));
+    if (!E || !cfg) return;
+    if (!on1) { await fxShareOff(L); return; }
+    if (!msMine(E, L)) { toast(L10('내 레이어에서만 쓸 수 있어요', 'Only works on your own layer')); return; }
+    const act = msActive(E);
+    FXS.busy = true;
+    const held = !SYM.hold; if (held) symHold(1);
+    try {
+      const N = await fxShareMake(L);
+      if (!N) { toast(L10('테두리용 레이어를 만들지 못했어요', 'Could not create the border layer')); return; }
+      fxSet(b, fxUid(L), { ...cfg, share: fxUid(N) });
+      FXS.seen.delete(fxUid(L));
+      euReset();
+      await fxBackTo(act, true);
+      await fxPersonal(N, 'hidden'); // 나한테만 숨김(나는 실시간 테두리를 봄)
+    } finally { FXS.busy = false; euMarkAll(guHist()); if (held) symFlush(); }
+    setTimeout(() => fxShareSync(L, true).catch(() => { }), 400);
+  }
+  // 끄기: 테두리용 레이어를 비우고(레이어는 지우지 않음) 다시 보이게
+  async function fxShareOff(L, quiet) {
+    const E = getEditor(), b = boardId(), cfg = fxGet(b, fxUid(L));
+    if (!cfg || !cfg.share) return;
+    const N = E && fxLayerByUid(E, cfg.share);
+    if (N && N.rect && N.rect.w > 0 && !await fxShareSync(L, true, true)) { if (!quiet) { toast(L10('지금은 끌 수 없어요. 잠시 뒤 다시 해 주세요', 'Cannot turn off right now. Try again in a moment')); return; } }
+    if (N) await fxPersonal(N, 'inherit');
+    fxSet(b, fxUid(L), { ...fxGet(b, fxUid(L)), share: null });
+    if (N && !quiet) note(L10('테두리용 레이어를 비웠어요. 빈 레이어는 지우셔도 돼요', 'The border layer is now empty. You can delete it'));
+  }
+  async function fxShareSync(L, force, clear) {
+    const E = getEditor(), cfg0 = fxGet(boardId(), fxUid(L)), cfg = cfg0 && cfg0.share ? cfg0 : null, empty = clear || (cfg && !cfg.on);
+    if (!E || !cfg || FXS.busy || S.busy || S.active || EU.busy || SYM.pump || SYM.down != null || E.drawingInProgress || selectionExists()) return false;
+    const N = fxLayerByUid(E, cfg.share);
+    if (!N) { fxSet(boardId(), fxUid(L), { ...cfg, share: null }); toast(L10('테두리용 레이어가 없어져 "상대에게도 보이기"를 껐어요', 'The border layer is gone, so sharing was turned off')); return false; }
+    if (!msMine(E, L) || !msMine(E, N) || N.locked || N.opacityLocked || !(empty || await fxReady(L))) return false;
+    const full = runion(empty ? null : fxBox(E, L, cfg), alphaBox0(E, N));
+    if (!full) return true;
+    if (full.w * full.h > 3e7) return false;
+    FXS.busy = true;
+    const h = guHist(), act = msActive(E), top0 = guRef();
+    const held = !SYM.hold; if (held) symHold(1);
+    let sent = false, shown = false;
+    const mark = () => { const q = FXS.seen.get(fxUid(L)), c = fxGet(boardId(), fxUid(L)); if (q && c) { q.key = fxsKey(L, c); q.t = 0; } };
+    try {
+      const F = empty ? new Uint8Array(full.w * full.h * 4) : fxReadF(E, L, cfg, full), [cr, cg, cb] = fxRgb(cfg.color), op = Math.max(0, Math.min(1, aaNum(L.opacity, 1)));
+      if (!F) return false;
+      const before = new Uint8ClampedArray(readLayerEff(E, N, full)), after = new Uint8ClampedArray(before.length);
+      let diff = false;
+      for (let i = 0; i < after.length; i += 4) { const a = Math.round(F[i] * op); if (a) { after[i] = cr; after[i + 1] = cg; after[i + 2] = cb; after[i + 3] = a; } if (Math.abs(a - before[i + 3]) > 5 || (a > 8 && Math.max(Math.abs(before[i] - cr), Math.abs(before[i + 1] - cg), Math.abs(before[i + 2] - cb)) * a > 5 * 255)) diff = true; /* 옅은 곳의 색은 원래 오차가 크다 */ else if (a !== before[i + 3]) { after[i] = before[i]; after[i + 1] = before[i + 1]; after[i + 2] = before[i + 2]; after[i + 3] = before[i + 3]; } }
+      if (!diff) { mark(); return true; }
+      shown = true; await fxPersonal(N, 'inherit'); // 숨긴 레이어에는 그릴 수 없다(Magma) → 보내는 동안만 보이게
+      if (act !== N && !await msSelectLayer(N)) return false;
+      await nextFrame();
+      sent = await replaceLayerRegion(E, N, full, before, after, '되돌리지', null, euEdge(full, before, after)) !== false;
+    } finally {
+      try { if (act && act !== N) await fxBackTo(act, false); if (shown && msActive(E) !== N) await fxPersonal(N, 'hidden'); } catch { /* 무시 */ }
+      if (sent) {
+        const a = h.undos, i0 = top0 ? a.lastIndexOf(top0) : -1, mine = a.slice(i0 + 1);
+        // 바로 앞 획과 한 묶음으로 (Ctrl+Z 한 번에)
+        const prev = GU.list[GU.list.length - 1], n0 = prev && prev.top === top0 ? prev.n : 1, ref0 = prev && prev.top === top0 ? prev.ref0 : (i0 > 0 ? a[i0 - 1] : null);
+        if (top0 && mine.length && !force) { if (prev && prev.top === top0) GU.list.pop(); GU.list.push({ ref0, top: guTop(a), n: n0 + mine.length, what: L10('획과 테두리', 'Stroke and border'), lost: false }); if (GU.list.length > 20) GU.list.shift(); }
+        euMarkAll(h); mark();
+      }
+      FXS.busy = false;
+      if (held) symFlush();
+    }
+    return true;
+  }
+  const fxsKey = (L, cfg) => { const st = FX.layers.get(fxUid(L)); return (cfg.on ? 1 : 0) + '|' + (st ? st.ver : 0) + '|' + cfg.color + '|' + cfg.width + '|' + cfg.blur + '|' + cfg.aa + '|' + (L.opacity ?? 1); };
+  // 그리기를 멈췄는지 보고 맞추기
+  const fxsTimer = setInterval(() => {
+    try {
+      const E = getEditor(), b = boardId(), h = guHist();
+      if (!E || !b || !h || FXS.busy || FXS.baking) return;
+      fxBakeWatch(h);
+      const cfgs = fxAll()[b] || {}, top = guRef(), red = h.redos.length;
+      for (const [uid, cfg] of Object.entries(cfgs)) {
+        if (!cfg || !cfg.share) continue;
+        const L = fxLayerByUid(E, uid); if (!L) continue;
+        const key = fxsKey(L, cfg);
+        let q = FXS.seen.get(uid);
+        if (!q) { FXS.seen.set(uid, { key, t: 0 }); continue; }
+        if (q.key !== key) { q.key = key; q.t = performance.now(); continue; }
+        if (q.t && !red && performance.now() - q.t > FXS_IDLE && performance.now() - SYM.upAt > FXS_IDLE && !document.hidden) { q.t = 0; fxShareSync(L, false).catch((err) => console.warn('[MagmaWand] 테두리 맞추기', err)); return; }
+      }
+    } catch { /* 무시 */ }
+  }, 700);
+  cleanups.push(() => clearInterval(fxsTimer));
 
   // 설정 창 (Edit → 레이어 스트로크)
   function openStrokeDialog() {
@@ -6711,6 +7065,7 @@ void main(){
     for (const q of (l.length ? l : [e])) B.evs.push({ type: e.type, t: q.timeStamp, i: { bubbles: true, cancelable: true, composed: true, view: window, pointerId: e.pointerId, pointerType: e.pointerType, isPrimary: e.isPrimary,
       clientX: q.clientX, clientY: q.clientY, screenX: q.screenX, screenY: q.screenY, button: e.button, buttons: e.buttons, pressure: q.pressure, tiltX: q.tiltX, tiltY: q.tiltY, width: q.width, height: q.height,
       ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey } });
+    { const T = tabletExt(); if (T && e.type !== 'pointerup') { try { const v = T.pen().pressure; if (Number.isFinite(v) && v > 0) B.samples.push([e.timeStamp + 0.2, v, 0]); } catch { /* 무시 */ } } }
     if (e.type === 'pointerup' || e.type === 'pointercancel') B.ended = true;
   }
   // 지금만 performance.now()를 ts로 보이게 하고 필압을 넣는다 (Magma는 넣는 순간의 시각으로 필압과 점을 짝지음)
@@ -6953,7 +7308,7 @@ void main(){
   }
   function symSend(J, t) {
     const R = J.R, pts = J.pts, canvas = getCanvas(), V = symView(), T = SYM.hold.T && R.ext ? SYM.hold.T : null;
-    const base = { bubbles: true, cancelable: true, composed: true, view: window, pointerId: R.pid, pointerType: R.ptype, isPrimary: true };
+    const base = { bubbles: true, cancelable: true, composed: true, view: window, pointerId: PID.copy, pointerType: R.ptype, isPrimary: true };
     const rel = (i) => Math.max(i * 0.5, Math.min(pts[i].t - pts[0].t, i * 40));
     const ts0 = performance.now() - rel(pts.length - 1) - 60, at = (i) => (T ? ts0 + rel(i) : pts[i].t);
     const fire = (type, i, dt) => {
@@ -7839,7 +8194,7 @@ void main(){
   async function msDrag(from, to) {
     const canvas = getCanvas();
     const [ax, ay] = msScreen(from), [bx, by] = msScreen(to);
-    const base = { bubbles: true, cancelable: true, composed: true, view: window, pointerId: 1, pointerType: 'mouse', isPrimary: true, width: 1, height: 1 };
+    const base = { bubbles: true, cancelable: true, composed: true, view: window, pointerId: PID.drag, pointerType: 'mouse', isPrimary: true, width: 1, height: 1 };
     const fire = (type, x, y, down) => {
       const ev = new PointerEvent(type, { ...base, clientX: x, clientY: y, screenX: x, screenY: y, button: type === 'pointermove' ? -1 : 0, buttons: down ? 1 : 0, pressure: down ? 0.5 : 0 });
       ev.__magmaWand = true; canvas.dispatchEvent(ev);
@@ -8225,11 +8580,18 @@ void main(){
   }
   function aaLevel(t) {
     if (t.pixelation) return 'none';
-    const f = S.aaFollow && S.aaFollow[t.name], h = Math.round(t.hardness * 100);
+    const f = aaF(t), h = Math.round(t.hardness * 100);
     if (f && f.hard === h) return f.lv;
     return h >= 100 ? 'weak' : null;
   }
-  function aaFollow(name, f) { const o = { ...(S.aaFollow || {}) }; if (f) o[name] = f; else delete o[name]; S.aaFollow = o; saveSettings(); }
+  // 단계는 '도구 + 브러시 칸(1~6번)'마다 기억한다 (칸마다 다른 붓이므로)
+  const aaK = (t) => { const b = [...document.querySelectorAll('editor-slots button.btn-slot')].findIndex((x) => x.classList.contains('on')); return t.name + (t.name === 'Brush' && b >= 0 ? '#' + b : ''); };
+  const aaF = (t) => { const o = S.aaFollow || {}; return o[aaK(t)] || (t.name === 'Brush' && o[t.name]) || null; };
+  function aaFollow(t, f) { const o = { ...(S.aaFollow || {}) }, k = aaK(t); delete o[t.name]; if (f) o[k] = f; else delete o[k]; S.aaFollow = o; saveSettings(); }
+  // 사용자가 경도를 직접 만졌는가 (그때만 단계를 푼다. 설정 동기화·다른 기기 등으로 경도가 바뀐 것은 다시 맞춘다)
+  on(window, 'pointerdown', (e) => { if (e.isTrusted && e.target.closest && e.target.closest('.shape-slider, editor-brushes-popup')) AAX.touch = performance.now(); }, true);
+  on(window, 'keydown', (e) => { if (e.isTrusted && ((e.shiftKey && (e.code === 'BracketLeft' || e.code === 'BracketRight')) || (e.target.closest && e.target.closest('.shape-slider, editor-brushes-popup')))) AAX.touch = performance.now(); }, true);
+  const aaTouched = () => AAX.touch && performance.now() - AAX.touch < 2500;
   async function aaSetHard(t, v) {
     if (Math.round(t.hardness * 100) === v) return true;
     const row = aaHardRow();
@@ -8302,7 +8664,7 @@ void main(){
       }
       const P = () => panel(), box = (i) => P().querySelectorAll('custom-checkbox')[i], num = (i) => ({ querySelector: () => P().querySelectorAll('editable-number')[i] });
       // 텍스처가 바뀐 바로 그 순간 경도도 함께 (사이에 그어도 어긋나지 않게)
-      const hardNow = () => { if (!cfg.lv || t.pixelation) return; const w = aaHard(cfg.lv, t), row = aaHardRow(); if (row && rowNumberNow(row, w) && Math.round(t.hardness * 100) === w) aaFollow(t.name, { lv: cfg.lv, hard: w, snap: aaSnap(t) }); };
+      const hardNow = () => { if (!cfg.lv || t.pixelation) return; const w = aaHard(cfg.lv, t), row = aaHardRow(); if (row && rowNumberNow(row, w) && Math.round(t.hardness * 100) === w) aaFollow(t, { lv: cfg.lv, hard: w, snap: aaSnap(t) }); };
       const tick = async (i, get, v) => {
         if (get() === v) return true;
         const b = box(i) && box(i).querySelector('button[role=checkbox]'); if (!b) return false;
@@ -8376,16 +8738,17 @@ void main(){
     if (!t || AAX.busy) return;
     AAX.busy = true; AAX.fail = 0;
     try {
-      if ((lv === 'none' || lv === 'weak') && (aaTexOurs(t) || aaTexOld(t))) { aaFollow(t.name, null); await aaTexOff(t); }
+      if ((lv === 'none' || lv === 'weak') && (aaTexOurs(t) || aaTexOld(t))) { aaFollow(t, null); await aaTexOff(t); }
       if (lv === 'none') { if (!await aaSetPix(t, true)) toast('안티에일리어싱을 끄지 못했어요'); return; }
       if (!await aaSetPix(t, false)) { toast('안티에일리어싱을 켜지 못했어요'); return; }
-      if (lv === 'weak') { aaFollow(t.name, null); if (!aaHardRow()) return; await aaSetHard(t, 100); return; }
+      if (lv === 'weak') { aaFollow(t, null); if (!aaHardRow()) return; await aaSetHard(t, 100); return; }
       if (!aaHardRow()) { toast('이 끝 모양(그림)에는 경도가 없어서 없음·약하게만 쓸 수 있어요'); return; }
       const d1 = aaDepth(lv, t);
       if (!aaTexSame(t, d1) && !(d1 ? await aaTexOn(t, d1, lv) : await aaTexOff(t, lv))) await aaTexOff(t, lv);
       const h = aaHard(lv, t);
-      aaFollow(t.name, { lv, hard: h, snap: aaSnap(t) });
-      if (!await aaSetHard(t, h)) aaFollow(t.name, null);
+      S.aaLast = { ...(S.aaLast || {}), [t.name]: lv };
+      aaFollow(t, { lv, hard: h, snap: aaSnap(t) });
+      await aaSetHard(t, h);
     } catch (e) { console.warn('[MagmaWand] 안티에일리어싱', e); } finally { AAX.busy = false; aaRender(); }
   }
   // 크기를 바꾸면 번지는 폭이 그대로이도록 경도를 다시 맞춘다 (그리는 중·숫자 입력 중이 아닐 때 한 번)
@@ -8393,11 +8756,11 @@ void main(){
   function aaNow() {
     const t = aaTool();
     if (!t || AAX.busy || S.busy || S.active || t.pixelation) return;
-    const f = S.aaFollow && S.aaFollow[t.name];
+    const f = aaF(t);
     if (!f || Math.round(t.hardness * 100) !== f.hard) return;
     const E = getEditor(), want = aaHard(f.lv, t), row = want !== f.hard && !E.drawingInProgress ? aaHardRow() : null;
     if (!row || !rowNumberNow(row, want)) return;
-    if (Math.round(t.hardness * 100) === want) { aaFollow(t.name, { lv: f.lv, hard: want, snap: f.snap }); aaRender(); }
+    if (Math.round(t.hardness * 100) === want) { aaFollow(t, { lv: f.lv, hard: want, snap: f.snap }); aaRender(); }
   }
   // 펜을 대는 순간(캡처 단계, Magma보다 먼저): 아직 칸에 못 넣은 브러시 크기(Ctrl+Alt 끌기)·경도·올가미 투명도를 그 자리에서 맞춘다
   on(window, 'pointerdown', (e) => {
@@ -8419,19 +8782,32 @@ void main(){
       aaTexOff(t).then((ok) => { if (!ok) AAX.fail = (AAX.fail || 0) + 1; }).catch(() => { AAX.fail = (AAX.fail || 0) + 1; }).finally(() => { AAX.busy = false; aaRender(); });
       return;
     }
-    const f = S.aaFollow && S.aaFollow[t.name], E = getEditor();
+    const f = aaF(t), E = getEditor();
+    // 우리 텍스처는 켜져 있는데 단계 기억이 없음(다른 기기와 설정이 동기화되는 등) → 마지막 단계로 이어서 맞춤
+    if (!f && !t.pixelation && aaTexOurs(t) && !aaTouched() && calm()) {
+      const lv = (S.aaLast || {})[t.name] || 'strong', w = aaHard(lv, t);
+      aaFollow(t, { lv, hard: Math.round(t.hardness * 100), snap: aaSnap(t) });
+      if (Math.round(t.hardness * 100) !== w) { AAX.busy = true; aaSetHard(t, w).then((ok) => { if (ok) aaFollow(t, { lv, hard: w, snap: aaSnap(t) }); }).catch(() => { }).finally(() => { AAX.busy = false; aaRender(); }); return; }
+    }
     if (f && !t.pixelation) {
       const h = Math.round(t.hardness * 100);
-      if (h !== f.hard) { // 손으로 바꿈·다른 브러시를 고름
-        aaFollow(t.name, null);
-        if (aaTexOurs(t) && f.snap === aaSnap(t)) { AAX.busy = true; aaTexOff(t).catch(() => { }).finally(() => { AAX.busy = false; }); } // 같은 붓에서 경도만 손으로 바꿈 → 텍스처도 끔
+      if (h !== f.hard && !aaTouched() && (aaTexOurs(t) || f.snap === aaSnap(t)) && (AAX.re || 0) < 8) { // 사용자가 만지지 않았는데 경도만 달라짐(설정 동기화 등) → 다시 맞춤
+        if (calm()) {
+          AAX.busy = true; AAX.re = (AAX.re || 0) + 1; setTimeout(() => { AAX.re = Math.max(0, (AAX.re || 0) - 1); }, 20000);
+          const w = aaHard(f.lv, t);
+          aaSetHard(t, w).then((ok) => { if (ok) aaFollow(t, { lv: f.lv, hard: w, snap: aaSnap(t) }); }).catch(() => { }).finally(() => { AAX.busy = false; aaRender(); });
+          return;
+        }
+      } else if (h !== f.hard) { // 손으로 바꿈·다른 브러시를 고름
+        aaFollow(t, null);
+        if (aaTexOurs(t) && aaTouched()) { AAX.busy = true; aaTexOff(t).catch(() => { }).finally(() => { AAX.busy = false; }); } // 같은 붓에서 경도만 손으로 바꿈 → 텍스처도 끔
       }
       else {
         const want = aaHard(f.lv, t), a = document.activeElement;
         if (want !== f.hard && !LB.down && !E.drawingInProgress && !BSZ.on && BSZ.pending == null && !(a && a.tagName === 'INPUT')) {
           AAX.busy = true;
-          aaFollow(t.name, { lv: f.lv, hard: want, snap: f.snap });
-          aaSetHard(t, want).then((ok) => { if (!ok) aaFollow(t.name, null); }).catch(() => { }).finally(() => { AAX.busy = false; aaRender(); });
+          aaFollow(t, { lv: f.lv, hard: want, snap: f.snap });
+          aaSetHard(t, want).catch(() => { }).finally(() => { AAX.busy = false; aaRender(); });
           return;
         }
         // 크기·최소 크기 등이 바뀌어 알맞은 깊이가 달라졌으면, 잠시 손을 멈췄을 때 한 번만 바꾼다
@@ -8444,7 +8820,7 @@ void main(){
             AAX.busy = true;
             (d1 ? aaTexOn(t, d1, f.lv) : aaTexOff(t, f.lv)).then(async (ok) => {
               if (!ok) { AAX.fail = (AAX.fail || 0) + 1; if (d1) await aaTexOff(t, f.lv); }
-              const w = aaHard(f.lv, t); aaFollow(t.name, { lv: f.lv, hard: w, snap: aaSnap(t) }); await aaSetHard(t, w);
+              const w = aaHard(f.lv, t); aaFollow(t, { lv: f.lv, hard: w, snap: aaSnap(t) }); await aaSetHard(t, w);
             }).catch(() => { }).finally(() => { AAX.busy = false; AAX.dk = ''; aaRender(); });
             return;
           }
@@ -9306,7 +9682,7 @@ void main(){
     const E = getEditor(), h = guHist();
     if (!E || !h || !euOn()) return;
     if (EU.hist !== h) { EU.hist = h; euReset(); euMarkAll(h); return; }
-    if (EU.busy || S.busy || GU.busy || E.undoingOrRedoing) return;
+    if (EU.busy || FXS.busy || S.busy || GU.busy || E.undoingOrRedoing) return;
     for (const sh of (h.undosBuffer && h.undosBuffer.sheets) || []) for (const e of sh.entries) if (!EU.ents.has(e)) { EU.ents.add(e); EU.fresh.push(e); }
     // 새로 생긴 칸
     let news = 0;
@@ -9425,7 +9801,8 @@ void main(){
   async function euRun(undo, count) {
     if (EU.busy) { EU.q += count; return; }
     EU.busy = true;
-    const E = getEditor(), h = guHist();
+    const E = getEditor(), h = guHist(), held = !SYM.hold && !S.active;
+    if (held) symHold(1);
     try {
       // 같은 레이어에서 이어지는 칸을 모아 한 번에
       const list = []; let lid = null;
@@ -9480,6 +9857,7 @@ void main(){
     } catch (err) { console.warn('[MagmaWand] 더 되돌리기', err); toast(L10('되돌리다 멈췄어요: ', 'Undo stopped: ') + (err && err.message || err)); } finally {
       await sleep(60); euMarkAll(h); EU.fresh.length = 0; EU.pend.length = 0;
       EU.busy = false;
+      if (held) symFlush();
       if (EU.q) { const n = EU.q; EU.q = 0; if (euTarget(undo)) euRun(undo, n).catch(() => { }); }
     }
   }
@@ -10564,14 +10942,23 @@ void main(){
     aRow.innerHTML = '<span>테두리 안티에일리어싱</span><input type="checkbox" class="mw-lp-check">';
     const aa = aRow.querySelector('input'); aa.checked = cfg.aa !== false;
     aa.addEventListener('input', () => { cfg.aa = aa.checked; save(); });
-    body.append(wRow, cRow, aRow, bRow);
+    const sRow = document.createElement('label'); sRow.className = 'mw-lp-line mw-noi18n';
+    sRow.innerHTML = '<span></span><input type="checkbox" class="mw-lp-check">';
+    sRow.firstChild.textContent = L10('상대에게도 보이기', 'Show to others');
+    sRow.title = L10('테두리를 담은 진짜 레이어를 바로 아래에 만들어, 그리기를 멈추면 맞춰 줘요', 'Keeps a real layer with the border right below, updated when you pause drawing');
+    const sh = sRow.querySelector('input'); sh.checked = !!cfg.share;
+    sh.addEventListener('input', () => { const v = sh.checked; fxShareSet(L, v).then(() => { const c = fxGet(board, uid); cfg.share = c && c.share; sh.checked = !!cfg.share; sync(); }).catch((err) => console.warn('[MagmaWand] 상대에게 보이기', err)); });
+    const bk = document.createElement('button'); bk.type = 'button'; bk.className = 'sm btn secondary mw-lp-bake mw-noi18n'; bk.textContent = L10('래스터화 (그림으로 만들기)', 'Rasterize (turn into pixels)');
+    bk.addEventListener('click', (e) => { e.preventDefault(); fxBake(L).then((ok) => { if (ok) { cfg.on = false; sync(); } }).catch((err) => console.warn('[MagmaWand] 래스터화', err)); });
+    body.append(wRow, cRow, aRow, bRow, sRow, bk);
     const note = document.createElement('div'); note.className = 'mw-status';
-    note.textContent = '내 화면에만 보여요 (보드에는 평범한 레이어)';
+    note.classList.add('mw-noi18n');
     p.append(sec('효과'), fxRow, body, note);
     function sync() {
       tog.textContent = cfg.on ? '켜짐' : '꺼짐';
       tog.classList.toggle('primary', cfg.on); tog.classList.toggle('secondary', !cfg.on);
       body.classList.toggle('mw-lp-off', !cfg.on);
+      note.textContent = cfg.share ? L10('상대에게도 보여요 (멈추면 4초 뒤 맞춰져요)', 'Others can see it (updates about 4 s after you pause)') : L10('지금은 내 화면에만 보여요', 'Only you can see it for now');
     }
     sync();
     return p;
@@ -10608,6 +10995,7 @@ void main(){
     .mw-chattoast.mw-ct-right { border-radius: 6px 0 0 6px; transform: translateX(100%); }
     .mw-chattoast.mw-ct-show { opacity: 1; transform: none; pointer-events: auto; }
     .mw-chattoast b { color: #9cc3ff; font-weight: 600; } /* 그림판 위, 사용자 지정 UI 패널(4) 아래 */
+    .mw-lp-bake { width: 100%; margin: 6px 0 2px; }
     .mw-verb { font-size: 11px !important; opacity: .6; padding-top: 2px !important; padding-bottom: 2px !important; }
     .mw-verb:hover { opacity: 1; }
     .mw-news { position: fixed; z-index: 2147480500; width: 290px; max-width: calc(100vw - 20px); box-sizing: border-box; background: rgba(30,30,32,.96); color: #dcdcdc;
@@ -11986,6 +12374,9 @@ void main(){
   // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
   // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
   const NEWS = [
+    { v: '0.40.0',
+      ko: ['펜을 대는 순간 선이 엉뚱한 곳으로 튀고 끊기던 버그를 고쳤어요', '위쪽 막대의 전원 단추로 확장을 바로 켜고 끌 수 있어요 (웹·앱 모두)', '안티에일리어싱: 필압으로 가늘어져도 흐림이 풀리지 않게 고쳤어요 (다른 곳에서 경도가 바뀌면 풀리던 문제)', '경계 효과를 캔버스 픽셀에 맞춰 새로 그려요 — 안티에일리어싱·흐리기가 자연스럽고, 선 사이의 투명한 막이 없고, 10% 이상 반투명한 곳에도 그려지고, 되돌려도 흔적이 남지 않아요', '경계 효과 ‘상대에게도 보이기’: 확장이 없는 사람에게도 보여요 (레이어 속성에서 켜기)', '경계 효과 래스터화: 레이어 우클릭 메뉴, 아래로 병합할 때는 자동'],
+      en: ['Fixed strokes jumping to a wrong place and breaking right when the pen touches', 'Turn the extension on/off with the power button in the top bar (web and app)', 'Anti-aliasing: softness no longer gets lost on thin, light-pressure lines (it was dropped when hardness changed elsewhere)', 'Border effect redrawn on canvas pixels: natural anti-aliasing and blur, no thin gap between lines, works on areas 10% opaque and up, no leftovers after undo', 'Border effect “Show to others”: people without the extension can see it (turn on in layer properties)', 'Rasterize border effect: in the layer right-click menu, and automatic when merging down'] },
     { v: '0.39.0',
       ko: ['되돌리기를 15칸보다 훨씬 많이 할 수 있어요 — 획을 내 컴퓨터에 기억해 최대 90칸 (Ctrl+Z, 다시 하기도 됨. 설정에서 끌 수 있음)', '거울 자: 반대편 획이 원본과 똑같은 브러시 모양으로 실시간으로 그려져요', '도구 막대가 사라지던 문제: 잘못 눌리던 접기·닫기 단추를 없애고, 사라지면 스스로 되살려요', '블러·투명색 지우기가 올가미 설정에 따라 덜 지워질 수 있던 문제를 고쳤어요'],
       en: ['Undo far beyond 15 steps: strokes are remembered on your computer, up to 90 (Ctrl+Z, redo too; can be turned off in settings)', 'Symmetry ruler: the mirrored stroke is drawn live with exactly the same brush look', 'Toolbar disappearing: removed the easily mis-clicked minimize/close buttons, and it now recovers by itself', 'Fixed blur and transparent erasing sometimes not erasing fully, depending on lasso settings'] },
@@ -12123,7 +12514,7 @@ void main(){
     histCheck, histPoints, histCopyLayer, openHistoryDialog, histUsage, getBrushSize, sizeRow,
     openStrokeDialog, fxSet, fxGet, fxKick, fxState: () => FX,
     advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, dockState: () => DK, parseSut, sqliteTables, parseEffector, getAA, setAA, docToBuffer, selectionExists,
-    euState: () => EU, euTarget, euRun, livStart, livFeed, livDrop, livMove, livStab, symStateX: () => SYM, aaHard, aaHard0, aaEdgeW, aaDepth, aaFit, aaBase, aaGain, aaTexOurs, aaCurD, newsShow, newsTick, setAlpha, advEraseCommit, fillSelection, chatShowToast, chatIncoming, chatWidget, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt,
+    fxBake, fxShareSet, fxShareSync, fxReadF, fxBox, fxsState: () => FXS, euState: () => EU, euTarget, euRun, livStart, livFeed, livDrop, livMove, livStab, symStateX: () => SYM, aaHard, aaHard0, aaEdgeW, aaDepth, aaFit, aaBase, aaGain, aaTexOurs, aaCurD, newsShow, newsTick, setAlpha, advEraseCommit, fillSelection, chatShowToast, chatIncoming, chatWidget, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt,
     ensureGroups, activateMember, selectLayerContent, advNewBrush, setMagmaFont, currentFontName, systemFonts, openTextImageDialog,
     blurDab, blurState: () => BLR, msState: () => MS, guState: () => GU, guRef, clipToggle, clipHitAt, advPutImage, builtinBlob, advSaveBrush, advPrepare, openBrushSettings, openPresetPicker, advNewFromPreset, ADV_PRESETS, advMixColor, setPrimaryHex, advState2: () => ADV, fgConfig, growMaskBy, ensureFillRow, rowLayer, msPick, msReplay, msDecompose, gapBridgeFill, qmState: () => QM, qmApply, msPropsApply, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons, smpRequest, smpState: () => SMP, smpRender, smpRes, smpCanvas, hexRgb, presetBrushObj, advCatOf, ADV_CATS };
   window.__magmaWand.ready = true; // 끝까지 시작됨 (실행기는 이 표시가 없으면 다시 넣는다)
