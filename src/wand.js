@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (() => {
   'use strict';
-  const VERSION = '0.33.0';
+  const VERSION = '0.34.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -51,7 +51,7 @@
     tool: 'wand', brush: 20, qtol: 12, qexpand: 1, qref: 'all', qkeys: ['Shift+KeyW'],
     bkeys: ['Shift+KeyB'], akeys: ['KeyC'], advBrushId: null, advOpacity: 100, advSize: 10,
     blurSize: 40, blurStrength: 6, blurDensity: 50, koAuto: true, koFont: 'Paperlogy', groupLast: {},
-    gap: 0, qmSize: 30, qmMode: 'add', fillGrow: 0, lkeys: [], mkeys: ['KeyQ'], ykeys: [], symOn: true, symN: 2, symMirror: true, qsOn: true, chatToast: true, lassoOp: null, lassoBack: null };
+    gap: 0, qmSize: 30, qmMode: 'add', fillGrow: 0, lkeys: [], mkeys: ['KeyQ'], ykeys: [], symOn: true, symN: 2, symMirror: true, qsOn: true, chatToast: true, lassoOp: null, lassoBack: null, bszList: null };
   const S = Object.assign({}, DEFAULTS, loadSettings(), { active: false, busy: false, switching: false });
   if (!['select', 'fill'].includes(S.action)) S.action = 'select';
   if (!['all', 'layer'].includes(S.ref)) S.ref = 'all';
@@ -79,9 +79,9 @@
   }
   function saveSettings() {
     try {
-      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn, chatToast, lassoOp, lassoBack } = S;
+      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn, chatToast, lassoOp, lassoBack, bszList } = S;
       localStorage.setItem('magmaWand.settings',
-        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn, chatToast, lassoOp, lassoBack }));
+        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn, chatToast, lassoOp, lassoBack, bszList }));
     } catch { /* 저장 못 해도 동작에는 지장 없음 */ }
   }
 
@@ -808,27 +808,42 @@
       if (wild && wild[p]) return true;
       return Math.abs(data[i] - r0) <= t && Math.abs(data[i + 1] - g0) <= t && Math.abs(data[i + 2] - b0) <= t;
     };
-    if (contig === false) {
-      // 이어지지 않아도 보드 전체에서 같은 색이면 모두 (CSP·포토샵의 '인접' 끄기)
-      let count = 0;
-      for (let p = 0, n = w * h; p < n; p++) if (ok(p)) { mask[p] = 1; count++; }
-      return { mask, count };
-    }
-    const stack = new Int32Array(w * h);
-    let sp = 0;
-    const start = sy * w + sx;
-    mask[start] = 1; stack[sp++] = start;
+    // 같은 색은 32비트 한 번 비교, 다른 색은 바로 앞에서 본 색의 답을 다시 쓴다 (wild가 있으면 칸마다 봐야 함)
+    const n = w * h, u32 = !wild && data.byteOffset % 4 === 0 ? new Uint32Array(data.buffer, data.byteOffset, n) : null;
     let count = 0;
-    while (sp) {
-      const p = stack[--sp];
-      count++;
-      const x = p % w, y = (p - x) / w;
-      if (x > 0 && !mask[p - 1] && ok(p - 1)) { mask[p - 1] = 1; stack[sp++] = p - 1; }
-      if (x < w - 1 && !mask[p + 1] && ok(p + 1)) { mask[p + 1] = 1; stack[sp++] = p + 1; }
-      if (y > 0 && !mask[p - w] && ok(p - w)) { mask[p - w] = 1; stack[sp++] = p - w; }
-      if (y < h - 1 && !mask[p + w] && ok(p + w)) { mask[p + w] = 1; stack[sp++] = p + w; }
+    const all = contig === false ? mask : new Uint8Array(n); // 이어짐과 상관없이 비슷한 칸 모두
+    if (u32) {
+      const c0 = u32[sy * w + sx]; let mc = c0, mr = 1;
+      for (let p = 0; p < n; p++) { const c = u32[p]; if (c !== mc) { mc = c; mr = c === c0 || ok(p) ? 1 : 0; } if (mr) { all[p] = 1; count++; } }
+    } else for (let p = 0; p < n; p++) if (ok(p)) { all[p] = 1; count++; }
+    if (contig === false) return { mask, count };
+    all[sy * w + sx] = 1;
+    return { mask, count: spanFill(mask, w, h, sx, sy, all, 0) };
+  }
+  // 이어진 영역 칠하기(위·아래·왼쪽·오른쪽), 가로줄 단위. map[칸] !== wall 인 칸으로만 번진다 (map은 0/1, wall = 막힌 값)
+  // 줄 안의 다음 막힌/빈 칸은 브라우저 내장 검색(indexOf)으로 건너뛴다 → 넓은 영역에서 훨씬 빠름
+  function spanFill(mask, w, h, sx, sy, map, wall) {
+    const st = new Uint8Array(w * h); // 1 = 막혔거나 이미 칠함
+    if (wall) st.set(map); else for (let p = 0; p < st.length; p++) st[p] = map[p] ? 0 : 1;
+    let count = 0;
+    const q = [sx, sy];
+    st[sy * w + sx] = 0;
+    while (q.length) {
+      const y = q.pop(), x0 = q.pop(), row = y * w, R = st.subarray(row, row + w);
+      if (R[x0]) continue;
+      const l = x0 ? R.lastIndexOf(1, x0 - 1) + 1 : 0;
+      let r = R.indexOf(1, x0); if (r < 0) r = w;
+      R.fill(1, l, r); mask.fill(1, row + l, row + r);
+      count += r - l;
+      for (let k = -1; k <= 1; k += 2) {
+        const yy = y + k;
+        if (yy < 0 || yy >= h) continue;
+        const N = st.subarray(yy * w + l, yy * w + r), m = r - l;
+        let x = N.indexOf(0);
+        while (x >= 0) { q.push(l + x, yy); x = N.indexOf(1, x); if (x < 0 || x >= m) break; x = N.indexOf(0, x); }
+      }
     }
-    return { mask, count };
+    return count;
   }
 
   // 영역을 바깥으로 n픽셀 넓힘 (선화의 부드러운 가장자리 밑까지 칠하기 위함)
@@ -1896,36 +1911,12 @@
     }
     return Object.keys(o).length ? o : null;
   }
-  async function parseSut(buf, fileName) {
-    const T = sqliteTables(new Uint8Array(buf));
-    if (!T.Variant) throw new Error('브러시 설정을 찾지 못했어요');
-    const node = T.Node ? T.Node.read().find((n) => n.NodeVariantID != null) : null;
-    const vars = T.Variant.read();
-    const v = (node && vars.find((r) => r.VariantID === node.NodeVariantID)) || vars[0];
-    const mats = T.MaterialFile ? T.MaterialFile.read() : [];
-    const materials = [];
-    for (const m of mats) {
-      const fd = m.FileData instanceof Uint8Array ? m.FileData : null;
-      let png = null, thumb = null;
-      if (fd) {
-        const files = untar(fd);
-        for (const [n, data] of Object.entries(files)) {
-          if (/\.layer$/i.test(n) && !png) png = c2fPng(data);
-          if (/thumbnail\.png$/i.test(n)) thumb = data.slice();
-        }
-      }
-      const uuid = (String(m.OriginalPath || m.CatalogPath || '').match(/[0-9a-f]{6,}-[0-9a-f-]{8,}/i) || [''])[0];
-      materials.push({ uuid, png: png ? new Blob([png], { type: 'image/png' }) : null, thumb: thumb ? new Blob([thumb], { type: 'image/png' }) : null });
-    }
-    const tipIds = blobStrings(v.BrushPatternImageArray), texIds = blobStrings(v.TextureImage), dualIds = v.UseDualBrush && v.DualUsePatternImage !== 0 ? blobStrings(v.DualPatternImageArray) : [];
-    const findMat = (id, i) => materials.find((m) => m.uuid && id && (m.uuid.includes(id) || id.includes(m.uuid))) || null;
-    const tips = v.BrushUsePatternImage ? [...new Set(tipIds.map((id) => findMat(id)).filter(Boolean))] : [];
-    if (v.BrushUsePatternImage && !tips.length && materials.length) tips.push(materials[0]);
-    const texture = texIds.length ? (findMat(texIds[0]) || materials.find((m) => !tips.includes(m)) || null) : null;
+  // 클립 스튜디오 보조 도구 설정(Variant 한 줄) → 확장 브러시
+  function sutBrush(v, name) {
     const num = (x, d) => (Number.isFinite(x) ? x : d);
     const inOut = parseInOut(v.BrushInOutTarget), cm = num(v.CompositeMode, 0);
     const brush = {
-      name: (node && node.NodeName) || String(fileName || '브러시').replace(/\.sut$/i, ''),
+      name,
       size: num(v.BrushSize, 10), sizeEff: parseEffector(v.BrushSizeEffector),
       opacity: num(v.Opacity, 100) / 100, opacityEff: parseEffector(v.BrushOpacityEffector),
       flow: num(v.BrushFlow, 100) / 100, flowEff: parseEffector(v.BrushFlowEffector),
@@ -1958,6 +1949,35 @@
       unsupported: [![0, 2, 27].includes(cm) && `합성 모드(${cm}번)는 '보통'으로 그려요 — 지우개 브러시면 ⚙ 설정 → 잉크 → 합성 모드에서 '지우기'`].filter(Boolean),
     };
     brush.baseSize = brush.size;
+    return brush;
+  }
+  async function parseSut(buf, fileName) {
+    const T = sqliteTables(new Uint8Array(buf));
+    if (!T.Variant) throw new Error('브러시 설정을 찾지 못했어요');
+    const node = T.Node ? T.Node.read().find((n) => n.NodeVariantID != null) : null;
+    const vars = T.Variant.read();
+    const v = (node && vars.find((r) => r.VariantID === node.NodeVariantID)) || vars[0];
+    const mats = T.MaterialFile ? T.MaterialFile.read() : [];
+    const materials = [];
+    for (const m of mats) {
+      const fd = m.FileData instanceof Uint8Array ? m.FileData : null;
+      let png = null, thumb = null;
+      if (fd) {
+        const files = untar(fd);
+        for (const [n, data] of Object.entries(files)) {
+          if (/\.layer$/i.test(n) && !png) png = c2fPng(data);
+          if (/thumbnail\.png$/i.test(n)) thumb = data.slice();
+        }
+      }
+      const uuid = (String(m.OriginalPath || m.CatalogPath || '').match(/[0-9a-f]{6,}-[0-9a-f-]{8,}/i) || [''])[0];
+      materials.push({ uuid, png: png ? new Blob([png], { type: 'image/png' }) : null, thumb: thumb ? new Blob([thumb], { type: 'image/png' }) : null });
+    }
+    const tipIds = blobStrings(v.BrushPatternImageArray), texIds = blobStrings(v.TextureImage), dualIds = v.UseDualBrush && v.DualUsePatternImage !== 0 ? blobStrings(v.DualPatternImageArray) : [];
+    const findMat = (id, i) => materials.find((m) => m.uuid && id && (m.uuid.includes(id) || id.includes(m.uuid))) || null;
+    const tips = v.BrushUsePatternImage ? [...new Set(tipIds.map((id) => findMat(id)).filter(Boolean))] : [];
+    if (v.BrushUsePatternImage && !tips.length && materials.length) tips.push(materials[0]);
+    const texture = texIds.length ? (findMat(texIds[0]) || materials.find((m) => !tips.includes(m)) || null) : null;
+    const brush = sutBrush(v, (node && node.NodeName) || String(fileName || '브러시').replace(/\.sut$/i, ''));
     const dualTip = dualIds.length ? (findMat(dualIds[0]) || null) : null;
     return { brush, tips, texture, dualTip };
   }
@@ -2049,7 +2069,7 @@
   //  - 긋는 동안: 보드 크기의 내 WebGL 텍스처(획 버퍼)에 찍고, Magma 화면 위 내 캔버스에만 보여 준다(트래픽 0).
   //  - 손을 떼면: 획을 보드 크기 PNG로 만들어 Magma에 '붙여넣기' 한 번(= 되돌리기 한 칸, 다른 사람에게도 보임).
   const ADV = { gl: null, cv: null, P: {}, vao: null, ibuf: null, fb: null, W: 0, H: 0, S: null, C: null, cTimer: 0,
-    tips: new Map(), tex: null, brush: null, tipTex: [], texInfo: null, stroke: null, batch: [], dbatch: [], raf: 0, lost: false, commitQ: Promise.resolve() };
+    pend: [], tips: new Map(), tex: null, brush: null, tipTex: [], texInfo: null, stroke: null, batch: [], dbatch: [], raf: 0, lost: false, commitQ: Promise.resolve() };
   const ADV_VS = `#version 300 es
 in vec2 aPos; in float aSize; in float aAngle; in vec2 aSq; in float aAlpha; in vec3 aColor; in vec2 aFlip; in vec2 aV; in vec2 aX;
 uniform vec2 uDoc; uniform float uRibbon;
@@ -2268,7 +2288,7 @@ void main(){
       const mk = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texStorage2D(gl.TEXTURE_2D, 1, ADV.float ? gl.RGBA16F : gl.RGBA8, W, H);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; };
-      ADV.S = mk(); ADV.C = mk(); ADV.W = W; ADV.H = H; ADV.cBox = null;
+      ADV.S = mk(); ADV.C = mk(); ADV.W = W; ADV.H = H; ADV.cBox = null; ADV.pend.length = 0;
       if (ADV.D) gl.deleteTexture(ADV.D);
       ADV.D = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, ADV.D); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, W, H); // 2중 브러시 무늬
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
@@ -2565,7 +2585,7 @@ void main(){
     gl.useProgram(P.p); gl.bindVertexArray(ADV.vao);
     gl.uniform2f(P.u.uDoc, ADV.W, ADV.H);
     const round = !ADV.tipTex.length;
-    gl.uniform1f(P.u.uRound, round ? 1 : 0); gl.uniform1f(P.u.uHard, b.hardness); gl.uniform1f(P.u.uAA, b.aa ? 1 : 0);
+    gl.uniform1f(P.u.uRound, round ? 1 : 0); gl.uniform1f(P.u.uHard, b.hardness); gl.uniform1f(P.u.uAA, b.aa || (b.sutVer && !round) ? 1 : 0);
     gl.uniform1f(P.u.uRibbon, b.ribbon && !round ? 1 : 0);
     const useTex = ADV.texInfo && b.texPerStamp;
     gl.uniform1f(P.u.uUseTex, useTex ? 1 : 0);
@@ -2662,9 +2682,11 @@ void main(){
     gl.uniform3f(P.u.uInv0, m[0] / k, m[2] / k, m[4]); gl.uniform3f(P.u.uInv1, m[1] / k, m[3] / k, m[5]);
     gl.uniform1f(P.u.uH, ADV.cv.height); gl.uniform2f(P.u.uDoc, ADV.W, ADV.H); gl.uniform1f(P.u.uMode, 0);
     advTexUniforms(P);
+    const mag = viewSharp(E) ? gl.NEAREST : gl.LINEAR;
     for (const [tex, op] of [[ADV.C, ADV.cBaked ? 1 : (ADV.cOp || 1)], [ADV.S, advOpacity()]]) {
       if (tex === ADV.C && !ADV.cBox) continue;
       if (tex === ADV.S && !ADV.stroke) continue;
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, mag);
       if (tex === ADV.C && ADV.cBaked) gl.uniform1f(P.u.uUseTex, 0); else advTexUniforms(P);
       advDualUniforms(P, tex === ADV.S && !!(advDual(b) && ADV.stroke));
       advFxUniforms(P, tex === ADV.S || !ADV.cBaked, tex === ADV.S ? ADV.stroke.erase : false);
@@ -2878,21 +2900,20 @@ void main(){
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.bindVertexArray(null); gl.deleteTexture(out);
     if (ADV.D) advClear(ADV.D, box);
     if (ADV.Hb) advClear(ADV.Hb, box);
-    // 화면에는 확정될 때까지 남겨 둔다 (S ↔ C 바꾸고 새 S는 비움)
-    if (ADV.cBox) advClear(ADV.C, ADV.cBox);
-    const t = ADV.C; ADV.C = ADV.S; ADV.S = t; ADV.cBox = box; ADV.cOp = op; ADV.cBaked = false; ADV.cCtx = s.ctx || null;
-    if (ADV.cCtx) advCtxLoad(ADV.cCtx, box);
+    // 화면에는 확정될 때까지 남겨 둔다 (획 버퍼 S는 비우고, 확정 대기 C에 실제 들어갈 모습으로 올림)
+    advClear(ADV.S, box);
     // px = 일반 알파(GPU에서 미리곱셈을 풀어 줌; 수채 경계·두께감은 셰이더에서 이미 들어감) — 선택 밖 잘라내기
     advClipToSelection(px, box, false);
     let any = false;
     for (let i = 3; i < px.length; i += 4) if (px[i]) { any = true; break; }
-    advBake(px, box); // 화면에는 실제로 들어갈 모습 그대로
+    const item = { box, px, ctx: s.ctx || null, erase: !!s.erase };
+    if (any) advPendAdd(item); // 화면에는 실제로 들어갈 모습 그대로
     advKick();
     const blend = !s.erase && bb && (bb.blend === 'multiply' || bb.blend === 'glaze') ? bb.blend : 'normal';
     // 붙여넣은 그림이 레이어에 실제로 들어간 걸 본 그 다음 프레임에 미리보기를 지운다 (진해졌다 연해지는 깜빡임 없음)
-    const clearNow = () => { clearTimeout(ADV.cTimer); if (ADV.cBox === box) { advClear(ADV.C, box); ADV.cBox = null; ADV.cBaked = false; ADV.cCtx = null; if (ADV.cv && !ADV.stroke) ADV.cv.style.mixBlendMode = ''; advShow(); advKick(); } };
+    const clearNow = () => { clearTimeout(item.timer); advPendRemove(item); };
     const done = () => requestAnimationFrame(clearNow);
-    ADV.cTimer = setTimeout(clearNow, 4000); // 혹시 확인이 안 되면
+    item.timer = setTimeout(clearNow, 8000); // 혹시 확인이 안 되면
     if (!any) { done(); return; }
     if (s.erase) { // 투명색: 그 질감 그대로 지우기
       ADV.commitQ = ADV.commitQ.then(() => advEraseCommit(px, box, clearNow)).catch((e) => { console.warn('[MagmaWand] 지우기 실패', e); toast('지우지 못했어요: ' + (e && e.message || e)); }).finally(done);
@@ -2911,6 +2932,53 @@ void main(){
     });
   }
 
+  // 확정 대기 중인 획들(보드에 아직 안 들어간 것): 차례대로 겹친 그림을 C에 올려 함께 보여 주고, 하나 들어갈 때마다 나머지로 다시 만든다.
+  // 예전엔 한 획만 기억해서, 빠르게 연달아 그으면 뒤 획이 끝날 때 앞 획 미리보기가 사라졌다가 보드에 들어간 뒤 다시 나타났다(깜빡임).
+  function advPendAdd(item) {
+    const last = ADV.pend[ADV.pend.length - 1];
+    if (last && (last.erase !== item.erase)) ADV.pend.length = 0; // 칠하기와 지우기가 섞이면 새 획만 (섞어 보일 수 없음)
+    ADV.pend.push(item);
+    advPendDraw();
+  }
+  function advPendRemove(item) {
+    const i = ADV.pend.indexOf(item);
+    if (i < 0) return;
+    ADV.pend.splice(i, 1);
+    advPendDraw();
+    if (!ADV.pend.length && ADV.cv && !ADV.stroke) ADV.cv.style.mixBlendMode = '';
+    advShow(); advKick();
+  }
+  function advPendDraw() {
+    if (!ADV.gl || !ADV.C) { ADV.cBox = null; return; }
+    if (ADV.cBox) advClear(ADV.C, ADV.cBox);
+    ADV.cBox = null; ADV.cBaked = false; ADV.cCtx = null;
+    if (!ADV.pend.length) return;
+    let u = null; for (const it of ADV.pend) u = runion(u, it.box);
+    u = rclip(u, ADV.W, ADV.H);
+    if (!u) return;
+    let out;
+    if (ADV.pend.length === 1) out = ADV.pend[0].px;
+    else {
+      out = new Uint8Array(u.w * u.h * 4);
+      for (const it of ADV.pend) {
+        const b = it.box;
+        for (let y = 0; y < b.h; y++) {
+          let i = (y * b.w) * 4, o = ((b.y - u.y + y) * u.w + (b.x - u.x)) * 4;
+          for (let x = 0; x < b.w; x++, i += 4, o += 4) {
+            const sa = it.px[i + 3]; if (!sa) continue;
+            const da = out[o + 3];
+            if (sa === 255 || !da) { out[o] = it.px[i]; out[o + 1] = it.px[i + 1]; out[o + 2] = it.px[i + 2]; out[o + 3] = sa; continue; }
+            const k = da * (255 - sa) / 255, A = sa + k;
+            out[o] = (it.px[i] * sa + out[o] * k) / A; out[o + 1] = (it.px[i + 1] * sa + out[o + 1] * k) / A; out[o + 2] = (it.px[i + 2] * sa + out[o + 2] * k) / A; out[o + 3] = Math.round(A);
+          }
+        }
+      }
+    }
+    const it = ADV.pend[ADV.pend.length - 1];
+    ADV.cBox = u; ADV.cOp = 1; ADV.cCtx = it.ctx;
+    if (ADV.cCtx) advCtxLoad(ADV.cCtx, u);
+    advBake(out, u);
+  }
   // ----- 획 확정 도우미: 구운 미리보기 · 수채 경계 · 곱하기 -----
   // 확정할 그림(px, 일반 알파)을 화면용 버퍼 C에 그대로 올려 둔다 → 붙여넣은 그림과 똑같은 모습이라 바뀌는 순간이 안 보인다
   function advBake(px, box) {
@@ -2972,17 +3040,19 @@ void main(){
   // 큰 보드(3840×3840 등)에서 캔버스로 PNG를 만들면 몇 초씩 걸렸다(실측). 대부분 빈 칸이므로 PNG를 직접 짠다:
   // 줄마다 필터 0 + RGBA(일반 알파), 압축은 브라우저 내장 deflate(CompressionStream) — 수십~백여 ms.
   // rgba = box 크기의 일반(미리곱셈 아닌) RGBA. 나머지는 투명
-  async function boardPng(W, H, box, rgba) {
+  // pal = [r,g,b]를 주면 rgba 자리에 '투명도만'(픽셀당 1바이트) 준다
+  async function boardPng(W, H, box, rgba, pal) {
+    if (pal && typeof CompressionStream !== 'function') { const a = rgba; rgba = new Uint8Array(a.length * 4); for (let i = 0; i < a.length; i++) { rgba[i * 4] = pal[0]; rgba[i * 4 + 1] = pal[1]; rgba[i * 4 + 2] = pal[2]; rgba[i * 4 + 3] = a[i]; } pal = null; }
     if (typeof CompressionStream !== 'function') { // 오래된 브라우저: 예전 방식
       const oc = new OffscreenCanvas(W, H);
       oc.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, box.w * box.h * 4), box.w, box.h), box.x, box.y);
       return oc.convertToBlob({ type: 'image/png' });
     }
-    const stride = W * 4 + 1, raw = new Uint8Array(stride * H); // 0으로 채워짐 = 필터 0 + 투명
+    const B = pal ? 1 : 4, stride = W * B + 1, raw = new Uint8Array(stride * H); // 0으로 채워짐 = 필터 0 + 투명
     for (let y = 0; y < box.h; y++) {
       const yy = box.y + y; if (yy < 0 || yy >= H) continue;
       const x0 = Math.max(0, box.x), x1 = Math.min(W, box.x + box.w); if (x1 <= x0) continue;
-      raw.set(rgba.subarray((y * box.w + (x0 - box.x)) * 4, (y * box.w + (x1 - box.x)) * 4), yy * stride + 1 + x0 * 4);
+      raw.set(rgba.subarray((y * box.w + (x0 - box.x)) * B, (y * box.w + (x1 - box.x)) * B), yy * stride + 1 + x0 * B);
     }
     const z = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
     const chunk = (type, data) => {
@@ -2994,17 +3064,68 @@ void main(){
       return out;
     };
     const ihdr = new Uint8Array(13), hv = new DataView(ihdr.buffer);
-    hv.setUint32(0, W); hv.setUint32(4, H); ihdr[8] = 8; ihdr[9] = 6; // 8비트 RGBA
+    hv.setUint32(0, W); hv.setUint32(4, H); ihdr[8] = 8; ihdr[9] = pal ? 3 : 6; // 8비트 RGBA / 팔레트
     const sig = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+    if (pal) { // 색은 하나, 투명도만 0~255 (팔레트 번호 = 투명도)
+      const pl = new Uint8Array(768), tr = new Uint8Array(256);
+      for (let i = 0; i < 256; i++) { pl[i * 3] = pal[0]; pl[i * 3 + 1] = pal[1]; pl[i * 3 + 2] = pal[2]; tr[i] = i; }
+      return new Blob([sig, chunk('IHDR', ihdr), chunk('PLTE', pl), chunk('tRNS', tr), chunk('IDAT', z), chunk('IEND', new Uint8Array(0))], { type: 'image/png' });
+    }
     return new Blob([sig, chunk('IHDR', ihdr), chunk('IDAT', z), chunk('IEND', new Uint8Array(0))], { type: 'image/png' });
   }
+  // ---------- 제자리 붙여넣기 (큰 보드는 작은 그림으로) ----------
+  // Magma는 붙인 그림을 '화면 가운데'에 놓고 보드 밖으로 나가지 않게 밀어 넣는다(소스로 확인: floor(화면 가운데 − 크기/2)를 0~보드−크기로 자름).
+  // → 그 규칙을 거꾸로 써서, 칠할 곳을 포함하면서 '그 규칙대로 놓일 자리가 정확히 계산되는' 가장 작은 그림을 만든다.
+  //    3840×3840 보드에서 매 획마다 보드 크기 그림(픽셀 1470만)을 만들고 풀던 일이 없어져 훨씬 빠르고, 다른 사람에게 가는 양도 준다.
+  // 작은 보드·돌리거나 뒤집은 화면·'새 레이어로 붙이기' 설정에서는 예전처럼 보드 크기로 붙인다. 붙은 자리는 매번 확인하고 어긋나면 되돌린 뒤 보드 크기로 다시 붙인다.
+  const PASTE = { hold: 0 };
+  function pasteSpan(c, b0, b1, B) {
+    for (let W = b1 - b0; W < B; W++) { let x = Math.floor(c - W / 2); x = x < B - W ? (x > 0 ? x : 0) : B - W; if (x <= b0 && x + W >= b1) return [x, W]; }
+    return [0, B];
+  }
+  function pastePlan(E, box) {
+    const D = E.drawing, W = D.w, H = D.h, full = { x: 0, y: 0, w: W, h: H, small: false };
+    try {
+      const v = E.view, m = E.computedView.inverseTransform;
+      if ((W * H < 2e6 && !S.pasteTest) || v.rotation || v.flipped || D.x || D.y || (E.model.settings && E.model.settings.pasteNewLayer) || !(v.width > 0)) return full;
+      const px = v.width / 2, py = v.height / 2, cx = m[0] * px + m[2] * py + m[4], cy = m[1] * px + m[3] * py + m[5];
+      const bx = Math.max(0, box.x), by = Math.max(0, box.y), bx1 = Math.min(W, box.x + box.w), by1 = Math.min(H, box.y + box.h);
+      const [x, w] = pasteSpan(cx, bx, bx1, W), [y, h] = pasteSpan(cy, by, by1, H);
+      return w * h < W * H * 0.6 ? { x, y, w, h, small: true } : full;
+    } catch { return full; }
+  }
+  on(window, 'wheel', (e) => { if (PASTE.hold > 0 && e.isTrusted && e.target === getCanvas()) { e.preventDefault(); e.stopImmediatePropagation(); } }, { capture: true, passive: false });
+  // box 자리에 data(RGBA, 또는 pal이면 투명도만)를 붙인다. 반환: 붙은 자리를 확인하는 Promise
+  async function pasteAt(E, L, box, data, pal, name, pre) {
+    const mk = (p) => boardPng(p.w, p.h, { x: box.x - p.x, y: box.y - p.y, w: box.w, h: box.h }, data, pal);
+    const full = { x: 0, y: 0, w: E.drawing.w, h: E.drawing.h, small: false };
+    let plan = pre ? pre.plan : pastePlan(E, box), blob = pre ? pre.blob : await mk(plan);
+    await pasteReady(E);
+    if (plan.small) { const q = pastePlan(E, box); if (q.x !== plan.x || q.y !== plan.y || q.w !== plan.w || q.h !== plan.h) { plan = full; blob = await mk(plan); await pasteReady(E); } } // 그사이 화면이 움직임
+    const send = (bl) => { const dt = new DataTransfer(); dt.items.add(new File([bl], name, { type: 'image/png' })); document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); };
+    const ref0 = guRef();
+    if (!plan.small) { send(blob); return { ref0, ok: Promise.resolve(true) }; }
+    PASTE.hold++;
+    send(blob);
+    const ok = (async () => {
+      try {
+        await waitFor(() => guRef() !== ref0, 3000);
+        const f = floatingOn(E, L);
+        if (!f || f.rect.w !== plan.w || f.rect.h !== plan.h) return true; // 이미 다음 동작으로 넘어감
+        if ((f.translateX || 0) === plan.x && (f.translateY || 0) === plan.y) return true;
+        console.warn('[MagmaWand] 붙은 자리가 다름', f.translateX, f.translateY, plan);
+        await pasteReady(E);
+        if (floatingOn(E, L) !== f) return false;
+        if (await guPress('undo', 1, guHist())) { await pasteReady(E); send(await mk(full)); }
+        return false;
+      } finally { PASTE.hold--; }
+    })().catch(() => false);
+    return { ref0, ok };
+  }
   async function advPastePx(E, L, px, box, onLanded) {
-    const blob = await boardPng(ADV.W, ADV.H, box, px);
-    const dt = new DataTransfer();
-    dt.items.add(new File([blob], 'brush.png', { type: 'image/png' }));
     const probe = E && L ? landProbe(E, L, px, box) : null;
-    document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-    if (probe) await swapWhenLanded(probe.check, onLanded); else onLanded?.();
+    const { ref0 } = await pasteAt(E, L, box, px, null, 'brush.png');
+    if (probe) await swapWhenLanded(() => probe.check() || (ref0 !== guRef() && floatingOn(E, L)), onLanded); else onLanded?.();
   }
 
   // ---------- 고급 브러시 ③ 도구 연결 (입력·커서·브러시 고르기) ----------
@@ -3615,7 +3736,8 @@ void main(){
   // ----- 프리셋: 종류별로 묶음. 드라이 재료(연필·목탄·파스텔·크레용·분필·갈필)는 '깊이' 결 방식 —
   // 종이 결이 높낮이로 작동해서, 살살 칠하면 돌기 끝에만 묻고 겹치고 누를수록 골까지 채워진다(실제 재료처럼).
   // 흐름(한 도장의 진하기)을 낮게 두고 간격을 촘촘히 해서 '쌓이는 양'이 필압을 따라가게 한 것이 핵심.
-  const ADV_CATS = ['연필·스케치', '잉크·펜', '마커', '드라이 (목탄·파스텔)', '수채', '물감 (유화·구아슈)', '섞기·문지르기', '에어브러시', '질감·특수', '장식·자연'];
+  const CAT_CSP = '클립 스튜디오 기본';
+  const ADV_CATS = [CAT_CSP, '연필·스케치', '잉크·펜', '마커', '드라이 (목탄·파스텔)', '수채', '물감 (유화·구아슈)', '섞기·문지르기', '에어브러시', '질감·특수', '장식·자연'];
   const effP = (min) => ({ pressure: { min, curve: null } });
   const effPC = (min, curve) => ({ pressure: { min, curve } }); // 곡선: [[입력,출력]…] 0~1
   const HP = (o) => Object.assign({ texMode: 'height', interval: 0.05 }, o); // 깊이 결 기본
@@ -3737,6 +3859,10 @@ void main(){
       spray: { size: 14, sync: false, density: 2, bias: 0, sizeEff: { random: { min: 0.4 } }, densEff: null } } },
     { cat: '장식·자연', name: '눈송이', tip: 'snow', pv: '#6f9fd8', desc: '흩날리는 눈송이', o: { size: 70, interval: 0.7, rotMask: 0x80, rotRandom: 1, sizeEff: null, spray: { size: 10, sync: false, density: 2, bias: 0, sizeEff: { random: { min: 0.4 } }, densEff: null } } },
   ];
+  // 클립 스튜디오에 처음부터 들어 있는 브러시의 '초기 설정값'(숫자만). 소재 그림(끝 모양·종이 질감)은 담지 않고, 우리 기본 모양 중 비슷한 것으로 짝지었다.
+  // 줄 = [묶음, 이름, 끝 모양, 텍스처, 설정]
+  const CSP_DEFAULTS = [["펜","G펜","round-hard","",{"size":10,"sizeEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}},"interval":0.1,"vertical":true,"aa":2,"smoothing":6,"sutVer":2}],["펜","둥근 펜","round-hard","",{"size":10,"sizeEff":{"pressure":{"min":0,"curve":[[0,0],[0.5,0.2455],[0.9273,0.7091],[1,1]]}},"interval":0.1,"rotMask":19,"aa":2,"smoothing":10,"sutVer":2}],["펜","스푼펜","round-hard","",{"size":8,"sizeEff":{"pressure":{"min":0,"curve":[[0,0],[0.1818,0.4],[0.7,0.9636],[1,1]]}},"interval":0.1,"rotMask":19,"aa":2,"smoothing":2,"sutVer":2}],["펜","캘리그라피","round-hard","",{"size":50,"interval":0.1,"thickness":0.18,"rotation":60,"aa":1,"smoothing":6,"sutVer":2,"sizeEff":null}],["펜","리얼 G 펜","drybrush","",{"size":10,"sizeEff":{"pressure":{"min":0,"curve":[[0,0],[0.7455,0.2545],[1,1]]}},"interval":0.1,"thickness":0.85,"thickEff":{"pressure":{"min":0.5,"curve":[[0,0],[0.3455,0],[0.6636,0.9545],[1,1]]}},"vertical":true,"rotMask":131,"aa":2,"smoothing":6,"inOut":{"size":0.8},"sutVer":2}],["펜","거친 펜","round-hard","",{"size":12,"sizeEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}},"hardness":0.6,"interval":0.1,"thickness":0.6,"rotMask":131,"aa":1,"smoothing":6,"sutVer":2}],["마커","밀리펜","round-hard","",{"size":10,"sizeEff":{"pressure":{"min":0.8,"curve":[[0,0],[0.7182,0.3091],[1,1]]},"velocity":{"min":0.6,"curve":null}},"interval":0.1,"aa":2,"smoothing":0,"sutVer":2}],["마커","사인펜","round-hard","",{"size":20,"sizeEff":{"pressure":{"min":0.7,"curve":[[0,0],[1,1]]},"velocity":{"min":0.7,"curve":null},"random":{"min":0.9}},"flowEff":{"velocity":{"min":0.18,"curve":[[0,1],[0.5,1],[0.8,0],[1,0]]}},"interval":0.1,"thickness":0.8,"rotation":90,"aa":1,"smoothing":6,"sutVer":2}],["마커","평면 마커","round-hard","",{"size":50,"sizeEff":{"pressure":{"min":0.6,"curve":[[0,0],[0.557,0.0614],[0.9342,0.6009],[1,1]]}},"opacityEff":{"pressure":{"min":0,"curve":[[0,0],[0.5877,0],[0.9211,0.6754],[1,1]]}},"hardness":0.7,"interval":0.01,"thickness":0.3,"rotation":90,"rotMask":35,"aa":1,"smoothing":0,"texDensity":0.44,"texScale":0.25,"sutVer":2}],["연필","연필","graphite","tooth",{"size":10,"sizeEff":{"pressure":{"min":0.1,"curve":[[0,0],[1,1]]}},"opacity":0.9,"opacityEff":{"pressure":{"min":0.8,"curve":[[0,0],[1,1]]}},"flow":0.85,"flowEff":{"pressure":{"min":0.5,"curve":[[0,0],[0.5214,0.0571],[0.7857,0.4357],[0.8714,0.7857],[1,1]]},"random":{"min":0.6}},"interval":0.1,"thickEff":{"pressure":{"min":0.6,"curve":[[0,0],[1,1]]}},"vertical":true,"rotation":180,"rotMask":147,"rotRandom":0.3,"aa":1,"smoothing":5,"tipOrder":3,"texDensity":0.8,"texDensEff":{"pressure":{"min":0.3,"curve":[[0,0],[0.2909,0],[0.5857,0.05],[0.8545,0.4636],[1,0.2636]]}},"texScale":0.1,"texPerStamp":true,"sutVer":2}],["연필","샤프펜슬","pencil","tooth",{"size":5,"sizeEff":{"pressure":{"min":0,"curve":[[0,0],[0.2273,0],[0.6818,1],[1,1]]}},"flow":0.85,"flowEff":{"pressure":{"min":0.6,"curve":[[0,0],[0.8455,0.1182],[1,1]]}},"interval":0.01,"thickEff":{"pressure":{"min":0.45,"curve":[[0,1],[0.2364,0.8636],[0.6727,0],[1,0]]}},"rotMask":147,"rotRandom":0.1,"aa":1,"smoothing":5,"flipH":2,"flipV":2,"texDensity":0.45,"texDensEff":{"pressure":{"min":0.18,"curve":[[0,1],[0.1545,0.9182],[0.4818,0],[1,0]]},"velocity":{"min":0.6,"curve":[[0,1],[0.3545,1],[0.5636,0],[1,0]]}},"texScale":0.2,"texPerStamp":true,"sutVer":2}],["파스텔","목탄","charcoaltip","rough",{"size":20,"sizeEff":{"pressure":{"min":0.5,"curve":[[0,0],[0.2588,0],[0.75,1],[1,1]]}},"flowEff":{"pressure":{"min":0.3,"curve":[[0,0],[0.6,0],[0.693,1],[0.8909,1],[1,1]]}},"interval":0.1,"thickEff":{"pressure":{"min":0.9,"curve":[[0,0],[1,1]]}},"vertical":true,"rotMask":19,"aa":1,"smoothing":0,"flipH":2,"texDensity":1,"texDensEff":{"pressure":{"min":0.1,"curve":[[0,1],[0.1273,0.6455],[0.973,0.4909],[0.9821,0.4727],[0.9912,0],[1,0.2]]},"random":{"min":0.7}},"texScale":0.3,"texRotate":90,"texPerStamp":true,"jitter":{"h":0,"s":0,"v":-5},"sutVer":2}],["파스텔","크레용","pastel","rough",{"size":30,"sizeEff":{"pressure":{"min":0.3,"curve":[[0,0],[1,1]]}},"flow":0.8,"flowEff":{"pressure":{"min":0,"curve":[[0,0],[0.2545,0.0818],[0.5273,0.5545],[0.9909,0.7182],[1,1]]}},"interval":0.2,"thickness":0.8,"vertical":true,"rotMask":195,"rotRandom":0.8,"aa":1,"smoothing":0,"texDensity":0.9,"texScale":0.8,"texRotate":100,"texInvert":true,"texPerStamp":true,"jitter":{"h":10,"s":-10,"v":-3},"sutVer":2,"tipMax":true,"strokeJitter":{"h":3,"s":3,"v":0},"mix":{"mode":"paint","amount":0.6,"density":1,"stretch":0.15,"amountEff":null,"densEff":null,"ref":"layer"}}],["파스텔","파스텔","pastel","tooth",{"size":40,"sizeEff":{"pressure":{"min":0.4,"curve":[[0,0],[1,1]]}},"flow":0.5,"flowEff":{"pressure":{"min":0.15,"curve":[[0,0],[1,1]]}},"hardness":0.01,"interval":0.1,"intervalEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}},"vertical":true,"aa":0,"smoothing":0,"flipH":2,"flipV":2,"texDensity":0.6,"texScale":0.45,"texPerStamp":true,"jitter":{"h":0,"s":15,"v":0},"sutVer":2,"tipMax":true,"mix":{"mode":"paint","amount":0.4,"density":0.4,"stretch":0.4,"amountEff":null,"densEff":null,"ref":"layer"}}],["파스텔","초크","chalk","rough",{"size":30,"sizeEff":{"pressure":{"min":0.5,"curve":[[0,0],[0.1364,0.6909],[0.75,1],[1,1]]}},"flowEff":{"pressure":{"min":0.5,"curve":[[0,0],[0.6,0],[0.693,1],[0.8772,1],[1,1]]}},"hardness":0.81,"interval":0.1,"thickness":0.5,"thickEff":{"pressure":{"min":0.7,"curve":[[0,0],[1,1]]}},"rotMask":19,"rotRandom":0.04,"aa":1,"smoothing":0,"flipH":2,"texDensity":0.8,"texDensEff":{"pressure":{"min":0.3,"curve":[[0,1],[1,0]]},"random":{"min":0.4}},"texScale":0.2,"texRotate":90,"texPerStamp":true,"jitter":{"h":0,"s":5,"v":-10},"sutVer":2,"mix":{"mode":"paint","amount":0.41,"density":1,"stretch":0.15,"amountEff":null,"densEff":null,"ref":"layer"}}],["두껍게 칠하기","채색&융합","round-hard","",{"size":40,"flow":0.8,"flowEff":{"pressure":{"min":0.4,"curve":[[0,0],[1,1]]}},"hardness":0.4,"interval":0.1,"aa":2,"smoothing":2,"sutVer":2,"mix":{"mode":"blend","amount":0.8,"density":1,"stretch":0.5,"amountEff":{"pressure":{"min":0,"curve":[[0,0],[0.3636,0],[0.5727,0],[0.6727,0.7273],[1,1]]}},"densEff":{"pressure":{"min":0,"curve":[[0,0],[0.3455,0],[0.4909,0.0091],[0.7,0.7364],[1,1]]}},"ref":"layer"},"sizeEff":null}],["두껍게 칠하기","드라이 구아슈","drybrush","canvas",{"size":80,"sizeEff":{"pressure":{"min":0.3,"curve":[[0,0],[0.4035,0.1447],[0.5789,0.8158],[1,1]]}},"flow":0.5,"flowEff":{"pressure":{"min":0,"curve":[[0,0],[0.2544,0.7675],[1,1]]}},"interval":0.05,"thickEff":{"random":{"min":0.2}},"rotation":45,"rotMask":147,"aa":0,"smoothing":0,"texDensity":1,"texScale":0.28,"texPerStamp":true,"sutVer":2,"mix":{"mode":"paint","amount":0.8,"density":0.8,"stretch":0,"amountEff":{"pressure":{"min":0.1,"curve":[[0,0],[0.9868,0],[1,1]]}},"densEff":{"pressure":{"min":0.5,"curve":[[0,0],[0.9956,0],[1,1]]}},"ref":"layer"}}],["두껍게 칠하기","구아슈 가는 붓","bristle","paper",{"size":20,"sizeEff":{"pressure":{"min":0.1,"curve":[[0,0],[1,1]]}},"opacityEff":{"random":{"min":0}},"flowEff":{"pressure":{"min":0,"curve":[[0,0],[0.0091,1],[1,1]]}},"interval":0.01,"rotation":63,"aa":1,"smoothing":0,"texDensity":0.85,"texDensEff":{"pressure":{"min":0,"curve":[[0,1],[0.9909,1],[1,0]]}},"texScale":0.25,"texPerStamp":true,"sutVer":2,"mix":{"mode":"paint","amount":1,"density":0.55,"stretch":0.7,"amountEff":{"pressure":{"min":0.1,"curve":[[0,0],[0.0091,0.7545],[0.9909,0.5],[1,1]]}},"densEff":{"pressure":{"min":0.1,"curve":[[0,0],[0.0091,0],[0.0182,1],[1,1]]}},"ref":"layer"}}],["두껍게 칠하기","혼색 원 브러시","round-hard","",{"size":50,"sizeEff":{"pressure":{"min":0.2,"curve":[[0,0],[1,1]]}},"flowEff":{"pressure":{"min":0,"curve":[[0,0],[0.6364,0.0091],[1,1]]}},"interval":0.1,"aa":1,"smoothing":2,"sutVer":2,"mix":{"mode":"paint","amount":0.8,"density":0.5,"stretch":1,"amountEff":{"pressure":{"min":0,"curve":[[0,0],[0.5182,1],[1,1]]}},"densEff":{"pressure":{"min":0.9,"curve":[[0,0],[0.5273,1],[1,1]]}},"ref":"layer"}}],["두껍게 칠하기","구아슈","flatbristle","paper",{"size":80,"sizeEff":{"pressure":{"min":0.1,"curve":[[0,0],[0.3091,0.2091],[0.5789,0.8158],[1,1]]}},"flow":0.75,"flowEff":{"pressure":{"min":0.2,"curve":[[0,0],[0.1811,0.3621],[0.8818,0.6455],[1,1]]}},"interval":0.03,"rotation":45,"rotMask":19,"aa":0,"smoothing":0,"texDensity":1,"texScale":0.28,"texPerStamp":true,"sutVer":2,"mix":{"mode":"paint","amount":0.7,"density":0.45,"stretch":0.15,"amountEff":{"pressure":{"min":0.1,"curve":[[0,0],[0.8772,0.114],[1,1]]}},"densEff":{"pressure":{"min":0.1,"curve":[[0,0],[0.4386,0.1623],[0.5263,0.8246],[1,1]]}},"ref":"layer"}}],["두껍게 칠하기","유채","flatbristle","canvas",{"size":80,"sizeEff":{"pressure":{"min":0.1,"curve":[[0,0],[0.0071,0.4],[1,1]]}},"flowEff":{"pressure":{"min":0,"curve":[[0,0],[0.0091,1],[1,1]]}},"interval":0.01,"thickEff":{"pressure":{"min":0.1,"curve":[[0,0],[0.0214,0.4071],[0.7857,0.5429],[1,1]]},"velocity":{"min":0.59,"curve":[[0,1],[0.5,1],[0.8,0],[1,0]]}},"rotation":114.9,"rotMask":19,"aa":1,"smoothing":0,"flipH":3,"texDensity":0.12,"texDensEff":{"pressure":{"min":0.15,"curve":[[0,1],[0.6357,1],[1,0]]}},"texScale":0.25,"texPerStamp":true,"sutVer":2,"strokeJitter":{"h":4,"s":1,"v":1},"mix":{"mode":"paint","amount":0.61,"density":0.81,"stretch":0.87,"amountEff":{"pressure":{"min":0.1,"curve":[[0,0],[0.0071,0.8714],[0.9929,0.5929],[1,1]]}},"densEff":{"pressure":{"min":0.1,"curve":[[0,0],[0.0091,0],[0.0182,1],[1,1]]}},"ref":"layer"}}],["두껍게 칠하기","두껍게 칠하기(유채)","flatbristle","canvas",{"size":60,"sizeEff":{"pressure":{"min":0.3,"curve":[[0,0],[1,1]]}},"flow":0.85,"flowEff":{"pressure":{"min":0.15,"curve":[[0,0],[0.2455,0],[1,1]]}},"interval":0.02,"thickness":0.6,"thickEff":{"pressure":{"min":0.5,"curve":[[0,1],[1,0]]},"velocity":{"min":0.5,"curve":[[0,1],[0.5,1],[0.8,0],[1,0]]}},"vertical":true,"rotation":70,"rotMask":35,"rotRandom":0.03,"aa":1,"smoothing":0,"texDensEff":{"pressure":{"min":0,"curve":[[0,1],[0.7636,0.5727],[1,0]]}},"texScale":0.25,"texPerStamp":true,"jitter":{"h":0,"s":0,"v":-3},"sutVer":2,"strokeJitter":{"h":3,"s":1,"v":0},"mix":{"mode":"paint","amount":0.85,"density":0.5,"stretch":0.6,"amountEff":{"pressure":{"min":0,"curve":[[0,0],[0.2182,0],[0.7182,1],[1,1]]}},"densEff":null,"ref":"layer"}}],["수채","수채 번짐","watercolor","wcpaper",{"size":120,"sizeEff":{"pressure":{"min":0.7,"curve":[[0,0],[0.2455,0.7455],[1,1]]}},"opacityEff":{"pressure":{"min":0.1,"curve":[[0,0],[0.1636,0.4909],[0.8636,0.5091],[1,1]]}},"flow":0.5,"interval":0.15,"rotMask":131,"aa":0,"smoothing":0,"texDensity":0.8,"texScale":0.28,"sutVer":2,"tipMax":true,"blend":"multiply","wedge":{"on":true,"radius":2,"alpha":0.25,"value":0.2}}],["수채","거친 수채","watercolor","coldpress",{"size":150,"sizeEff":{"pressure":{"min":0,"curve":[[0,0],[0.5219,0.4737],[1,1]]},"random":{"min":0}},"opacityEff":{"pressure":{"min":0,"curve":[[0,0],[0.3273,0],[0.7636,0.2545],[1,1]]}},"flow":0.6,"flowEff":{"pressure":{"min":0.8,"curve":[[0,0],[0.8114,0.1316],[1,1]]},"random":{"min":0.9}},"interval":0.15,"thickEff":{"pressure":{"min":0.7,"curve":[[0,0],[0.1455,0.8364],[1,1]]},"random":{"min":0.5}},"rotMask":147,"aa":1,"smoothing":0,"texScale":0.4,"texRotate":100,"texPerStamp":true,"sutVer":2,"tipMax":true,"blend":"multiply","wedge":{"on":true,"radius":1,"alpha":0.1,"value":0}}],["수채","물붓","watercolor","wcpaper",{"size":120,"sizeEff":{"pressure":{"min":0.7,"curve":[[0,0],[0.2455,0.7455],[1,1]]},"random":{"min":0.7}},"opacity":0.75,"opacityEff":{"pressure":{"min":0.1,"curve":[[0,0],[0.1818,0.4909],[0.8182,0.5182],[1,1]]}},"flow":0.7,"flowEff":{"pressure":{"min":1,"curve":[[0,0],[0.1447,0.9518],[1,1]]}},"interval":0.15,"rotMask":131,"aa":0,"smoothing":0,"texDensity":0.7,"texScale":0.28,"texInvert":true,"sutVer":2,"tipMax":true,"blend":"erase"}],["수채","수채 평붓","flat","wcpaper",{"size":100,"sizeEff":{"pressure":{"min":0.6,"curve":[[0,0],[0.7273,0.2727],[1,1]]}},"opacityEff":{"pressure":{"min":0.3,"curve":[[0,0],[1,1]]},"velocity":{"min":0.7,"curve":[[0,1],[0.5,1],[0.8,0],[1,0]]}},"interval":0.01,"thickness":0.45,"rotation":180,"rotMask":35,"aa":1,"smoothing":0,"texDensity":0.6,"texScale":0.28,"sutVer":2,"blend":"multiply","wedge":{"on":true,"radius":2,"alpha":0.1,"value":0}}],["수채","수채 둥근 붓","round-hard","wcpaper",{"size":80,"sizeEff":{"pressure":{"min":0,"curve":[[0,0],[0.3182,0.7455],[1,1]]}},"opacityEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]},"velocity":{"min":0.8,"curve":[[0,1],[0.5,1],[0.8,0],[1,0]]}},"flow":0.6,"interval":0.1,"aa":1,"smoothing":0,"texDensity":0.7,"texScale":0.28,"inOut":{"size":0},"sutVer":2,"blend":"multiply","wedge":{"on":true,"radius":2,"alpha":0.05,"value":0}}],["먹","먹(마른붓질)","drybrush","grit",{"size":60,"sizeEff":{"pressure":{"min":0.05,"curve":[[0,0],[0.7364,0.2455],[1,1]]},"velocity":{"min":0.4,"curve":[[0,1],[0.3909,0.9909],[0.9182,0.1727],[1,0]]},"random":{"min":0.9}},"flowEff":{"pressure":{"min":0,"curve":[[0,0],[0.2364,0.7636],[0.5091,1],[1,1]]},"velocity":{"min":0.7,"curve":[[0,1],[0.5,1],[0.8,0],[1,0]]}},"interval":0.01,"aa":3,"smoothing":0,"texDensEff":{"pressure":{"min":0.35,"curve":[[0,1],[0.1818,0.2364],[0.5273,1],[1,1]]},"velocity":{"min":0.9,"curve":[[0,1],[0.5,1],[0.8,0],[1,0]]}},"texScale":1.12,"texRotate":60,"texInvert":true,"texPerStamp":true,"sutVer":2,"blend":"multiply"}],["먹","농담","watercolor","wcpaper",{"size":100,"sizeEff":{"pressure":{"min":0.05,"curve":[[0,0],[0.2273,0],[1,1]]},"velocity":{"min":0.9,"curve":[[0,1],[0.5,1],[0.8,0],[1,0]]},"random":{"min":0.6}},"opacityEff":{"pressure":{"min":0.1,"curve":[[0,0],[0.1091,0.2],[0.8818,0.2545],[1,1]]},"velocity":{"min":0.8,"curve":[[0,1],[0.5,1],[0.8,0],[1,0]]},"random":{"min":0.8}},"interval":0.01,"aa":3,"smoothing":0,"texDensity":0.65,"texScale":0.25,"texRotate":100,"texInvert":true,"sutVer":2,"blend":"multiply"}],["먹","붓펜","drybrush","paper",{"size":70,"sizeEff":{"pressure":{"min":0,"curve":[[0,0],[0.1455,0],[0.3,0.0727],[1,1]]},"velocity":{"min":0.6,"curve":null}},"flowEff":{"pressure":{"min":0.5,"curve":[[0,0],[0.1636,0],[0.3364,0],[0.4727,0.3182],[0.7273,0.8091],[1,1]]},"velocity":{"min":0.75,"curve":null}},"interval":0.02,"rotMask":35,"rotRandom":0,"aa":2,"smoothing":15,"texDensity":1,"texDensEff":{"pressure":{"min":0.52,"curve":[[0,1],[0.2364,1],[0.6,0.1091],[0.6091,0],[1,0]]},"velocity":{"min":0.47,"curve":null}},"texScale":0.25,"texRotate":100,"texInvert":true,"texPerStamp":true,"sutVer":2}],["에어브러시","노이즈","stipple","",{"size":250,"sizeEff":{"pressure":{"min":0.75,"curve":[[0,0],[1,1]]}},"flowEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}},"interval":0.15,"rotMask":131,"aa":0,"smoothing":2,"sutVer":2}],["에어브러시","스프레이","round-hard","",{"size":200,"interval":0.1,"aa":2,"smoothing":0,"spray":{"size":5,"sync":true,"density":5,"bias":0,"sizeEff":{"random":{"min":0.3}},"densEff":{"pressure":{"min":0,"curve":[[0,0],[0.9636,0.0091],[1,1]]}}},"sutVer":2,"sprayRot":{"deg":0,"mask":3,"random":1},"sizeEff":null}],["에어브러시","에어브러시 부드러움","round-hard","",{"size":150,"flow":0.5,"flowEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}},"hardness":0.01,"interval":0.1,"aa":2,"smoothing":0,"texScale":0.1,"sutVer":2,"sizeEff":null}],["에어브러시","물보라","splatter","",{"size":250,"sizeEff":{"random":{"min":0.3}},"interval":0.3,"intervalEff":{"random":{"min":0}},"thickEff":{"random":{"min":0.5}},"aa":2,"smoothing":5,"tipOrder":3,"spray":{"size":20,"sync":false,"density":8,"bias":0,"sizeEff":{"random":{"min":0}},"densEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}}},"sutVer":2,"sprayRot":{"deg":90,"mask":513,"random":1}}],["색 혼합","색 혼합","round-hard","",{"size":80,"flowEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}},"hardness":0.01,"interval":0.1,"aa":2,"smoothing":0,"sutVer":2,"mix":{"mode":"paint","amount":0,"density":0,"stretch":0.1,"amountEff":null,"densEff":null,"ref":"layer"},"sizeEff":null}],["색 혼합","흐리기","round-hard","",{"size":80,"sizeEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}},"hardness":0.01,"interval":0.1,"aa":2,"smoothing":0,"sutVer":2,"mix":{"mode":"blend","amount":0,"density":0,"stretch":0,"amountEff":null,"densEff":null,"ref":"layer"}}],["색 혼합","손끝","round-hard","",{"size":30,"sizeEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}},"hardness":0.5,"interval":0.03,"aa":2,"smoothing":4,"sutVer":2,"mix":{"mode":"blend","amount":0,"density":0,"stretch":0.7,"amountEff":null,"densEff":null,"ref":"layer"}}],["색 혼합","부드러운 수채 번짐","watercolor","",{"size":150,"sizeEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}},"flow":0.5,"flowEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}},"hardness":0.01,"interval":0.2,"intervalEff":{"random":{"min":0}},"rotMask":131,"aa":0,"smoothing":0,"sutVer":2,"mix":{"mode":"paint","amount":0,"density":0,"stretch":0.25,"amountEff":null,"densEff":null,"ref":"layer"}}],["색 혼합","질감이 남게 섞기","bristle","canvas",{"size":100,"sizeEff":{"pressure":{"min":0,"curve":[[0,0],[0.5091,0.7727],[0.8091,1],[1,1]]}},"opacity":0.8,"opacityEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]},"velocity":{"min":0.7,"curve":[[0,1],[0.5,1],[0.8,0],[1,0]]}},"flow":0.6,"flowEff":{"pressure":{"min":0,"curve":[[0,0],[0.3364,0.2273],[0.8545,1],[1,1]]}},"interval":0.25,"thickEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}},"rotMask":131,"rotRandom":0.8,"aa":2,"smoothing":0,"texDensity":0.8,"texScale":0.56,"texInvert":true,"sutVer":2,"mix":{"mode":"paint","amount":0,"density":0,"stretch":0.1,"amountEff":null,"densEff":null,"ref":"layer"},"wedge":{"on":true,"radius":0.1,"alpha":0.1,"value":0.1}}],["색 혼합","붓(섞기)","bristle","",{"size":100,"sizeEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}},"flow":0.3,"flowEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}},"hardness":0.01,"interval":0.015,"aa":1,"smoothing":0,"jitter":{"h":0,"s":0,"v":0},"sutVer":2,"mix":{"mode":"paint","amount":0,"density":0,"stretch":0.7,"amountEff":null,"densEff":null,"ref":"layer"}}],["지우개","지우개 딱딱함","round-hard","",{"size":30,"sizeEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}},"interval":0.1,"aa":2,"smoothing":2,"sutVer":2,"blend":"erase"}],["지우개","지우개 부드러움","round-hard","",{"size":50,"flowEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}},"hardness":0.01,"interval":0.1,"aa":2,"smoothing":2,"sutVer":2,"blend":"erase","sizeEff":null}],["지우개","지우개 러프","round-hard","",{"size":100,"interval":0.1,"aa":2,"smoothing":0,"sutVer":2,"blend":"erase","sizeEff":null}],["지우개","반죽 지우개","pastel","paper",{"size":50,"sizeEff":{"pressure":{"min":0,"curve":[[0,0],[0.4868,0.8202],[0.8455,1],[1,1]]}},"opacity":0.9,"opacityEff":{"pressure":{"min":0.1,"curve":[[0,0],[0.3636,0.0545],[0.7455,0.3091],[1,1]]}},"flow":0.75,"flowEff":{"pressure":{"min":0,"curve":[[0,0],[0.3364,0.2273],[0.8545,1],[1,1]]}},"interval":0.1,"thickEff":{"pressure":{"min":0,"curve":[[0,0],[1,1]]}},"rotMask":195,"rotRandom":0.15,"aa":1,"smoothing":0,"texDensity":0.8,"texScale":0.75,"texInvert":true,"texPerStamp":true,"sutVer":2,"blend":"erase"}],["기타","점선","round-hard","",{"size":10,"hardness":0.8,"interval":2,"vertical":true,"aa":2,"smoothing":6,"ribbon":true,"sutVer":2,"sizeEff":null}]];
+  for (const [g, name, tip, tex, o] of CSP_DEFAULTS) ADV_PRESETS.push({ cat: CAT_CSP, name: 'CSP ' + name, tip, tex: tex || undefined, desc: `클립 스튜디오 기본 브러시 (${g})`, o });
   // 예전 프리셋 이름 → 분류 (이미 만든 브러시도 알맞은 묶음에)
   const OLD_PRESET_CAT = { '연필': '연필·스케치', '진한 연필': '연필·스케치', '마커': '마커', '에어브러시': '에어브러시', '수채': '수채', '유화 (물감 섞기)': '물감 (유화·구아슈)',
     '크레용': '드라이 (목탄·파스텔)', '분필': '드라이 (목탄·파스텔)', '수채 번짐 (곱하기)': '수채', '망점(스크린톤)': '질감·특수' };
@@ -3832,7 +3958,7 @@ void main(){
       b.size = sz; b.baseSize = (brush.baseSize || brush.size) * k; b.smoothing = o.pts ? (brush.smoothing || 0) : 0;
       b.taperIn = (b.taperIn || 0) * k; b.taperOut = (b.taperOut || 0) * k;
       if (b.dryOut && b.dryOut.len > 0) b.dryOut.len = Math.min(b.dryOut.len * k, W * 1.1); // 미리보기 획 길이(약 1.3W) 안에서 마르는 모습이 보이게
-      if (b.spray && !b.spray.sync) b.spray.size *= Math.max(k, 0.8);
+      if (b.spray && !b.spray.sync) b.spray.size *= b.sutVer ? k : Math.max(k, 0.8);
       if (b.dual) b.dual.size *= k;
       if (b.wedge) b.wedge.radius = Math.max(1, b.wedge.radius * k);
       Object.assign(ADV, { S: SMP.tex, D: SMP.dtex, Hb: SMP.htex, W, H, batch: [], dbatch: [], tipTex: res.tips, texInfo: res.tex, proc: res.proc, dualTex: res.dual || null, brush: b });
@@ -5729,13 +5855,21 @@ void main(){
 
   // ---------- 레이어 그림 바꿔 넣기 (투명색 지우기·블러가 함께 씀) ----------
   // 읽기 전용: 레이어 + 그 위에 아직 '떠 있는' 붙여넣기(Magma가 다음 동작 때 레이어에 넣음, 실측)를 겹쳐 rect 범위를 읽는다
-  function layerSources(E, L) {
+  // Magma가 앞 붙여넣기를 끝내고 잠금을 풀 때까지 (잠긴 동안 붙이면 Magma가 조용히 버림)
+  async function pasteReady(E) { try { if (E && Array.isArray(E.lockStack)) await waitFor(() => !E.lockStack.length && !E.drawingInProgress, 4000); } catch { /* 무시 */ } }
+  function floatingOn(E, L) {
     const s = E.model.user.surface;
-    const floating = s && s.toolId === 4 && s.layer === L && s.texture && s.rect && s.rect.w > 0 && !s.transforming &&
-      !s.translateX && !s.translateY && !s.rotate && s.scaleX === 1 && s.scaleY === 1 ? s : null;
+    return s && s.toolId === 4 && s.layer === L && s.texture && s.rect && s.rect.w > 0 && !s.transforming &&
+      Number.isInteger(s.translateX || 0) && Number.isInteger(s.translateY || 0) && !s.rotate && s.scaleX === 1 && s.scaleY === 1 ? s : null;
+  }
+  function layerSources(E, L) {
+    const floating = floatingOn(E, L);
     const srcs = [];
     if (L.texture && L.rect && L.rect.w > 0) srcs.push({ obj: L, r: L.rect });
-    if (floating) srcs.push({ obj: { texture: floating.texture, rect: floating.rect, textureX: floating.textureX, textureY: floating.textureY }, r: floating.rect });
+    if (floating) { // 떠 있는 그림이 옮겨진 자리(정수 칸)에 있을 수 있다 (보드보다 작은 그림을 붙인 경우)
+      const tx = floating.translateX || 0, ty = floating.translateY || 0, fr = floating.rect, rr = { x: fr.x + tx, y: fr.y + ty, w: fr.w, h: fr.h };
+      srcs.push({ obj: { texture: floating.texture, rect: rr, textureX: floating.textureX + tx, textureY: floating.textureY + ty }, r: rr });
+    }
     return srcs;
   }
   const risect = (p, q, W, H) => rclip({ x: Math.max(p.x, q.x), y: Math.max(p.y, q.y), w: Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x), h: Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y) }, W, H);
@@ -5770,14 +5904,11 @@ void main(){
     // 지울 사각형: 바뀐 곳 + 1픽셀 여유 (너무 작으면 Magma 올가미가 점을 버리므로)
     const er = rclip({ x: ir.x + x0 - 1, y: ir.y + y0 - 1, w: x1 - x0 + 3, h: y1 - y0 + 3 }, E.drawing.w, E.drawing.h);
     const ex = Math.max(er.x, ir.x), ey = Math.max(er.y, ir.y), ew = Math.min(er.x + er.w, ir.x + ir.w) - ex, eh = Math.min(er.y + er.h, ir.y + ir.h) - ey;
-    // 붙일 그림(보드 크기 PNG)을 먼저 다 만든다 — 지운 뒤에 실패하는 일이 없게
+    // 붙일 그림(PNG)을 먼저 다 만든다 — 지운 뒤에 실패하는 일이 없게
     const sub = new Uint8ClampedArray(ew * eh * 4);
     for (let y = 0; y < eh; y++) { const o = ((ey - ir.y + y) * ir.w + (ex - ir.x)) * 4; sub.set(after.subarray(o, o + ew * 4), y * ew * 4); }
     let keep = false; for (let i = 3; i < sub.length; i += 4) if (sub[i]) { keep = true; break; }
-    let blob = null;
-    if (keep) {
-      blob = await boardPng(E.drawing.w, E.drawing.h, { x: ex, y: ey, w: ew, h: eh }, sub);
-    }
+    const pre = keep ? await (async () => { const b = { x: ex, y: ey, w: ew, h: eh }, plan = pastePlan(E, b); return { plan, blob: await boardPng(plan.w, plan.h, { x: ex - plan.x, y: ey - plan.y, w: ew, h: eh }, sub) }; })() : null;
     const gref0 = guRef();
     const cover = showCover(E, er); // 비우는 동안 그 자리를 '바뀌기 전 화면'으로 덮어 둔다
     S.busy = true;
@@ -5815,12 +5946,9 @@ void main(){
       document.documentElement.classList.remove('mw-busy');
     }
     if (!ok) { cover.remove(); onLanded?.(); return false; }
-    if (blob) {
-      const dt = new DataTransfer();
-      dt.items.add(new File([blob], 'layer.png', { type: 'image/png' }));
-      const t1 = guRef();
+    if (pre) {
       const probe = landProbe(E, L, after, ir, true);
-      document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      const { ref0: t1 } = await pasteAt(E, L, { x: ex, y: ey, w: ew, h: eh }, sub, null, 'layer.png', pre);
       await swapWhenLanded(probe.check, () => { cover.remove(); onLanded?.(); });
       await waitFor(() => guRef() !== t1, 3000); // 붙여넣기가 기록에 들어간 뒤 (묶음 되돌리기용)
     } else { await swapWhenLanded(() => true, () => { cover.remove(); onLanded?.(); }); }
@@ -5838,11 +5966,20 @@ void main(){
     const im = new ImageData(box.w, box.h);
     for (let y = 0; y < box.h; y++) im.data.set(snap.subarray(((box.y + y) * W + box.x) * 4, ((box.y + y) * W + box.x + box.w) * 4), y * box.w * 4);
     c.getContext('2d').putImageData(im, 0, 0);
-    const m = E.computedView.transform;
     Object.assign(c.style, { position: 'absolute', left: canvas.offsetLeft + 'px', top: canvas.offsetTop + 'px', pointerEvents: 'none', transformOrigin: '0 0',
-      transform: `matrix(${m[0]},${m[1]},${m[2]},${m[3]},${m[4] + m[0] * box.x + m[2] * box.y},${m[5] + m[1] * box.x + m[3] * box.y})` });
+      imageRendering: viewSharp(E) ? 'pixelated' : 'auto' });
+    const place = () => { const m = E.computedView.transform; c.style.imageRendering = viewSharp(E) ? 'pixelated' : 'auto';
+      c.style.transform = `matrix(${m[0]},${m[1]},${m[2]},${m[3]},${m[4] + m[0] * box.x + m[2] * box.y},${m[5] + m[1] * box.x + m[3] * box.y})`; };
+    place();
     canvas.after(c);
-    return { remove() { c.remove(); } };
+    let raf = 0; const loop = () => { if (!c.isConnected) return; try { place(); } catch { /* 무시 */ } raf = requestAnimationFrame(loop); };
+    raf = requestAnimationFrame(loop);
+    return { remove() { cancelAnimationFrame(raf); c.remove(); } };
+  }
+  // Magma 화면 확대 방식: 'Sharp zoom'이 켜져 있고 3배(돌려 놓았으면 6배) 이상이면 픽셀을 또렷하게, 아니면 부드럽게 (Magma 소스와 같은 규칙).
+  // 덮개·미리보기가 이와 다르면 바뀌는 순간 사각형이 흐려졌다 또렷해지는 깜빡임으로 보인다(실측: 4배 확대)
+  function viewSharp(E) {
+    try { const v = E.view; return E.model.settings.sharpZoom !== false && v.scale >= (v.rotation ? 6 : 3); } catch { return false; }
   }
   // 붙여넣은 그림이 레이어에 실제로 들어갔는지: 바뀔 픽셀 몇 개를 골라 값이 바뀌는지(exact = 기대값과 같아지는지) 본다
   function landProbe(E, L, px, box, exact = false) {
@@ -7783,7 +7920,10 @@ void main(){
   function skeletonize(B, w, h, maxIter = 80) {
     const sk = B.slice();
     let list = [];
-    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) { const p = y * w + x; if (sk[p]) list.push(p); }
+    for (let y = 1; y < h - 1; y++) { // 칠해진 칸만 (내장 검색으로 빈 곳은 건너뜀)
+      const row = sk.subarray(y * w + 1, y * w + w - 1), o = y * w + 1;
+      for (let x = row.indexOf(1); x >= 0; x = row.indexOf(1, x + 1)) list.push(o + x);
+    }
     for (let it = 0; it < maxIter; it++) {
       let changed = false;
       for (let step = 0; step < 2; step++) {
@@ -7793,9 +7933,7 @@ void main(){
           const n = sk[p - w], ne = sk[p - w + 1], e = sk[p + 1], se = sk[p + w + 1], s = sk[p + w], sw = sk[p + w - 1], wv = sk[p - 1], nw = sk[p - w - 1];
           const cnt = n + ne + e + se + s + sw + wv + nw;
           if (cnt < 2 || cnt > 6) continue;
-          const seq = [n, ne, e, se, s, sw, wv, nw, n];
-          let A = 0; for (let i = 0; i < 8; i++) if (!seq[i] && seq[i + 1]) A++;
-          if (A !== 1) continue;
+          if ((n < ne) + (ne < e) + (e < se) + (se < s) + (s < sw) + (sw < wv) + (wv < nw) + (nw < n) !== 1) continue; // 0→1로 바뀌는 곳이 하나
           if (step === 0 ? (n && e && s) || (e && s && wv) : (n && e && wv) || (n && s && wv)) continue;
           del.push(p);
         }
@@ -7807,9 +7945,9 @@ void main(){
     }
     return { sk, list };
   }
-  function gapBridgeFill(img, sx, sy, tolPct, G) {
+  function gapBridgeFill(img, sx, sy, tolPct, G, A0) {
     const { w, h } = img, n = w * h;
-    const A = floodFill(img, sx, sy, tolPct, null, true, false).mask; // 시작 색과 비슷한 모든 픽셀
+    const A = A0 || floodFill(img, sx, sy, tolPct, null, true, false).mask; // 시작 색과 비슷한 모든 픽셀
     const seed = sy * w + sx;
     if (!A[seed]) return null;
     const B = new Uint8Array(n);
@@ -7821,9 +7959,8 @@ void main(){
     const T = Math.max(48, 4 * R + 24);
     const Bs = new Uint8Array(n);
     let fr = [];
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-      const p = y * w + x;
-      if (!B[p]) continue;
+    for (let p = B.indexOf(1); p >= 0; p = B.indexOf(1, p + 1)) {
+      const x = p % w, y = (p - x) / w;
       if ((x > 0 && A[p - 1]) || (x < w - 1 && A[p + 1]) || (y > 0 && A[p - w]) || (y < h - 1 && A[p + w]) ||
         (x > 0 && y > 0 && A[p - w - 1]) || (x < w - 1 && y > 0 && A[p - w + 1]) || (x > 0 && y < h - 1 && A[p + w - 1]) || (x < w - 1 && y < h - 1 && A[p + w + 1])) { Bs[p] = 1; fr.push(p); }
     }
@@ -7875,16 +8012,7 @@ void main(){
       }
     }
     if (B[seed]) return null;
-    const mask = new Uint8Array(n), q = new Int32Array(n);
-    let qh = 0, qt = 0, count = 0;
-    mask[seed] = 1; q[qt++] = seed;
-    while (qh < qt) {
-      const p = q[qh++], x = p % w; count++;
-      if (x > 0 && !B[p - 1] && !mask[p - 1]) { mask[p - 1] = 1; q[qt++] = p - 1; }
-      if (x < w - 1 && !B[p + 1] && !mask[p + 1]) { mask[p + 1] = 1; q[qt++] = p + 1; }
-      if (p >= w && !B[p - w] && !mask[p - w]) { mask[p - w] = 1; q[qt++] = p - w; }
-      if (p < n - w && !B[p + w] && !mask[p + w]) { mask[p + w] = 1; q[qt++] = p + w; }
-    }
+    const mask = new Uint8Array(n), count = spanFill(mask, w, h, sx, sy, B, 1);
     return { mask, count, bridges: bridges.length };
   }
 
@@ -7918,7 +8046,7 @@ void main(){
       while (fh < ft) {
         const p = qf[fh++], x = p % w, y = (p - x) / w;
         const lx = (x / k) | 0, ly = (y / k) | 0; if (lx < bx0) bx0 = lx; if (lx > bx1) bx1 = lx; if (ly < by0) by0 = ly; if (ly > by1) by1 = ly;
-        if (ft > qf.length - 4) return gapBridgeFill(img, sx, sy, tolPct, G); // 너무 넓게 샘 → 전체로
+        if (ft > qf.length - 4) return gapBridgeFill(img, sx, sy, tolPct, G, A); // 너무 넓게 샘 → 전체로
         if (x > 0 && A[p - 1] && !seenF[p - 1]) { seenF[p - 1] = 1; qf[ft++] = p - 1; }
         if (x < w - 1 && A[p + 1] && !seenF[p + 1]) { seenF[p + 1] = 1; qf[ft++] = p + 1; }
         if (y > 0 && A[p - w] && !seenF[p - w]) { seenF[p - w] = 1; qf[ft++] = p - w; }
@@ -7939,7 +8067,7 @@ void main(){
     const M = 3 * G + 3 * k + 8;
     const x0 = Math.max(0, bx0 * k - M), y0 = Math.max(0, by0 * k - M), x1 = Math.min(w, (bx1 + 1) * k + M), y1 = Math.min(h, (by1 + 1) * k + M);
     const cw = x1 - x0, ch = y1 - y0;
-    if (cw * ch > 0.6 * w * h) return gapBridgeFill(img, sx, sy, tolPct, G); // 거의 보드 전체면 그냥 전체로
+    if (cw * ch > 0.6 * w * h) return gapBridgeFill(img, sx, sy, tolPct, G, A); // 거의 보드 전체면 그냥 전체로
     const sub = new Uint8ClampedArray(cw * ch * 4);
     for (let y = 0; y < ch; y++) sub.set(data.subarray(((y0 + y) * w + x0) * 4, ((y0 + y) * w + x1) * 4), y * cw * 4);
     const res = gapBridgeFill({ w: cw, h: ch, data: sub }, sx - x0, sy - y0, tolPct, G);
@@ -7951,7 +8079,7 @@ void main(){
     if (x1 < w) for (let y = 0; y < ch && !touch; y++) if (m[y * cw + cw - 1]) touch = true;
     if (y0 > 0) for (let x = 0; x < cw && !touch; x++) if (m[x]) touch = true;
     if (y1 < h) for (let x = 0; x < cw && !touch; x++) if (m[(ch - 1) * cw + x]) touch = true;
-    if (touch) return gapBridgeFill(img, sx, sy, tolPct, G);
+    if (touch) return gapBridgeFill(img, sx, sy, tolPct, G, A);
     const mask = new Uint8Array(w * h);
     for (let y = 0; y < ch; y++) mask.set(m.subarray(y * cw, (y + 1) * cw), (y0 + y) * w + x0);
     return { mask, count: res.count, bridges: res.bridges };
@@ -8416,6 +8544,22 @@ void main(){
   // 마스크를 n픽셀 넓히기(+)·좁히기(−) — 거리 변환(원형)
   function growMaskBy(mask, w, h, n) {
     const out = new Uint8Array(w * h), r2 = n * n;
+    if (n && Math.abs(n) <= 16) {
+      const R = Math.abs(n), v = n > 0 ? 1 : 0; // 넓히기: 1을 번지게, 좁히기: 0을 번지게
+      out.set(mask);
+      const off = []; for (let dy = -R; dy <= R; dy++) off.push([dy, Math.floor(Math.sqrt(r2 - dy * dy) + 1e-9)]);
+      const o = 1 - v; // 가로줄의 이어진 구간마다, 원을 이루는 줄들만큼 늘려 채운다
+      for (let y = 0; y < h; y++) {
+        const row = mask.subarray(y * w, y * w + w);
+        let x = row.indexOf(v);
+        while (x >= 0) {
+          let e = row.indexOf(o, x); if (e < 0) e = w;
+          for (const [dy, dx] of off) { const yy = y + dy; if (yy < 0 || yy >= h) continue; out.fill(v, yy * w + Math.max(0, x - dx), yy * w + Math.min(w, e + dx)); }
+          x = e < w ? row.indexOf(v, e) : -1;
+        }
+      }
+      return out;
+    }
     if (n > 0) { const d2 = edtSq(mask, w, h); for (let i = 0; i < out.length; i++) out[i] = d2[i] <= r2 ? 1 : 0; }
     else {
       const inv = new Uint8Array(w * h); for (let i = 0; i < inv.length; i++) inv[i] = mask[i] ? 0 : 1;
@@ -8529,12 +8673,14 @@ void main(){
   }
   // 안티에일리어스: 영역 마스크 가장자리 1픽셀을 둘레 평균(3×3)으로 부드럽게
   function aaMask(mask, w, h, box) {
-    const out = new Uint8Array(box.w * box.h);
-    for (let y = 0; y < box.h; y++) for (let x = 0; x < box.w; x++) {
-      const gx = box.x + x, gy = box.y + y;
-      let s = 0;
-      for (let dy = -1; dy <= 1; dy++) { const yy = gy + dy; if (yy < 0 || yy >= h) continue; for (let dx = -1; dx <= 1; dx++) { const xx = gx + dx; if (xx >= 0 && xx < w && mask[yy * w + xx]) s++; } }
-      out[y * box.w + x] = Math.round(s * 255 / 9);
+    const out = new Uint8Array(box.w * box.h), LUT = new Uint8Array(10);
+    for (let i = 0; i < 10; i++) LUT[i] = Math.round(i * 255 / 9);
+    const bx = box.x, bw = box.w;
+    for (let y = 0; y < box.h; y++) {
+      const gy = box.y + y, r0 = gy * w, up = gy > 0, dn = gy < h - 1, o = y * bw;
+      const col = (x) => (x < 0 || x >= w ? 0 : mask[r0 + x] + (up ? mask[r0 - w + x] : 0) + (dn ? mask[r0 + w + x] : 0));
+      let a = col(bx - 1), b = col(bx);
+      for (let x = 0; x < bw; x++) { const c = col(bx + x + 1); out[o + x] = LUT[a + b + c]; a = b; b = c; }
     }
     return out;
   }
@@ -8557,15 +8703,19 @@ void main(){
       } else {
         if (E.model.settings && E.model.settings.pasteNewLayer) fgWarnOnce('pnl', '주의: Magma 설정 "붙여넣기를 새 레이어로"가 켜져 있어 확장/축소·빈틈 닫기로 칠할 때마다 새 레이어가 생겨요');
         const n = Number.isFinite(E.primaryColor) ? E.primaryColor >>> 8 : 0, r = (n >> 16) & 255, g = (n >> 8) & 255, bl = n & 255;
+        const sel = E.model.user.selection, hasSel = !!(sel && sel.bounds && sel.bounds.w > 0 && sel.poly && Array.isArray(sel.poly.segments));
+        let out, pal = null;
+        if (!hasSel) { // 한 가지 색 + 투명도 → 가벼운 팔레트 그림
+          pal = [r, g, bl];
+          if (op >= 1) out = a; else { out = new Uint8Array(a.length); for (let i = 0; i < a.length; i++) out[i] = Math.round(a[i] * op); }
+        } else {
         const px = new Uint8Array(box.w * box.h * 4);
         for (let i = 0; i < a.length; i++) { const k = (a[i] / 255) * op, A = Math.round(255 * k); px[i * 4] = Math.round(r * k); px[i * 4 + 1] = Math.round(g * k); px[i * 4 + 2] = Math.round(bl * k); px[i * 4 + 3] = A; }
         advClipToSelection(px, box); // 선택 영역 밖은 칠하지 않음 (Magma 페인트통과 같게)
-        const out = new Uint8ClampedArray(px.length);
+        out = new Uint8ClampedArray(px.length);
         for (let i = 0; i < px.length; i += 4) { const A = px[i + 3]; if (!A) continue; out[i] = Math.min(255, px[i] * 255 / A); out[i + 1] = Math.min(255, px[i + 1] * 255 / A); out[i + 2] = Math.min(255, px[i + 2] * 255 / A); out[i + 3] = A; }
-        const blob = await boardPng(W, H, box, out);
-        const dt = new DataTransfer();
-        dt.items.add(new File([blob], 'fill.png', { type: 'image/png' }));
-        document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+        }
+        await pasteAt(E, L, box, out, pal, 'fill.png');
       }
       let cnt = 0; for (const v of mask) cnt += v;
       note(`${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀` + (cfg.aa ? ' · 안티에일리어스' : '') + (S.fillGrow ? ` (영역 ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)` : '') + (ff ? ` · 틈 ${ff.bridges}곳 이음` : ''));
@@ -9608,6 +9758,15 @@ void main(){
     .mx-tab.mx-empty { opacity: .45; }
     .mx-fbody { position: relative; z-index: 1; flex: 1 1 auto; min-height: 0; }
     .mx-pbody { position: absolute; inset: 0; }
+    .mw-bsz { position: absolute; inset: 0; overflow: hidden auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); grid-auto-rows: 36px; align-content: start; gap: 1px; padding: 1px; background: rgba(0,0,0,.38); box-sizing: border-box; }
+    .mw-bszc { position: relative; min-width: 0; height: 36px; background: #37373c; overflow: hidden; cursor: pointer; user-select: none; }
+    .mw-bszc:hover { background: #46464d; }
+    .mw-bszc.on { background: #4c6fae; }
+    .mw-bszc.off { cursor: default; opacity: .35; }
+    .mw-bszc.off:hover { background: #37373c; }
+    .mw-bszc > i { position: absolute; left: 50%; top: 14px; transform: translate(-50%, -50%); border-radius: 50%; background: #fff; }
+    .mw-bszc > b { position: absolute; left: 0; right: 0; bottom: 1px; text-align: center; font-weight: 400; font-size: 12px; line-height: 13px; color: #fff; letter-spacing: -.2px;
+      text-shadow: 1px 0 1px #222, -1px 0 1px #222, 0 1px 1px #222, 0 -1px 1px #222, 0 0 2px #222; pointer-events: none; }
     .mx-pbody.mx-flow { overflow: hidden auto; }
     .mx-pbody.mx-flow.mx-fits { overflow: visible; }
     .mx-pbody > editor-layers, .mx-pbody > editor-properties-presets-list { position: absolute !important; inset: 0 !important; height: auto !important; width: auto !important; }
@@ -9888,6 +10047,90 @@ void main(){
     }
   }
 
+  // ---------- 브러시 크기 패널 (클립 스튜디오 '브러시 크기' 팔레트) ----------
+  // 정해진 크기를 칸으로 늘어놓고, 누르면 지금 도구의 크기가 된다. 지금 크기와 똑같은 칸만 밝게(목록에 없는 중간 크기면 아무 칸도 밝히지 않음).
+  // 도구마다 크기가 다르므로 도구를 바꾸면 밝은 칸도 바뀐다. 칸은 높이 고정, 너비만 정해진 범위에서 늘어나며 패널 너비에 맞춰 열 수가 바뀐다(넘치면 세로 스크롤).
+  const BSZ_LIST = [0.7, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8, 10, 12, 15, 17, 20, 25, 30, 40, 50, 60, 70, 80, 100, 120, 150, 170, 200, 250, 300, 400, 500, 600, 700, 800, 1000, 1200, 1500, 1700, 2000];
+  const BSP = { el: null, sig: '', cur: undefined, kind: undefined, menu: null, busy: false };
+  const bszList = () => (Array.isArray(S.bszList) && S.bszList.length ? S.bszList : BSZ_LIST);
+  function bszKind() {
+    if (S.active) return { quick: 'quick', brush: 'adv', blur: 'blur', qmask: 'qmask' }[S.tool] || null;
+    return SIZE_TOOLS.has(currentTool()) ? 'brush' : null;
+  }
+  function bszGet(kind) {
+    if (kind === 'quick') return S.brush;
+    if (kind === 'adv') return ADV.brush ? (S.advSize > 0 ? S.advSize : ADV.brush.size) : null;
+    if (kind === 'brush') return getBrushSize();
+    return OWN_SIZE[kind] ? OWN_SIZE[kind].get() : null;
+  }
+  const bszMax = (kind) => (kind === 'adv' ? 3000 : kind === 'quick' || kind === 'brush' ? 500 : OWN_SIZE[kind] ? OWN_SIZE[kind].max : Infinity);
+  async function bszSet(v) {
+    const kind = bszKind();
+    if (!kind || v > bszMax(kind) || BSP.busy) return;
+    if (kind === 'quick') { S.brush = v; saveSettings(); rowsEl?.__mwSync?.(); }
+    else if (kind === 'adv') { if (!ADV.brush) return; ADV.brush.size = v; S.advSize = v; advSaveSoon(); rowsEl?.__mwSync?.(); }
+    else if (kind === 'brush') {
+      BSP.busy = true;
+      try {
+        BSZ.pending = null; BSZ.lastSize = v;
+        const row = sizeRow();
+        if (row && getBrushSize() !== v) { await setRowNumber(row, v); await waitFor(() => getBrushSize() === v, 500); }
+      } finally { BSP.busy = false; }
+    } else if (OWN_SIZE[kind]) { OWN_SIZE[kind].set(v); saveSettings(); rowsEl?.__mwSync?.(); }
+    bszSync();
+  }
+  function bszPanelEl() {
+    if (BSP.el) return BSP.el;
+    const el = document.createElement('div'); el.className = 'mw-bsz thin-dark-scrollbar mw-el';
+    el.addEventListener('pointerdown', (e) => { if (e.target !== el) e.preventDefault(); }); // 그림판의 키보드 입력을 뺏지 않게
+    el.addEventListener('click', (e) => { const c = e.target.closest('.mw-bszc'); if (c && !c.classList.contains('off')) bszSet(parseFloat(c.dataset.v)); });
+    el.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); bszMenu(e); });
+    BSP.el = el; BSP.sig = ''; bszBuild();
+    return el;
+  }
+  function bszBuild() {
+    const el = BSP.el, list = bszList(), sig = list.join();
+    if (!el || BSP.sig === sig) return;
+    BSP.sig = sig; BSP.cur = undefined; el.textContent = '';
+    for (const v of list) {
+      const c = document.createElement('div'); c.className = 'mw-bszc mw-noi18n'; c.dataset.v = v;
+      const d = document.createElement('i'), px = Math.min(25, Math.max(1, v)); d.style.width = d.style.height = px + 'px';
+      if (v < 1) d.style.opacity = String(v);
+      const t = document.createElement('b'); t.textContent = String(v);
+      c.append(d, t); el.appendChild(c);
+    }
+    bszSync();
+  }
+  function bszSync() {
+    const el = BSP.el;
+    if (!el || !el.isConnected) return;
+    bszBuild();
+    const kind = bszKind(), cur = kind ? bszGet(kind) : null;
+    if (BSP.cur === cur && BSP.kind === kind) return;
+    BSP.cur = cur; BSP.kind = kind;
+    const max = kind ? bszMax(kind) : 0;
+    for (const c of el.children) {
+      const v = parseFloat(c.dataset.v);
+      c.classList.toggle('on', cur != null && Math.abs(v - cur) < 0.001);
+      c.classList.toggle('off', !kind || v > max);
+    }
+  }
+  function bszMenu(e) {
+    BSP.menu?.remove();
+    const cell = e.target.closest('.mw-bszc'), kind = bszKind(), cur = kind ? bszGet(kind) : null, list = bszList();
+    const m = document.createElement('div'); m.className = 'dropdown-menu show mx-winmenu mw-el'; BSP.menu = m;
+    Object.assign(m.style, { position: 'fixed', left: Math.min(e.clientX, innerWidth - 230) + 'px', top: Math.min(e.clientY, innerHeight - 130) + 'px', right: 'auto', zIndex: 100000 });
+    const item = (t, ok, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'dropdown-item mx-wi'; b.textContent = t; b.disabled = !ok; if (!ok) b.classList.add('disabled');
+      b.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); close(); fn(); saveSettings(); bszBuild(); }); m.appendChild(b); };
+    item(L('지금 크기 추가', 'Add current size'), cur > 0 && !list.some((v) => Math.abs(v - cur) < 0.001), () => { S.bszList = [...list, cur].sort((a, b) => a - b); });
+    item(L('이 크기 삭제', 'Delete this size'), !!cell && list.length > 1, () => { const v = parseFloat(cell.dataset.v); S.bszList = list.filter((x) => x !== v); });
+    item(L('기본 목록으로', 'Reset to default sizes'), Array.isArray(S.bszList), () => { S.bszList = null; });
+    const close = () => { m.remove(); window.removeEventListener('pointerdown', out, true); };
+    const out = (ev) => { if (!m.contains(ev.target)) close(); };
+    document.body.appendChild(m); setTimeout(() => window.addEventListener('pointerdown', out, true), 0);
+  }
+  for (const t of ['pointerup', 'keyup', 'change']) on(window, t, () => { if (BSP.el && BSP.el.isConnected) setTimeout(bszSync, 40); }, true); // 도구·크기를 바꾸면 바로
+
   // ---------- 사용자 지정 UI: 패널 떼기·붙이기·탭 묶기 (클립 스튜디오처럼) ----------
   // Magma 화면 조각(도구 막대·색상환·브러시·브러시 목록·레이어)을 '패널'로 감싸 원래 자리에서 꺼내 옮긴다.
   //  - Magma 요소 자체를 옮기므로 기능은 그대로다(Angular 화면 조각은 옮겨도 계속 동작, 실측).
@@ -9903,6 +10146,7 @@ void main(){
     { id: 'color', title: '색상환', en: 'Color', sel: ['.editor-right editor-color'], kind: 'flow', origin: '.container1' },
     { id: 'brush', title: '브러시', en: 'Brush', sel: ['.editor-right editor-slots', '.editor-right editor-sliders'], kind: 'flow', origin: '.container2' },
     { id: 'presets', title: '브러시 목록', en: 'Brush list', sel: ['.editor-right editor-properties-presets-list'], kind: 'fill', origin: '.container2b' },
+    { id: 'bsize', title: '브러시 크기', en: 'Brush Size', sel: [], kind: 'fill', make: () => bszPanelEl() }, // 확장이 만든 패널 (Magma 요소 없음)
     { id: 'layers', title: '레이어', en: 'Layers', sel: ['.editor-right editor-layers'], kind: 'fill', origin: '.container3' },
   ];
   const dkTitle = (p) => (p ? (LANG_EN() ? p.en || p.title : p.title) : '');
@@ -9942,6 +10186,7 @@ void main(){
   function dkAdopt() {
     for (const p of DOCK_PANELS) {
       const body = dkPBody(p);
+      if (p.make) { const el = p.make(); if (el.parentNode !== body) body.appendChild(el); continue; }
       for (const s of p.sel) {
         for (const el of document.querySelectorAll(s)) {
           if (body.contains(el)) continue;
@@ -9972,7 +10217,7 @@ void main(){
     if (!box) return null;
     const right = [];
     for (const p of DOCK_PANELS) {
-      if (p.id === 'tools') continue;
+      if (p.id === 'tools' || p.make) continue;
       const c = er && er.querySelector(p.origin), host = er && er.querySelector(p.sel[0]);
       if (!c || !host) continue;
       const r = c.getBoundingClientRect(), hr = host.getBoundingClientRect();
@@ -10005,7 +10250,7 @@ void main(){
     const root = { k: 's', d: 'h', c: kids, z, f: kids.findIndex((k) => k.k === 'c') };
     // Magma가 이 모드에서 숨긴 조각(요소는 있지만 칸이 안 보임)은 숨김 목록으로
     const placed = new Set(dkGroups(root).flatMap((x) => x.t));
-    const h = DOCK_PANELS.map((p) => p.id).filter((id) => !placed.has(id));
+    const h = DOCK_PANELS.filter((p) => !p.make).map((p) => p.id).filter((id) => !placed.has(id));
     return { root, fl: [], h };
   }
   function dkFallbackDefault() {
@@ -10535,7 +10780,7 @@ void main(){
   // ---------- 영어 화면: 확장이 만든 화면의 한국어 글자를 영어로 바꿔 끼운다 ----------
   // 확장이 만든 요소(.mw-…, .mx-…) 안의 글자·title·placeholder만 바꾸고, 원문은 기억해 두었다가 한국어로 돌아가면 되돌린다.
   // 저장되는 값(브러시 분류·프리셋 이름 등)은 그대로 한국어라서 기능에는 영향이 없다.
-  const I18N_EN = /*I18N_EN*/{"올가미 브러시를 지우기 모드로 바꾸지 못했어요. 도구 설정 칸에서 erase를 눌러 주세요":"Couldn't switch the Lasso Brush to erase mode. Press erase in the tool settings","그리기 모드를 골라 투명색을 껐어요":"Draw mode selected, transparent color turned off","현재 레이어를 찾지 못했어요":"Couldn't find the current layer","화면을 읽지 못했어요 (Magma 창이 가려져 있지 않은지 확인해 주세요)":"Couldn't read the screen (make sure the Magma window isn't covered)","그림판 밖을 눌렀어요":"You clicked outside the canvas","보드 바깥을 눌렀어요":"You clicked outside the board","영역을 만들지 못했어요":"Couldn't create the area","클립보드 기능을 쓸 수 없어요":"Clipboard isn't available","현재 레이어 참조: 선택이 있는 상태에서는 레이어를 새로 읽을 수 없어요. 선택을 해제하고 한 번 클릭한 뒤 이어서 쓰세요":"Current layer reference: the layer can't be re-read while there's a selection. Deselect, click once, then continue","현재 레이어를 읽지 못했어요":"Couldn't read the current layer","현재 레이어가 비어 있어요":"The current layer is empty","현재 레이어 위치를 읽지 못했어요":"Couldn't read the current layer's position","현재 레이어 크기가 맞지 않아요":"The current layer's size doesn't match","화면 위치 정보를 읽지 못했어요":"Couldn't read the screen position info","화면을 회전하거나 뒤집은 상태에서는 현재 레이어 참조를 쓸 수 없어요":"Current layer reference doesn't work while the view is rotated or flipped"," · 작은 조각 ${P.dropped}개는 점이 너무 많아 뺐어요":" · Left out ${P.dropped} small pieces that had too many points"," · 테두리가 복잡해 조금 매끈하게 그었어요":" · The outline was complex, so it was smoothed a little"," · 선 위를 눌러 빈틈 닫기 없이 했어요":" · You clicked on a line, so gap closing was skipped","그림판 화면을 찾지 못했어요":"Couldn't find the canvas view","영역 계산 중…":"Calculating area…","올가미 채우기 도구로 바꾸지 못했어요":"Couldn't switch to the Lasso fill tool","안전을 위해 멈췄어요: 올가미 채우기를 그리기 모드로 바꾸지 못했어요":"Stopped for safety: couldn't switch Lasso fill to draw mode","마법봉 선택":"Magic Wand selection",", 테두리 ${R.pieces}개":", ${R.pieces} outlines",", 구멍 ${holes}개":", ${holes} holes","${fill ? '채움' : '선택'}: ${count.toLocaleString()}픽셀${parts} (${(ms / 1000).toFixed(1)}초)":"${fill ? '채움' : '선택'}: ${count.toLocaleString()} px${parts} (${(ms / 1000).toFixed(1)}s)"," · 화면 기준":" · based on screen","오류: ":"Error: ","화면을 회전·뒤집은 상태에서는 현재 레이어 참조를 쓸 수 없어요":"Current layer reference doesn't work while the view is rotated/flipped","빼는 중… (손을 떼면 확정)":"Subtracting… (release to confirm)","선택 중… (손을 떼면 확정)":"Selecting… (release to confirm)","취소했어요":"Canceled","${Q.subtract ? '뺌' : '선택'}: ${count.toLocaleString()}픽셀":"${Q.subtract ? '뺌' : '선택'}: ${count.toLocaleString()} px","브러시 크기 ${BSZ.size}":"Brush size ${BSZ.size}","클립 스튜디오 브러시(.sut) 파일이 아니에요":"This isn't a Clip Studio brush (.sut) file","브러시 설정을 찾지 못했어요":"Couldn't find the brush settings","브러시":"Brush","합성 모드(${num(v.CompositeMode, 0)}번)는 '보통'으로 그려요 — 지우개 브러시면 ⚙ 설정 → 잉크 → 합성 모드에서 '지우기'":"Blend mode #${num(v.CompositeMode, 0)} draws as 'Normal' — for an eraser brush, set ⚙ Settings → Ink → Blend mode to 'Erase'","셰이더: ":"Shader: ","셰이더 연결: ":"Shader link: ","WebGL2를 쓸 수 없어요":"WebGL2 isn't available","'${brush.name}'의 필압·속도 곡선을 예전 버전이 잘못 읽었어요 — 지금은 곧은 곡선으로 그려요. .sut를 다시 가져오면 원래 곡선대로 돼요":"An older version misread the pressure/speed curves of '${brush.name}' — it now draws with straight curves. Re-import the .sut to get the original curves","수채":"Watercolor","숨겨진 레이어에는 그릴 수 없어요 — 레이어의 눈 아이콘을 켜 주세요":"You can't draw on a hidden layer — turn on the layer's eye icon","잠긴 레이어에는 그릴 수 없어요 — 레이어 잠금을 풀어 주세요":"You can't draw on a locked layer — unlock the layer","지우지 못했어요: ":"Couldn't erase: ","획을 보드에 넣지 못했어요: ":"Couldn't add the stroke to the board: ","칠하지":"Paint","브러시를 준비하지 못했어요: ":"Couldn't prepare the brush: ","먼저 오른쪽 설정 칸에서 브러시(.sut)를 가져와 주세요":"First import a brush (.sut) in the settings panel on the right","이 브러시는 지우개·특수 합성이라 아직 쓸 수 없어요":"This brush is an eraser/special blend, so it can't be used yet","이 브러시는 끝 모양 PNG가 필요해요 — 설정 칸의 \"끝 모양 PNG 넣기\"를 눌러 주세요":"This brush needs a tip shape PNG — click \"Add tip shape PNG\" in the settings panel","그릴 레이어를 먼저 골라 주세요":"Pick a layer to draw on first","글자 레이어에는 그릴 수 없어요 — 그림 레이어를 골라 주세요":"You can't draw on a text layer — pick a drawing layer","주의: Magma 설정 \"붙여넣기를 새 레이어로\"가 켜져 있어 획마다 새 레이어가 생겨요":"Note: Magma's \"Paste as new layer\" setting is on, so every stroke creates a new layer","＋ 브러시 가져오기 (.sut)":"＋ Import Brush (.sut)","＋ 기본 브러시":"＋ Basic Brush","클립 스튜디오 파일 없이, 기본 끝 모양으로 새 브러시를 만들어요":"Create a new brush with a basic tip shape — no Clip Studio file needed","끝 모양 바꾸기":"Change Tip Shape","⚙ 브러시 설정":"⚙ Brush Settings","크기·잉크·색 혼합(물감 섞기)·끝 모양·획·스프레이·텍스처·색 흔들기를 하나하나 바꿔요":"Adjust size, ink, color mixing (paint mixing), tip shape, stroke, spray, texture and color jitter one by one","지우기":"Delete","＋ 새 브러시 (프리셋)":"＋ New Brush (Preset)","연필·G펜·수채·유화(물감 섞기)·손끝·에어브러시·스프레이 등 프리셋으로 새 브러시를 만들어요":"Create a new brush from presets like pencil, G-Pen, watercolor, oil (paint mixing), finger blend, airbrush, spray and more","브러시 ${files.length - fails}개를 가져왔어요":"Imported ${files.length - fails} brushes"," — 끝 모양 PNG가 필요한 브러시가 있어요":" — some brushes need a tip shape PNG","한 번 더 누르면 지워요":"Click again to delete","브러시가 없어요. \"＋ 새 브러시 (프리셋)\"으로 만들거나 클립 스튜디오 브러시 파일(.sut)을 가져오세요.":"No brushes yet. Make one with \"＋ New Brush (Preset)\" or import a Clip Studio brush file (.sut).","⚠ 보호된 소재 ${need}개: \"끝 모양 바꾸기\"에서 기본 모양을 고르거나, CSP에서 PNG로 저장해 넣어 주세요":"⚠ ${need} protected materials: pick a basic shape in \"Change Tip Shape\", or save them as PNG in CSP and add them","아직 안 되는 기능: ${cur.unsupported.join(', ')} (나머지 설정으로 그려요)":"Not supported yet: ${cur.unsupported.join(', ')} (drawing with the other settings)","끝 모양·텍스처":"Tip Shape & Texture","기본 모양":"Basic shapes","을 누르면 준비된 모양 중에서 고를 수 있어요. 내 그림을 쓰려면":"lets you pick from ready-made shapes. To use your own image, add it with","PNG 고르기":"Choose PNG","로 넣어요(검은 그림 + 투명 배경).\n        클립 스튜디오의 보호된 소재는 CSP에서 캔버스에 붙여 PNG로 저장한 뒤 넣으면 똑같이 쓸 수 있어요.":"(black drawing + transparent background).\n        Protected Clip Studio materials work the same way: paste them onto a canvas in CSP, save as PNG, then add them.","닫기":"Close","끝 모양 ${i + 1}":"Tip shape ${i + 1}","2중 브러시 끝 모양":"Dual brush tip shape","텍스처":"Texture","없음":"None","모양 필요 (미리보기는 소재 썸네일)":"Shape needed (preview is the material thumbnail)","준비됨":"Ready","기본 모양: ":"Basic shape: ","모양을 넣지 못했어요: ":"Couldn't add the shape: ","바꾸기":"Change","그림을 열지 못했어요: ":"Couldn't open the image: ","필압":"Pressure","속도":"Speed","무작위":"Random","먼저 브러시를 골라 주세요":"Pick a brush first","브러시 설정 — ":"Brush Settings — ","  ${t} 최소":"  ${t} min","크기":"Size","브러시 크기":"Brush size","크기 효과":"Size dynamics","필압 곡선":"Pressure curve","필압 곡선: 100보다 작으면 살살 눌러도 굵고 진하게, 크면 세게 눌러야 굵어져요(펜에만 적용).":"Pressure curve: below 100, light pressure gives thick, dark lines; above 100, you have to press harder to get thick lines (pen only).","잉크":"Ink","불투명도":"Opacity","불투명도 효과":"Opacity dynamics","흐름(밀도)":"Flow (density)","흐름 효과":"Flow dynamics","안티에일리어스":"Anti-aliasing","합성 모드":"Blend mode","보통":"Normal","물감 겹치기":"Glaze","곱하기":"Multiply","물감 겹치기: 투명한 물감을 덧칠한 것처럼 감산 혼합돼요(노랑 위에 파랑 = 초록, 수채). 곱하기: 화면 곱하기라 겹칠수록 어둡고 탁해요(마커). 지우기: 이 브러시 모양 그대로 지우개가 돼요. 같은 레이어 안의 그림과 섞여요.":"Glaze: blends subtractively, like layering transparent paint (blue over yellow = green, watercolor). Multiply: screen multiply, so overlaps get darker and muddier (marker). Erase: the brush becomes an eraser with this exact shape. Mixes with the drawing on the same layer.","수채 경계":"Watercolor edge","수채 경계 켜기":"Enable watercolor edge","범위":"Range","투명도 영향":"Opacity influence","명도 영향":"Brightness influence","물이 마르면서 가장자리에 물감이 고인 것처럼 획 테두리 안쪽을 진하게 해요. 그리는 동안에도 결과와 똑같이 보여요.":"Darkens the inside of the stroke's edge, as if paint pooled at the rim while drying. Looks the same while you draw as in the final result.","물감":"Paint","붓털 켜기":"Enable bristles","붓 모양":"Brush shape","둥근 붓":"Round brush","평붓":"Flat brush","털 수":"Bristle count","털 결 세기":"Bristle texture strength","털마다 색 차이":"Per-bristle color variation","붓털: 털마다 물감을 따로 묻혀 끊김 없는 결이 남아요. 획 탭의 \\'물감 마름\\'을 같이 쓰면 길게 그을수록 털이 하나씩 말라 갈라져요. 끝 모양·각도 설정 대신 쓰여요.":"Bristles: each bristle carries its own paint, leaving a continuous texture. Combine with \\'Paint dry-out\\' in the Stroke tab and the bristles dry and split one by one the longer you drag. Used instead of the tip shape and angle settings.","두께감":"Impasto","광택":"Gloss","두께감: 물감이 두껍게 올라온 것처럼 붓 자국 굴곡에 왼쪽 위 빛과 그림자를 넣어요(0 = 끔). 광택이 높을수록 유화처럼 반짝여요.":"Impasto: adds light from the upper left and shadows to the brushstroke ridges, as if the paint is built up thick (0 = off). Higher gloss makes it shine like oil paint.","젖은 물감(수채)":"Wet paint (watercolor)","가장자리 흔들림":"Edge wobble","가장자리 풀림":"Edge bleed","안료 알갱이":"Pigment granulation","젖은 물감: 물이 닿은 경계가 또렷하고 구불구불해져요. 풀림을 올리면 젖은 종이처럼 번지고, 알갱이는 종이 골에 안료가 가라앉은 오돌토돌함이에요. 수채 경계와 함께 쓰면 좋아요.":"Wet paint: edges where the water reaches become crisp and wavy. Raise bleed to spread like wet paper; granulation is the bumpy look of pigment settling into the paper grooves. Works well with watercolor edge.","색 혼합":"Color mixing","블렌드":"Blend","물감 섞기":"Paint mixing","물감량":"Paint amount","물감량 효과":"Paint amount dynamics","물감 농도":"Paint density","물감 농도 효과":"Paint density dynamics","색 늘이기":"Color stretch","섞을 밑색":"Mix with","현재 레이어":"Current layer","보이는 그림":"Visible image","물감량 100 = 메인 색만 · 0 = 밑색만 끌고 다님(손끝). 물감 농도가 낮을수록 묽게, 색 늘이기가 클수록 끌고 온 색이 길게 남아요.":"Paint amount 100 = main color only · 0 = drags only the underlying color (finger blend). Lower paint density = thinner paint; higher color stretch = the dragged color lasts longer.","끝 모양":"Tip shape","경도(원형일 때)":"Hardness (round tip)","두께":"Thickness","두께 방향":"Thickness direction","가로":"Horizontal","세로":"Vertical","두께 효과":"Thickness dynamics","각도":"Angle","각도: 필압":"Angle: pressure","각도: 진행 방향":"Angle: direction","각도: 무작위":"Angle: random","  무작위 정도":"  Randomness","좌우 반전":"Flip horizontal","반전":"Flip","상하 반전":"Flip vertical","여러 모양 순서":"Multiple tip order","차례":"Sequential","왕복":"Back and forth","획":"Stroke","간격":"Spacing","간격 효과":"Spacing dynamics","손떨림 보정":"Stabilizer","입(시작 가늘게)":"Start taper","출(끝 가늘게)":"End taper","리본(끝 모양을 띠처럼 늘이기)":"Ribbon (stretch the tip like a band)","흩어짐":"Scatter","물감 마름(길이)":"Paint dry-out (length)","  마른 뒤 남는 양":"  Amount left when dry","물감 마름: 그 길이만큼 그으면 붓의 물감이 줄어 획이 갈라져요(갈필). 0이면 꺼짐.":"Paint dry-out: after dragging this far, the brush runs low on paint and the stroke splits (dry brush). 0 = off.","스프레이":"Spray","스프레이 켜기":"Enable spray","입자 크기":"Particle size","입자 크기를 브러시 크기에 맞춤":"Match particle size to brush size","입자 크기 효과":"Particle size dynamics","입자 수":"Particle count","입자 수 효과":"Particle count dynamics","가운데로 모임":"Gather to center","텍스처를 쓰고 있어요":"Using a texture","텍스처 없음 — 아래 단추로 고르세요":"No texture — pick one with the button below","농도":"Density","배율":"Scale","농도 강조":"Density boost","결 방식":"Grain mode","무늬 덮기":"Overlay pattern","깊이":"Depth","골에 남는 가루(깊이)":"Powder left in grooves (depth)","깊이: 종이 결을 높낮이로 써요. 살살 칠하면 높은 곳에만 묻고, 세게·여러 번 칠할수록 골까지 채워져요(연필·목탄·파스텔). 농도 = 골 깊이.":"Depth: uses the paper grain as height. Light strokes only touch the high spots; pressing harder or layering fills the grooves too (pencil, charcoal, pastel). Density = groove depth.","도장마다 적용(끄면 획 전체에, 깊이 방식은 늘 획 전체)":"Apply per stamp (off = whole stroke; depth mode always applies to the whole stroke)","2중 브러시":"Dual brush","이 브러시에는 2중 브러시가 없어요. 클립 스튜디오 브러시(.sut)에 2중 브러시가 있으면 여기서 바꿀 수 있어요.":"This brush has no dual brush. If a Clip Studio brush (.sut) has one, you can change it here.","2중 브러시 쓰기":"Use dual brush","흐름":"Flow","흩뿌리기":"Scatter","두 번째 끝 모양으로 찍은 무늬 안쪽만 남겨서 거친 질감을 만들어요.":"Keeps only the inside of the pattern stamped with the second tip shape, for a rough texture.","색 흔들기":"Color jitter","색상":"Hue","채도":"Saturation","명도":"Brightness","도장마다 색을 이만큼 흔들어요(반짝이·잎 같은 브러시에 좋아요).":"Jitters the color this much per stamp (great for brushes like glitter or leaves).","이름·관리":"Name & Manage","이름":"Name","분류":"Category","끝 모양·텍스처 바꾸기…":"Change tip shape & texture…","이 브러시 복제":"Duplicate this brush"," 사본":" copy","연필·스케치":"Pencil & Sketch","잉크·펜":"Ink & Pen","마커":"Marker","드라이 (목탄·파스텔)":"Dry (Charcoal & Pastel)","물감 (유화·구아슈)":"Paint (Oil & Gouache)","섞기·문지르기":"Blend & Smudge","에어브러시":"Airbrush","질감·특수":"Texture & Special","장식·자연":"Decoration & Nature","HB 연필":"HB Pencil","단단하고 옅은 선. 살살 그으면 종이 이에만 걸려요":"Hard, light lines. Light strokes catch only the paper's tooth","4B 연필":"4B Pencil","부드럽고 진한 흑연. 눌러 칠하면 결이 메워져요":"Soft, dark graphite. Press hard to fill in the grain","8B 연필":"8B Pencil","아주 무른 연필. 진하고 번들거리는 검정":"A very soft pencil. Dark, shiny black","샤프":"Mechanical Pencil","가늘고 일정한 밑그림 선":"Thin, even sketch lines","색연필":"Colored Pencil","색이 종이 결에 걸리는 밀랍 질감, 겹쳐 칠해 진하게":"Waxy texture where color catches the paper grain; layer it to darken","연필 눕혀 칠하기":"Pencil (side)","연필을 눕혀 넓게 음영 넣기":"Lay the pencil on its side for broad shading","목탄 연필":"Charcoal Pencil","거칠고 깊은 검정, 결이 가로로 비쳐요":"Rough, deep black with horizontal grain showing through","G펜":"G-Pen","필압으로 굵기가 바뀌는 매끈한 펜 선":"Smooth pen lines whose width changes with pressure","마루펜":"Maru Pen","가늘고 단단한 펜. 세밀한 선":"Thin, firm pen for fine lines","테크니컬 펜":"Technical Pen","굵기가 일정한 제도 펜":"Drafting pen with a constant width","붓펜":"Brush Pen","끝이 날렵한 붓펜":"Brush pen with a sharp tip","먹 붓":"Ink Brush","누르는 만큼 확 굵어지는 먹선":"Ink lines that swell sharply with pressure","마른 먹":"Dry Ink","그을수록 먹이 말라 갈라지는 붓 선":"Brush lines where the ink dries and splits as you drag","캘리그래피 펜":"Calligraphy Pen","각도가 고정된 납작 펜촉 (가로획 굵고 세로획 가늘게)":"Flat nib at a fixed angle (thick horizontal, thin vertical strokes)","펠트펜":"Felt Pen","가장자리가 살짝 번진 사인펜":"Felt-tip pen with slightly bleeding edges","사각 마커":"Chisel Marker","겹칠수록 진해지는 납작 마커":"Flat marker that darkens where strokes overlap","알코올 마커":"Alcohol Marker","부드러운 가장자리, 덧칠하면 한 단계씩 진해짐":"Soft edges; each layer darkens it one step","형광펜":"Highlighter","아래 그림이 비치는 형광 띠":"Highlighter band that lets the drawing below show through","버드나무 목탄":"Willow Charcoal","가볍고 부드러운 목탄. 손에 묻어나듯 결이 많이 남아요":"Light, soft charcoal. Leaves lots of grain, like it rubs off on your hand","압축 목탄":"Compressed Charcoal","진하고 무거운 검정, 세게 누르면 꽉 메워짐":"Dark, heavy black; fills in solid when you press hard","목탄 옆면":"Charcoal (side)","목탄을 눕혀 넓게 끌기 — 큰 면과 음영":"Drag charcoal on its side — big areas and shading","콩테":"Conté","단단한 사각 스틱, 또렷한 결":"Hard square stick with crisp grain","소프트 파스텔":"Soft Pastel","가루가 날리는 부드러운 파스텔, 큰 종이 결":"Soft, dusty pastel with large paper grain","오일 파스텔":"Oil Pastel","끈적하게 밀리며 밑색과 살짝 섞이는 밀랍 파스텔":"Waxy pastel that drags stickily and mixes slightly with the color below","크레용":"Crayon","어린이 크레용처럼 오돌토돌하게":"Bumpy, like kids' crayons","분필":"Chalk","칠판 분필, 가루와 끊김":"Blackboard chalk, dusty and broken","갈필 (마른 붓)":"Dry Brush","물감이 마르며 털 자국이 갈라지는 붓 — 길게 그어 보세요":"A brush whose bristle marks split as the paint dries — try a long stroke","스펀지":"Sponge","스펀지로 두드린 구멍 숭숭한 자국":"Porous marks dabbed with a sponge","점묘":"Stippling","펜 끝으로 콕콕 찍은 점 음영":"Dot shading tapped with a pen tip","수채 둥근 붓":"Round Watercolor","가장자리에 물감이 고이는 맑은 수채":"Clear watercolor with paint pooling at the edges","수채 세필":"Fine Watercolor","작은 붓으로 그리는 가는 수채 선":"Thin watercolor lines with a small brush","수채 번짐":"Watercolor Bleed","젖은 종이에 떨어뜨린 듯 가장자리가 풀리는 수채":"Watercolor whose edges spread, as if dropped on wet paper","수채 글레이즈":"Watercolor Glaze","넓고 고르게 까는 투명한 막 — 덧칠할수록 한 겹씩 진해져요":"A wide, even transparent wash — each layer darkens it one step","수채 알갱이":"Granulating Watercolor","울트라마린처럼 안료가 종이 골에 가라앉아 오돌토돌":"Pigment settles into the paper grooves for a bumpy look, like ultramarine","마른 수채":"Dry Watercolor","물기 적은 붓이 종이 결 위로 스치는 거친 수채":"Rough watercolor from a dry brush skimming the paper grain","수채 평붓":"Flat Watercolor","넓은 면을 고르게 바르는 납작 수채 붓, 옅은 털 결":"Flat watercolor brush for even, wide areas, with faint bristle grain","수채 물 번지기":"Watercolor Water Blend","밑색을 끌어와 물로 풀어 주는 붓":"A brush that pulls the underlying color and loosens it with water","유화 둥근 붓":"Round Oil Brush","털 결이 남고 밑색과 섞이는 유화, 길게 그으면 갈라져요":"Oil paint that leaves bristle grain and mixes with the color below; splits on long strokes","유화 평붓":"Flat Oil Brush","넓은 평붓으로 물감을 밀어 바르기":"Push paint on with a wide flat brush","유화 임파스토":"Oil Impasto","물감을 두껍게 올려 붓 자국이 도드라지는 유화":"Oil paint laid on thick so the brushstrokes stand out","마른 붓 (스컴블)":"Dry Brush (Scumble)","물감 적은 붓을 문질러 털 자국만 거칠게 남기기":"Rub a brush with little paint to leave only rough bristle marks","구아슈":"Gouache","불투명하고 무광으로 고르게 덮이는 물감":"Opaque, matte paint that covers evenly","구아슈 둥근 붓":"Round Gouache","작은 면과 디테일을 납작하게 메우는 구아슈":"Gouache for filling small areas and details flat","아크릴":"Acrylic","빨리 마르는 진한 물감, 끝으로 갈수록 털 자국":"Fast-drying rich paint, with bristle marks toward the end","팔레트 나이프":"Palette Knife","칼날로 물감을 펴 바르면 가장자리에 물감 둑이 생겨요":"Spread paint with the blade and ridges of paint form at the edges","색 섞기 붓":"Color Blender","밑색을 끌며 부드럽게 섞기":"Pull the underlying color and blend softly","유화 블렌더":"Oil Blender","마른 붓으로 물감 경계를 털 결 따라 풀어 주기":"Loosen paint edges along the bristle grain with a dry brush","손끝 (문지르기)":"Finger Blend (Smudge)","색 없이 손가락으로 문지르기":"Smudge with your finger, no color","거친 문지르기":"Rough Smudge","결이 남게 문질러 펴기 (목탄·파스텔 문지르기)":"Smudge and spread while keeping the grain (for charcoal/pastel)","붓털 문지르기":"Bristle Smudge","털 결을 따라 색을 끌어 늘이기":"Drag and stretch color along the bristle grain","부드러운 에어브러시":"Soft Airbrush","아주 부드러운 그러데이션":"Very soft gradient","단단한 에어브러시":"Hard Airbrush","가장자리가 조금 더 또렷한 에어브러시":"Airbrush with slightly crisper edges","거친 에어브러시":"Rough Airbrush","알갱이가 보이는 그러데이션 (노이즈 음영)":"Gradient with visible grain (noise shading)","흩뿌린 물감 입자":"Scattered paint particles","종이결 칠":"Paper Texture","종이 결이 살아 있는 넓은 음영":"Broad shading with lively paper grain","캔버스결 칠":"Canvas Texture","캔버스 천 결이 비치는 칠":"Fill with the canvas weave showing through","그런지":"Grunge","낡고 얼룩진 질감 칠하기":"Paint a worn, stained texture","물감 튀김":"Paint Splatter","튀긴 물감 방울":"Splattered paint drops","빗금 칠":"Hatching","칠한 곳에 빗금 무늬":"Hatching pattern where you paint","망점 (스크린톤)":"Halftone (Screentone)","칠한 곳에 망점 무늬":"Halftone pattern where you paint","풀":"Grass","풀잎 무더기를 이어 찍기":"Stamp clumps of grass in a row","털 (레이크)":"Fur (Rake)","나란한 털 결을 한 번에":"Parallel fur strands in one go","털 가닥":"Hair Strands","짐승 털·머리카락 뭉치":"Clumps of animal fur or hair","잎 뿌리기":"Leaf Scatter","흩날리는 잎":"Drifting leaves","구름":"Clouds","뭉게구름 덩이":"Puffy cloud clumps","반짝이":"Sparkle","반짝이는 십자 빛":"Sparkling cross-shaped light","별 뿌리기":"Star Scatter","크기·색이 조금씩 다른 별":"Stars of slightly varying size and color","눈송이":"Snowflakes","흩날리는 눈송이":"Drifting snowflakes","연필":"Pencil","진한 연필":"Dark Pencil","유화 (물감 섞기)":"Oil (Paint Mixing)","수채 번짐 (곱하기)":"Watercolor Bleed (Multiply)","망점(스크린톤)":"Halftone (Screentone)","가져온 브러시":"Imported Brushes","내 브러시":"My Brushes","새 브러시 — 프리셋 ${ADV_PRESETS.length}종":"New Brush — ${ADV_PRESETS.length} presets","고르면 지금 색으로 새 브러시가 만들어져요":"Pick one to create a new brush in the current color","빈 브러시 (끝 모양만 고르기)":"Blank Brush (choose tip shape only)","찾기 — 예: 연필, 목탄, 수채, 결":"Search — e.g. pencil, charcoal, watercolor, grain","브러시를 만들지 못했어요: ":"Couldn't create the brush: ","전체":"All","\"${pr.name}\" 브러시를 만들었어요":"Created the \"${pr.name}\" brush","찾는 프리셋이 없어요":"No matching presets","마법봉":"Magic Wand","빠른 선택":"Quick Selection","고급 브러시":"Advanced Brush","블러":"Blur","퀵 마스크":"Quick Mask","마법봉 (Magic Wand)":"Magic Wand","빠른 선택 (Quick Selection)":"Quick Selection","고급 브러시 (CSP Brush)":"Advanced Brush (CSP Brush)","블러 (Blur)":"Blur","퀵 마스크 (Quick Mask)":"Quick Mask","투명색 전환 (Transparent Color)":"Transparent Color Toggle","아무 키 조합이나 누르세요":"Press any key combination","선택 모드를 바꾸지 못했어요":"Couldn't change the selection mode","Magma의 Copy merged(Ctrl+Shift+C)가 응답하지 않았어요":"Magma's Copy merged (Ctrl+Shift+C) didn't respond","선택 모양을 읽지 못했어요":"Couldn't read the selection shape","선택 위치 정보를 읽지 못했어요":"Couldn't read the selection position","선택 범위 ${n}px 확장":"Expand selection by ${n}px","선택 범위 ${-n}px 축소":"Shrink selection by ${-n}px","${label} 중…":"${label}…","화면 위치 정보를 읽지 못해 멈췄어요":"Stopped: couldn't read the screen position info","화면을 회전하거나 뒤집은 상태에서는 아직 쓸 수 없어요":"This doesn't work yet while the view is rotated or flipped","화면을 읽지 못했어요":"Couldn't read the screen","선택 영역이 화면에 충분히 보이도록 한 뒤 다시 해 주세요":"Make sure enough of the selection is visible on screen, then try again","화면 위치 계산이 맞지 않아 안전을 위해 멈췄어요":"Stopped for safety: the screen position calculation didn't match","${label}: 남는 영역이 없어서 선택을 해제했어요":"${label}: nothing was left, so the selection was cleared","${label} 완료":"${label} done","${grow ? '넓힐' : '좁힐'} 픽셀 수":"Pixels to ${grow ? '넓힐' : '좁힐'}","선택 범위 확장…":"Expand Selection…","선택 범위 축소…":"Shrink Selection…","작업 기록 (내 컴퓨터)…":"History (this computer)…","레이어 속성 (내 화면)…":"Layer Properties (my screen)…","저장된 그림을 찾지 못했어요":"Couldn't find the saved image","방금":"just now","${Math.round(s / 60)}분 전":"${Math.round(s / 60)} min ago","${Math.round(s / 3600)}시간 전":"${Math.round(s / 3600)} h ago","${Math.round(s / 86400)}일 전":"${Math.round(s / 86400)} d ago","오늘":"Today","보드를 연 상태에서 쓸 수 있어요":"Available while a board is open","이 컴퓨터 사용량 ${fmtMB(await histUsage())}":"Used on this computer: ${fmtMB(await histUsage())}","기록을 읽지 못했어요":"Couldn't read the history","아직 저장된 기록이 없어요. 그림을 그리면 몇 분 안에 저장돼요(지금 저장도 돼요).":"Nothing saved yet. It saves within a few minutes after you draw (or use Save now).","레이어 ${p.layers.length}개":"${p.layers.length} layers"," · ${p.changed}개 바뀜":" · ${p.changed} changed"," (빈 레이어)":" (empty layer)","복사":"Copy","복사 중…":"Copying…","복사됨":"Copied","\"${l.name}\"(${fmtTime(p.t).split(' · ')[0]})을 복사했어요 → Edit → Paste on new layer로 붙이세요":"Copied \"${l.name}\" (${fmtTime(p.t).split(' · ')[0]}) → paste it with Edit → Paste on new layer","복사하지 못했어요: ":"Couldn't copy: ","저장 중…":"Saving…","지금 저장":"Save now","지금 상태를 저장했어요":"Saved the current state","마지막 기록과 달라진 게 없어요":"Nothing has changed since the last save","이 보드 기록 지우기":"Clear this board's history","이 보드의 작업 기록을 지웠어요 (Magma 보드는 그대로예요)":"Cleared this board's history (the Magma board itself is unchanged)","지우지 못했어요":"Couldn't delete","보드가 너무 커서 레이어 스트로크를 쓸 수 없어요":"The board is too large for layer stroke","레이어를 고른 뒤 다시 열어 주세요":"Pick a layer, then open this again","\"${L.name}\" 레이어 스트로크를 지웠어요":"Removed the layer stroke from \"${L.name}\"","투명색 사용 중":"Transparent color in use","투명색":"Transparent color"," (${(S.akeys || []).map(comboText).join(', ') || '단축키 없음'}) — 누르면 지금 색과 바꿔요":" (${(S.akeys || []).map(comboText).join(', ') || '단축키 없음'}) — click to swap with the current color","투명색: 그리면 지워져요":"Transparent color: drawing erases","투명색 — 브러시가 지우개가 돼요":"Transparent color — the brush becomes an eraser","원래 색으로 돌아왔어요":"Back to the original color","올가미 채우기를 지우기 모드로 바꾸지 못했어요":"Couldn't switch Lasso fill to erase mode"," 못 했어요: ":" failed: ","지우지":"Erase","투명색 지우기":"Transparent color erase","흐리게 하지":"Blur","잠긴 레이어 획":"Locked layer stroke","투명 부분 잠금이 켜진 레이어라 지울 수 없어요":"This layer has transparent pixel lock on, so it can't be erased","선택 영역이 있으면 고급 브러시로 지울 수 없어요 — 선택을 풀고 다시 해 주세요":"The Advanced Brush can't erase while there's a selection — deselect and try again","흐리게 할 레이어를 먼저 골라 주세요":"Pick a layer to blur first","글자 레이어는 흐리게 할 수 없어요":"Text layers can't be blurred","선택 영역이 있으면 블러를 쓸 수 없어요 — 선택을 풀고 다시 해 주세요":"Blur doesn't work while there's a selection — deselect and try again","흐리게 하지 못했어요: ":"Couldn't blur: ","사각형 선택":"Rectangle Selection","타원 선택":"Ellipse Selection","올가미 선택":"Lasso Selection","리퀴파이":"Liquify","사각형":"Rectangle","타원":"Ellipse","도형":"Shapes","손 (화면 이동)":"Hand (pan)","화면 회전":"Rotate View","확대·축소":"Zoom"," — 누르면 같은 폴더 도구가 펼쳐져요":" — click to open the other tools in this group","레이어 내용 선택 메뉴를 찾지 못했어요":"Couldn't find the layer content selection menu","Magma 편집기를 찾지 못했어요":"Couldn't find the Magma editor","이 레이어를 알아보지 못했어요":"Couldn't recognize this layer","먼저 레이어 하나를 골라 주세요":"Pick a layer first","다른 사람 레이어는 함께 고를 수 없어요":"Other people's layers can't be selected together","지금 레이어는 늘 함께 바뀌어요":"The current layer always changes along with them","한 번에 함께 바꿀 수 있는 레이어는 ${MS_MAX + 1}개까지예요 (되돌리기가 15칸이라서)":"You can change up to ${MS_MAX + 1} layers together at once (undo only has 15 steps)","레이어 ${n + 1}개를 함께 골랐어요 — 변형(Ctrl+T)·이동(V)·눈·속성을 함께 바꿔요":"Selected ${n + 1} layers together — transform (Ctrl+T), move (V), visibility and properties change together","함께 고르기를 풀었어요":"Cleared multi-selection","선택을 풀지 못함":"couldn't deselect","올가미 선택으로 바꾸지 못함":"couldn't switch to Lasso selection","선택 모드를 바꾸지 못함":"couldn't change the selection mode","원래 선택을 다시 긋지 못함":"couldn't redraw the original selection","레이어를 고르지 못함":"couldn't pick the layer","빈 레이어":"empty layer","변형을 시작하지 못함":"couldn't start the transform","왜곡 모드 단추를 찾지 못함":"couldn't find the distort mode button","변형이 시작되지 않음":"transform didn't start","모양이 맞지 않음":"shape doesn't match","모양이 맞지 않음 — Ctrl+Z로 되돌려 주세요":"shape doesn't match — undo with Ctrl+Z","모양이 맞지 않아 그대로 둠":"shape doesn't match, left as is","함께 변형하다 멈췄어요: ":"Stopped while transforming together: ","여러 조각(또는 구멍)으로 된 선택은 지금 레이어만 바뀌어요":"With a selection made of several pieces (or holes), only the current layer changes","선택 영역이 있을 때는 함께 고른 레이어 ${MS_MAX_SEL}개까지만 같이 바뀌어요(레이어마다 되돌리기 3칸) — 지금 레이어만 바뀌어요":"With a selection, only up to ${MS_MAX_SEL} selected layers can change together (3 undo steps per layer) — only the current layer changes","잠긴 레이어(${locked.map((L) => L.name).join(', ')})가 있어 지금 레이어만 바뀌어요":"There are locked layers (${locked.map((L) => L.name).join(', ')}), so only the current layer changes","레이어 ${todo.length}개에 같은 ${ss.kind === 'move' ? '이동' : '변형'}을 하는 중…":"Applying the same ${ss.kind === 'move' ? '이동' : '변형'} to ${todo.length} layers…","앞 레이어에서 멈춤":"stopped at an earlier layer","함께 옮기기":"Move together","함께 변형":"Transform together","${results.length - bad.length}개는 함께 바꿨지만 ${bad.map(([L, e]) => `\"${L.name}\"(${e})`).join(', ')}은 못 바꿨어요":"Changed ${results.length - bad.length} together, but couldn't change ${bad.map(([L, e]) => `\"${L.name}\"(${e})`).join(', ')}","레이어 ${results.length + 1}개를 함께 ${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} (되돌리기는 레이어마다 ${ss.sel ? '3칸: 선택 해제·선택·변형' : '한 칸'})":"${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} ${results.length + 1} layers together (undo per layer: ${ss.sel ? '3칸: 선택 해제·선택·변형' : '한 칸'})","속성을 함께 바꾸다 멈췄어요: ":"Stopped while changing properties together: ","레이어 칸을 찾지 못함":"couldn't find the layer row","불투명도 칸을 찾지 못함":"couldn't find the opacity field","불투명도가 바뀌지 않음":"opacity didn't change","합성 모드를 찾지 못함":"couldn't find the blend mode","합성 모드가 바뀌지 않음":"blend mode didn't change","단추를 찾지 못함":"couldn't find the button","바뀌지 않음":"didn't change","레이어 ${todo.length}개에 같은 속성을 맞추는 중…":"Matching the same properties on ${todo.length} layers…","\"${L.name}\"(고르지 못함)":"\"${L.name}\"(couldn't pick)","속성 함께 바꾸기":"Change properties together","투명 픽셀 잠금":"Lock transparent pixels","잠금":"Lock","클리핑":"Clipping","일부는 못 바꿨어요: ${bad.join(', ')}":"Some couldn't be changed: ${bad.join(', ')}","레이어 ${todo.length + 1}개에 ${Object.keys(ch).map((k) => names[k]).join('·')} 함께 맞췄어요":"Matched ${Object.keys(ch).map((k) => names[k]).join('·')} on ${todo.length + 1} layers","보드가 너무 커서 퀵 마스크를 쓸 수 없어요":"The board is too large for Quick Mask","칠한 모양: Enter = 선택으로 만들기 · Esc = 처음 선택으로 · Ctrl+Z = 한 획 되돌리기":"Painted shape: Enter = make selection · Esc = back to original selection · Ctrl+Z = undo one stroke","화면을 회전·뒤집기 한 상태에서는 퀵 마스크를 선택으로 만들 수 없어요 — 화면을 원래대로 돌리고 Enter":"Quick Mask can't become a selection while the view is rotated/flipped — reset the view, then press Enter","선택을 모두 지웠어요":"Cleared the whole selection","선택 모양을 만들지 못했어요":"Couldn't make the selection shape","퀵 마스크 선택":"Quick Mask selection","퀵 마스크를 선택으로 만들었어요 (${cnt.toLocaleString()}픽셀)":"Turned the Quick Mask into a selection (${cnt.toLocaleString()} px)"," · 작은 조각 ${P.dropped}개는 뺐어요":" · Left out ${P.dropped} small pieces","선택으로 만들지 못했어요: ":"Couldn't make a selection: ","처음 선택으로 돌렸어요":"Restored the original selection","되돌릴 획이 없어요 (Magma 되돌리기는 퀵 마스크에서 나간 뒤에)":"No strokes to undo (use Magma's undo after leaving Quick Mask)","클리핑을 바꾸지 못했어요: ":"Couldn't change clipping: ","다른 사람 레이어는 클리핑할 수 없어요":"Other people's layers can't be clipped","레이어를 고르지 못했어요":"Couldn't pick the layer","클리핑 단추를 찾지 못했어요":"Couldn't find the clipping button","\"${L.name}\" 클리핑 ${L.clippingGroup ? '켬 (아래 레이어 모양 안에만 보여요)' : '끔'}":"\"${L.name}\" clipping ${L.clippingGroup ? '켬 (아래 레이어 모양 안에만 보여요)' : '끔'}","클리핑이 바뀌지 않았어요":"Clipping didn't change","${g.what} 되돌렸어요 (Magma 되돌리기 ${done}칸을 한 번에)":"Undid ${g.what} (${done} Magma undo steps at once)"," · 더 앞의 칸은 15칸 한도로 지워져 있었어요":" · earlier steps were already gone due to the 15-step limit","${g.what} — ${g.n}칸 중 ${done}칸만 되돌렸어요":"${g.what} — undid only ${done} of ${g.n} steps","${r.what} 다시 했어요 (${done}칸을 한 번에)":"Redid ${r.what} (${done} steps at once)","${r.what} — ${r.n}칸 중 ${done}칸만 다시 했어요":"${r.what} — redid only ${done} of ${r.n} steps","칠할 영역을 이 픽셀만큼 넓히거나(+) 좁혀요(−). 0이면 Magma 그대로":"Grows (+) or shrinks (−) the fill area by this many pixels. 0 = Magma's default","확장/축소":"Expand/Shrink","Mode가 opacity·smart이거나 Target layer가 above·below면 확장/축소·빈틈 닫기 없이 Magma 그대로 칠해요":"If Mode is opacity/smart or Target layer is above/below, it fills the normal Magma way, without expand/shrink or gap closing","칠하지 못했어요: ":"Couldn't fill: ","칠할 레이어를 먼저 골라 주세요":"Pick a layer to fill first","그림을 읽지 못했어요":"Couldn't read the image","칠할 곳이 없어요 (너무 많이 좁혔어요)":"Nothing to fill (shrunk too much)","칠할 영역을 만들지 못했어요":"Couldn't create the fill area","올가미 채우기 모드를 맞추지 못해 안전을 위해 멈췄어요":"Stopped for safety: couldn't set the Lasso fill mode","${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀":"${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()} px"," (영역 ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)":" (area ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)"," · 틈 ${ff.bridges}곳 이음":" · bridged ${ff.bridges} gaps","${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀 · 안티에일리어스":"${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()} px · anti-aliased","원 (딱딱)":"Circle (hard)","원 (부드러움)":"Circle (soft)","납작붓":"Flat Brush","연필 (거친)":"Pencil (rough)","스프레이 점":"Spray Dots","붓털":"Bristles","수채 얼룩":"Watercolor Blot","흑연":"Graphite","목탄 끝":"Charcoal Tip","파스텔 덩이":"Pastel Chunk","마른 붓털":"Dry Bristles","납작 붓털":"Flat Bristles","레이크":"Rake","별":"Star","하트":"Heart","잎":"Leaf","삼각형":"Triangle","종이":"Paper","수채 종이":"Watercolor Paper","캔버스 천":"Canvas","노이즈":"Noise","거친 결":"Rough Grain","드로잉지 결":"Drawing Paper","목탄지":"Charcoal Paper","중목 종이":"Medium-Grain Paper","사포":"Sandpaper","빗금":"Hatching","망점":"Halftone","기본 브러시 ":"Basic Brush ","한글이 보이도록 기본 글꼴을 \"${font}\"로 맞췄어요 (끄려면 오른쪽 '자동' 해제)":"Set the default font to \"${font}\" so Korean text shows up (to turn this off, uncheck 'Auto' on the right)","\"${f}\" 글꼴에는 한글이 없어 네모로 보여요 — 글자를 고르고 오른쪽 '한글' 글꼴 단추를 눌러 주세요":"The \"${f}\" font has no Korean characters, so they show as boxes — select the text and click the 'Korean' font button on the right","한글":"Korean","글꼴을 ${f}로 (한글이 보이는 Magma 글꼴)":"Set the font to ${f} (a Magma font that shows Korean)","한글을 치면 자동으로 한글 글꼴로 바꿔요":"Switch to a Korean font automatically when you type Korean","자동":"Auto","내 컴퓨터 글꼴…":"My computer's fonts…","컴퓨터에 설치된 글꼴로 글자를 그림으로 넣어요":"Add text as an image using fonts installed on your computer","글자를 써 주세요":"Please type some text","붙일 레이어를 먼저 골라 주세요":"Pick a layer to paste on first","글자 레이어 말고 그림 레이어를 골라 주세요":"Pick a drawing layer, not a text layer","글자를 붙였어요 — 이동 도구로 옮길 수 있어요":"Text added — you can move it with the Move tool","여기에는 그림이 있는 레이어가 없어요":"There's no layer with a drawing here","\"${L.name}\" 레이어":"Layer \"${L.name}\"","를 골랐어요":" selected"," — 다른 사람 레이어예요":" — it's someone else's layer","채울 레이어를 먼저 골라 주세요":"Pick a layer to fill first","Alt를 떼면 채워요 — 다시 눌러 주세요":"Fills when you release Alt — press it again","올가미 채우기 설정을 바꾸지 못했어요":"Couldn't change the Lasso fill settings","선택 영역을 지웠어요":"Erased the selection","레이어 전체를 지웠어요":"Erased the whole layer","선택 영역을 채웠어요":"Filled the selection","보드 전체를 채웠어요":"Filled the whole board","채우지 못했어요: ":"Couldn't fill: ","레이어 속성 — 브러시 설정 자리에 레이어 속성을 띄워요":"Layer Properties — shows layer properties where the brush settings are","레이어 속성":"Layer Properties","레이어를 고르면 속성이 보여요":"Pick a layer to see its properties","경계 효과 (테두리)":"Border Effect (outline)","테두리 두께":"Border thickness","흐리기":"Blur","테두리 색":"Border color","테두리 안티에일리어싱":"Border anti-aliasing","내 화면에만 보여요 (보드에는 평범한 레이어)":"Only visible on my screen (a normal layer on the board)","효과":"Effect","켜짐":"On","꺼짐":"Off","그리기: 손을 떼면 보드에 들어가요 · Alt: 스포이트 · Shift+클릭: 직선 · Ctrl+Alt 끌기·[ ]: 크기":"Draw: goes onto the board when you release · Alt: eyedropper · Shift+click: straight line · Ctrl+Alt drag / [ ]: size","문지르기: 흐리게(손을 떼면 보드에 들어가요, 되돌리기 2칸) · [ ]: 크기":"Drag: blur (goes onto the board when you release, 2 undo steps) · [ ]: size","빨간 곳 = 선택 · 칠하기: 넣기 · Alt: 반대로 · Enter: 선택으로 · Esc: 처음으로 · [ ]: 크기":"Red = selection · Paint: add · Alt: reverse · Enter: to selection · Esc: start over · [ ]: size","문지르기: 선택(선택이 있으면 추가) · Alt: 빼기 · [ ]: 브러시 크기":"Drag: select (adds to an existing selection) · Alt: subtract · [ ]: brush size","클릭한 영역을 지금 색으로 채워요":"Fills the clicked area with the current color","클릭: 선택 · Shift: 추가 · Alt: 빼기":"Click: select · Shift: add · Alt: subtract","불투명도 (%)":"Opacity (%)","강도 (흐림 반경 px)":"Strength (blur radius px)","밀도 (%)":"Density (%)","선택으로 만들기":"Make Selection","아직 칠한 게 없어요":"Nothing painted yet","처음으로":"Start Over","모두 지우기":"Clear All","선택을 비우고 새로 칠하기":"Empty the selection and paint from scratch","칠하기":"Paint","선택 넣기":"Add to selection","선택 빼기":"Subtract from selection","참조":"Reference","모든 레이어":"All layers","허용 오차":"Tolerance","영역 확장":"Expand area","동작":"Action","선택":"Select","채우기":"Fill","이어진 곳만":"Contiguous","전체 같은 색":"All matching colors","빈틈 닫기":"Close gaps","v${VERSION}으로 업데이트됐어요":"Updated to v${VERSION}","도구":"Tools","색상환":"Color wheel","브러시 목록":"Brush list","레이어":"Layers","펼치기":"Expand","접기":"Collapse","닫기 (Window 메뉴에서 다시 열기)":"Close (reopen from the Window menu)","Window — 패널·화면 배치":"Window — panels & layout","패널":"Panels","화면 모드":"View mode","두 줄":"Two rows","배치 처음으로 (이 모드)":"Reset layout (this mode)","사용자 지정 UI 끄기 (원래 화면)":"Turn off custom UI (original layout)","사용자 지정 UI 켜기":"Turn on custom UI","레이아웃 설정 단추를 찾지 못했어요":"Couldn't find the layout settings button","Magma 화면 조각을 찾지 못함":"couldn't find a Magma screen element","화면 배치에 문제가 생겨 원래 Magma 화면으로 돌렸어요. 다른 기능은 그대로 쓸 수 있어요 (Window 메뉴에서 다시 켜기)":"Something went wrong with the layout, so it switched back to the original Magma layout. Other features still work (turn it back on from the Window menu)","처음 보는 화면 조각: ":"Unknown screen element: ","대칭 자":"Symmetry Ruler","대칭 자 (Symmetry Ruler)":"Symmetry Ruler","원근 격자":"Perspective Grid","대칭":"Symmetry","켜기":"On","끄기":"Off","선 개수":"Lines","선대칭":"Line symmetry","보드 가운데":"Board center","자 지우기":"Remove ruler","축을 세로로":"Make the axis vertical","축을 가로로":"Make the axis horizontal","축을 보드 한가운데로":"Move the axis to the board center","이 보드의 대칭 자를 없애요":"Remove the symmetry ruler from this board","대칭 자는 내 화면에만 보여요. Magma 브러시는 건너편 획마다 되돌리기 한 칸":"Only you see the ruler. With Magma brushes, each mirrored stroke is one undo step","끌기: 새 축 · 가운데 점 끌기: 옮기기 · 네모 점 끌기: 돌리기(Shift: 15°씩)":"Drag: new axis · Drag center dot: move · Drag square: rotate (Shift: 15° steps)","보드에 끌어서 대칭 축을 만드세요 (Shift: 15°씩)":"Drag on the board to make a symmetry axis (Shift: 15° steps)","대칭 획":"Symmetry stroke","대칭 자는 내 화면에만 보여요. Ctrl+Z 한 번에 건너편 획까지 함께 되돌아가요":"Only you see the ruler. One Ctrl+Z undoes the mirrored strokes too","그리기":"Drawing","멈추면 도형으로 보정":"Hold to snap shapes (QuickShape)","멈추면 도형으로 보정 (긋다가 펜을 떼지 않고 1초 멈추기)":"Hold to snap shapes (pause 1 s while drawing)","투명색을 끄고 스포이트로 찍은 색을 골랐어요":"Transparent color off — picked the eyedropper color","채팅창이 닫혀 있을 때 새 채팅을 작게 알리기":"Show a small notice for new chat while the chat is closed","누르면 채팅을 열어요":"Click to open the chat","새 메시지":"New message"};
+  const I18N_EN = /*I18N_EN*/{"클립 스튜디오 기본":"Clip Studio defaults","클립 스튜디오 기본 브러시 (펜)":"Clip Studio default brush (Pen)","클립 스튜디오 기본 브러시 (마커)":"Clip Studio default brush (Marker)","클립 스튜디오 기본 브러시 (연필)":"Clip Studio default brush (Pencil)","클립 스튜디오 기본 브러시 (파스텔)":"Clip Studio default brush (Pastel)","클립 스튜디오 기본 브러시 (두껍게 칠하기)":"Clip Studio default brush (Thick paint)","클립 스튜디오 기본 브러시 (수채)":"Clip Studio default brush (Watercolor)","클립 스튜디오 기본 브러시 (먹)":"Clip Studio default brush (India ink)","클립 스튜디오 기본 브러시 (에어브러시)":"Clip Studio default brush (Airbrush)","클립 스튜디오 기본 브러시 (색 혼합)":"Clip Studio default brush (Blend)","클립 스튜디오 기본 브러시 (지우개)":"Clip Studio default brush (Eraser)","클립 스튜디오 기본 브러시 (기타)":"Clip Studio default brush (Other)","CSP G펜":"CSP G-pen","CSP 둥근 펜":"CSP Mapping pen","CSP 스푼펜":"CSP Turnip pen","CSP 캘리그라피":"CSP Calligraphy","CSP 리얼 G 펜":"CSP Real G-Pen","CSP 거친 펜":"CSP Textured pen","CSP 밀리펜":"CSP Milli pen","CSP 사인펜":"CSP Felt-tip pen","CSP 평면 마커":"CSP Flat marker","CSP 연필":"CSP Pencil","CSP 샤프펜슬":"CSP Mechanical pencil","CSP 목탄":"CSP Charcoal","CSP 크레용":"CSP Crayon","CSP 파스텔":"CSP Pastel","CSP 초크":"CSP Chalk","CSP 채색&융합":"CSP Paint and apply","CSP 드라이 구아슈":"CSP Dry gouache","CSP 구아슈 가는 붓":"CSP Fine gouache","CSP 구아슈 섞기":"CSP Gouache blender","CSP 혼색 원 브러시":"CSP Round mixing brush","CSP 구아슈":"CSP Gouache","CSP 유채":"CSP Oil paint","CSP 점묘":"CSP Dab paint","CSP 두껍게 칠하기(유채)":"CSP Thick oil paint","CSP 수채 번짐":"CSP Watercolor wash","CSP 거친 수채":"CSP Rough watercolor","CSP 물붓":"CSP Water brush","CSP 스플래시 수채":"CSP Splashy watercolor","CSP 수채 평붓":"CSP Flat watercolor","CSP 수채 둥근 붓":"CSP Round watercolor","CSP 습식 수채":"CSP Wet wash","CSP 먹(번짐)":"CSP India ink (bleed)","CSP 먹(마른붓질)":"CSP India ink (dry)","CSP 농담":"CSP Shading ink","CSP 붓펜":"CSP Brush pen","CSP 노이즈":"CSP Noise","CSP 스프레이":"CSP Spray","CSP 번짐 스프레이":"CSP Wet spray","CSP 에어브러시 부드러움":"CSP Soft airbrush","CSP 물보라":"CSP Splash","CSP 색 혼합":"CSP Color mixing","CSP 흐리기":"CSP Blur","CSP 손끝":"CSP Finger tip","CSP 부드러운 수채 번짐":"CSP Soft watercolor blend","CSP 질감이 남게 섞기":"CSP Textured blend","CSP 붓(섞기)":"CSP Blending brush","CSP 지우개 딱딱함":"CSP Hard eraser","CSP 지우개 부드러움":"CSP Soft eraser","CSP 지우개 러프":"CSP Rough eraser","CSP 반죽 지우개":"CSP Kneaded eraser","CSP 점선":"CSP Dotted line","CSP 모래(톤 깎기용)":"CSP Sand (tone scraping)","올가미 브러시를 지우기 모드로 바꾸지 못했어요. 도구 설정 칸에서 erase를 눌러 주세요":"Couldn't switch the Lasso Brush to erase mode. Press erase in the tool settings","그리기 모드를 골라 투명색을 껐어요":"Draw mode selected, transparent color turned off","현재 레이어를 찾지 못했어요":"Couldn't find the current layer","화면을 읽지 못했어요 (Magma 창이 가려져 있지 않은지 확인해 주세요)":"Couldn't read the screen (make sure the Magma window isn't covered)","그림판 밖을 눌렀어요":"You clicked outside the canvas","보드 바깥을 눌렀어요":"You clicked outside the board","영역을 만들지 못했어요":"Couldn't create the area","클립보드 기능을 쓸 수 없어요":"Clipboard isn't available","현재 레이어 참조: 선택이 있는 상태에서는 레이어를 새로 읽을 수 없어요. 선택을 해제하고 한 번 클릭한 뒤 이어서 쓰세요":"Current layer reference: the layer can't be re-read while there's a selection. Deselect, click once, then continue","현재 레이어를 읽지 못했어요":"Couldn't read the current layer","현재 레이어가 비어 있어요":"The current layer is empty","현재 레이어 위치를 읽지 못했어요":"Couldn't read the current layer's position","현재 레이어 크기가 맞지 않아요":"The current layer's size doesn't match","화면 위치 정보를 읽지 못했어요":"Couldn't read the screen position info","화면을 회전하거나 뒤집은 상태에서는 현재 레이어 참조를 쓸 수 없어요":"Current layer reference doesn't work while the view is rotated or flipped"," · 작은 조각 ${P.dropped}개는 점이 너무 많아 뺐어요":" · Left out ${P.dropped} small pieces that had too many points"," · 테두리가 복잡해 조금 매끈하게 그었어요":" · The outline was complex, so it was smoothed a little"," · 선 위를 눌러 빈틈 닫기 없이 했어요":" · You clicked on a line, so gap closing was skipped","그림판 화면을 찾지 못했어요":"Couldn't find the canvas view","영역 계산 중…":"Calculating area…","올가미 채우기 도구로 바꾸지 못했어요":"Couldn't switch to the Lasso fill tool","안전을 위해 멈췄어요: 올가미 채우기를 그리기 모드로 바꾸지 못했어요":"Stopped for safety: couldn't switch Lasso fill to draw mode","마법봉 선택":"Magic Wand selection",", 테두리 ${R.pieces}개":", ${R.pieces} outlines",", 구멍 ${holes}개":", ${holes} holes","${fill ? '채움' : '선택'}: ${count.toLocaleString()}픽셀${parts} (${(ms / 1000).toFixed(1)}초)":"${fill ? '채움' : '선택'}: ${count.toLocaleString()} px${parts} (${(ms / 1000).toFixed(1)}s)"," · 화면 기준":" · based on screen","오류: ":"Error: ","화면을 회전·뒤집은 상태에서는 현재 레이어 참조를 쓸 수 없어요":"Current layer reference doesn't work while the view is rotated/flipped","빼는 중… (손을 떼면 확정)":"Subtracting… (release to confirm)","선택 중… (손을 떼면 확정)":"Selecting… (release to confirm)","취소했어요":"Canceled","${Q.subtract ? '뺌' : '선택'}: ${count.toLocaleString()}픽셀":"${Q.subtract ? '뺌' : '선택'}: ${count.toLocaleString()} px","브러시 크기 ${BSZ.size}":"Brush size ${BSZ.size}","클립 스튜디오 브러시(.sut) 파일이 아니에요":"This isn't a Clip Studio brush (.sut) file","브러시 설정을 찾지 못했어요":"Couldn't find the brush settings","브러시":"Brush","합성 모드(${num(v.CompositeMode, 0)}번)는 '보통'으로 그려요 — 지우개 브러시면 ⚙ 설정 → 잉크 → 합성 모드에서 '지우기'":"Blend mode #${num(v.CompositeMode, 0)} draws as 'Normal' — for an eraser brush, set ⚙ Settings → Ink → Blend mode to 'Erase'","셰이더: ":"Shader: ","셰이더 연결: ":"Shader link: ","WebGL2를 쓸 수 없어요":"WebGL2 isn't available","'${brush.name}'의 필압·속도 곡선을 예전 버전이 잘못 읽었어요 — 지금은 곧은 곡선으로 그려요. .sut를 다시 가져오면 원래 곡선대로 돼요":"An older version misread the pressure/speed curves of '${brush.name}' — it now draws with straight curves. Re-import the .sut to get the original curves","수채":"Watercolor","숨겨진 레이어에는 그릴 수 없어요 — 레이어의 눈 아이콘을 켜 주세요":"You can't draw on a hidden layer — turn on the layer's eye icon","잠긴 레이어에는 그릴 수 없어요 — 레이어 잠금을 풀어 주세요":"You can't draw on a locked layer — unlock the layer","지우지 못했어요: ":"Couldn't erase: ","획을 보드에 넣지 못했어요: ":"Couldn't add the stroke to the board: ","칠하지":"Paint","브러시를 준비하지 못했어요: ":"Couldn't prepare the brush: ","먼저 오른쪽 설정 칸에서 브러시(.sut)를 가져와 주세요":"First import a brush (.sut) in the settings panel on the right","이 브러시는 지우개·특수 합성이라 아직 쓸 수 없어요":"This brush is an eraser/special blend, so it can't be used yet","이 브러시는 끝 모양 PNG가 필요해요 — 설정 칸의 \"끝 모양 PNG 넣기\"를 눌러 주세요":"This brush needs a tip shape PNG — click \"Add tip shape PNG\" in the settings panel","그릴 레이어를 먼저 골라 주세요":"Pick a layer to draw on first","글자 레이어에는 그릴 수 없어요 — 그림 레이어를 골라 주세요":"You can't draw on a text layer — pick a drawing layer","주의: Magma 설정 \"붙여넣기를 새 레이어로\"가 켜져 있어 획마다 새 레이어가 생겨요":"Note: Magma's \"Paste as new layer\" setting is on, so every stroke creates a new layer","＋ 브러시 가져오기 (.sut)":"＋ Import Brush (.sut)","＋ 기본 브러시":"＋ Basic Brush","클립 스튜디오 파일 없이, 기본 끝 모양으로 새 브러시를 만들어요":"Create a new brush with a basic tip shape — no Clip Studio file needed","끝 모양 바꾸기":"Change Tip Shape","⚙ 브러시 설정":"⚙ Brush Settings","크기·잉크·색 혼합(물감 섞기)·끝 모양·획·스프레이·텍스처·색 흔들기를 하나하나 바꿔요":"Adjust size, ink, color mixing (paint mixing), tip shape, stroke, spray, texture and color jitter one by one","지우기":"Delete","＋ 새 브러시 (프리셋)":"＋ New Brush (Preset)","연필·G펜·수채·유화(물감 섞기)·손끝·에어브러시·스프레이 등 프리셋으로 새 브러시를 만들어요":"Create a new brush from presets like pencil, G-Pen, watercolor, oil (paint mixing), finger blend, airbrush, spray and more","브러시 ${files.length - fails}개를 가져왔어요":"Imported ${files.length - fails} brushes"," — 끝 모양 PNG가 필요한 브러시가 있어요":" — some brushes need a tip shape PNG","한 번 더 누르면 지워요":"Click again to delete","브러시가 없어요. \"＋ 새 브러시 (프리셋)\"으로 만들거나 클립 스튜디오 브러시 파일(.sut)을 가져오세요.":"No brushes yet. Make one with \"＋ New Brush (Preset)\" or import a Clip Studio brush file (.sut).","⚠ 보호된 소재 ${need}개: \"끝 모양 바꾸기\"에서 기본 모양을 고르거나, CSP에서 PNG로 저장해 넣어 주세요":"⚠ ${need} protected materials: pick a basic shape in \"Change Tip Shape\", or save them as PNG in CSP and add them","아직 안 되는 기능: ${cur.unsupported.join(', ')} (나머지 설정으로 그려요)":"Not supported yet: ${cur.unsupported.join(', ')} (drawing with the other settings)","끝 모양·텍스처":"Tip Shape & Texture","기본 모양":"Basic shapes","을 누르면 준비된 모양 중에서 고를 수 있어요. 내 그림을 쓰려면":"lets you pick from ready-made shapes. To use your own image, add it with","PNG 고르기":"Choose PNG","로 넣어요(검은 그림 + 투명 배경).\n        클립 스튜디오의 보호된 소재는 CSP에서 캔버스에 붙여 PNG로 저장한 뒤 넣으면 똑같이 쓸 수 있어요.":"(black drawing + transparent background).\n        Protected Clip Studio materials work the same way: paste them onto a canvas in CSP, save as PNG, then add them.","닫기":"Close","끝 모양 ${i + 1}":"Tip shape ${i + 1}","2중 브러시 끝 모양":"Dual brush tip shape","텍스처":"Texture","없음":"None","모양 필요 (미리보기는 소재 썸네일)":"Shape needed (preview is the material thumbnail)","준비됨":"Ready","기본 모양: ":"Basic shape: ","모양을 넣지 못했어요: ":"Couldn't add the shape: ","바꾸기":"Change","그림을 열지 못했어요: ":"Couldn't open the image: ","필압":"Pressure","속도":"Speed","무작위":"Random","먼저 브러시를 골라 주세요":"Pick a brush first","브러시 설정 — ":"Brush Settings — ","  ${t} 최소":"  ${t} min","크기":"Size","브러시 크기":"Brush size","크기 효과":"Size dynamics","필압 곡선":"Pressure curve","필압 곡선: 100보다 작으면 살살 눌러도 굵고 진하게, 크면 세게 눌러야 굵어져요(펜에만 적용).":"Pressure curve: below 100, light pressure gives thick, dark lines; above 100, you have to press harder to get thick lines (pen only).","잉크":"Ink","불투명도":"Opacity","불투명도 효과":"Opacity dynamics","흐름(밀도)":"Flow (density)","흐름 효과":"Flow dynamics","안티에일리어스":"Anti-aliasing","합성 모드":"Blend mode","보통":"Normal","물감 겹치기":"Glaze","곱하기":"Multiply","물감 겹치기: 투명한 물감을 덧칠한 것처럼 감산 혼합돼요(노랑 위에 파랑 = 초록, 수채). 곱하기: 화면 곱하기라 겹칠수록 어둡고 탁해요(마커). 지우기: 이 브러시 모양 그대로 지우개가 돼요. 같은 레이어 안의 그림과 섞여요.":"Glaze: blends subtractively, like layering transparent paint (blue over yellow = green, watercolor). Multiply: screen multiply, so overlaps get darker and muddier (marker). Erase: the brush becomes an eraser with this exact shape. Mixes with the drawing on the same layer.","수채 경계":"Watercolor edge","수채 경계 켜기":"Enable watercolor edge","범위":"Range","투명도 영향":"Opacity influence","명도 영향":"Brightness influence","물이 마르면서 가장자리에 물감이 고인 것처럼 획 테두리 안쪽을 진하게 해요. 그리는 동안에도 결과와 똑같이 보여요.":"Darkens the inside of the stroke's edge, as if paint pooled at the rim while drying. Looks the same while you draw as in the final result.","물감":"Paint","붓털 켜기":"Enable bristles","붓 모양":"Brush shape","둥근 붓":"Round brush","평붓":"Flat brush","털 수":"Bristle count","털 결 세기":"Bristle texture strength","털마다 색 차이":"Per-bristle color variation","붓털: 털마다 물감을 따로 묻혀 끊김 없는 결이 남아요. 획 탭의 \\'물감 마름\\'을 같이 쓰면 길게 그을수록 털이 하나씩 말라 갈라져요. 끝 모양·각도 설정 대신 쓰여요.":"Bristles: each bristle carries its own paint, leaving a continuous texture. Combine with \\'Paint dry-out\\' in the Stroke tab and the bristles dry and split one by one the longer you drag. Used instead of the tip shape and angle settings.","두께감":"Impasto","광택":"Gloss","두께감: 물감이 두껍게 올라온 것처럼 붓 자국 굴곡에 왼쪽 위 빛과 그림자를 넣어요(0 = 끔). 광택이 높을수록 유화처럼 반짝여요.":"Impasto: adds light from the upper left and shadows to the brushstroke ridges, as if the paint is built up thick (0 = off). Higher gloss makes it shine like oil paint.","젖은 물감(수채)":"Wet paint (watercolor)","가장자리 흔들림":"Edge wobble","가장자리 풀림":"Edge bleed","안료 알갱이":"Pigment granulation","젖은 물감: 물이 닿은 경계가 또렷하고 구불구불해져요. 풀림을 올리면 젖은 종이처럼 번지고, 알갱이는 종이 골에 안료가 가라앉은 오돌토돌함이에요. 수채 경계와 함께 쓰면 좋아요.":"Wet paint: edges where the water reaches become crisp and wavy. Raise bleed to spread like wet paper; granulation is the bumpy look of pigment settling into the paper grooves. Works well with watercolor edge.","색 혼합":"Color mixing","블렌드":"Blend","물감 섞기":"Paint mixing","물감량":"Paint amount","물감량 효과":"Paint amount dynamics","물감 농도":"Paint density","물감 농도 효과":"Paint density dynamics","색 늘이기":"Color stretch","섞을 밑색":"Mix with","현재 레이어":"Current layer","보이는 그림":"Visible image","물감량 100 = 메인 색만 · 0 = 밑색만 끌고 다님(손끝). 물감 농도가 낮을수록 묽게, 색 늘이기가 클수록 끌고 온 색이 길게 남아요.":"Paint amount 100 = main color only · 0 = drags only the underlying color (finger blend). Lower paint density = thinner paint; higher color stretch = the dragged color lasts longer.","끝 모양":"Tip shape","경도(원형일 때)":"Hardness (round tip)","두께":"Thickness","두께 방향":"Thickness direction","가로":"Horizontal","세로":"Vertical","두께 효과":"Thickness dynamics","각도":"Angle","각도: 필압":"Angle: pressure","각도: 진행 방향":"Angle: direction","각도: 무작위":"Angle: random","  무작위 정도":"  Randomness","좌우 반전":"Flip horizontal","반전":"Flip","상하 반전":"Flip vertical","여러 모양 순서":"Multiple tip order","차례":"Sequential","왕복":"Back and forth","획":"Stroke","간격":"Spacing","간격 효과":"Spacing dynamics","손떨림 보정":"Stabilizer","입(시작 가늘게)":"Start taper","출(끝 가늘게)":"End taper","리본(끝 모양을 띠처럼 늘이기)":"Ribbon (stretch the tip like a band)","흩어짐":"Scatter","물감 마름(길이)":"Paint dry-out (length)","  마른 뒤 남는 양":"  Amount left when dry","물감 마름: 그 길이만큼 그으면 붓의 물감이 줄어 획이 갈라져요(갈필). 0이면 꺼짐.":"Paint dry-out: after dragging this far, the brush runs low on paint and the stroke splits (dry brush). 0 = off.","스프레이":"Spray","스프레이 켜기":"Enable spray","입자 크기":"Particle size","입자 크기를 브러시 크기에 맞춤":"Match particle size to brush size","입자 크기 효과":"Particle size dynamics","입자 수":"Particle count","입자 수 효과":"Particle count dynamics","가운데로 모임":"Gather to center","텍스처를 쓰고 있어요":"Using a texture","텍스처 없음 — 아래 단추로 고르세요":"No texture — pick one with the button below","농도":"Density","배율":"Scale","농도 강조":"Density boost","결 방식":"Grain mode","무늬 덮기":"Overlay pattern","깊이":"Depth","골에 남는 가루(깊이)":"Powder left in grooves (depth)","깊이: 종이 결을 높낮이로 써요. 살살 칠하면 높은 곳에만 묻고, 세게·여러 번 칠할수록 골까지 채워져요(연필·목탄·파스텔). 농도 = 골 깊이.":"Depth: uses the paper grain as height. Light strokes only touch the high spots; pressing harder or layering fills the grooves too (pencil, charcoal, pastel). Density = groove depth.","도장마다 적용(끄면 획 전체에, 깊이 방식은 늘 획 전체)":"Apply per stamp (off = whole stroke; depth mode always applies to the whole stroke)","2중 브러시":"Dual brush","이 브러시에는 2중 브러시가 없어요. 클립 스튜디오 브러시(.sut)에 2중 브러시가 있으면 여기서 바꿀 수 있어요.":"This brush has no dual brush. If a Clip Studio brush (.sut) has one, you can change it here.","2중 브러시 쓰기":"Use dual brush","흐름":"Flow","흩뿌리기":"Scatter","두 번째 끝 모양으로 찍은 무늬 안쪽만 남겨서 거친 질감을 만들어요.":"Keeps only the inside of the pattern stamped with the second tip shape, for a rough texture.","색 흔들기":"Color jitter","색상":"Hue","채도":"Saturation","명도":"Brightness","도장마다 색을 이만큼 흔들어요(반짝이·잎 같은 브러시에 좋아요).":"Jitters the color this much per stamp (great for brushes like glitter or leaves).","이름·관리":"Name & Manage","이름":"Name","분류":"Category","끝 모양·텍스처 바꾸기…":"Change tip shape & texture…","이 브러시 복제":"Duplicate this brush"," 사본":" copy","연필·스케치":"Pencil & Sketch","잉크·펜":"Ink & Pen","마커":"Marker","드라이 (목탄·파스텔)":"Dry (Charcoal & Pastel)","물감 (유화·구아슈)":"Paint (Oil & Gouache)","섞기·문지르기":"Blend & Smudge","에어브러시":"Airbrush","질감·특수":"Texture & Special","장식·자연":"Decoration & Nature","HB 연필":"HB Pencil","단단하고 옅은 선. 살살 그으면 종이 이에만 걸려요":"Hard, light lines. Light strokes catch only the paper's tooth","4B 연필":"4B Pencil","부드럽고 진한 흑연. 눌러 칠하면 결이 메워져요":"Soft, dark graphite. Press hard to fill in the grain","8B 연필":"8B Pencil","아주 무른 연필. 진하고 번들거리는 검정":"A very soft pencil. Dark, shiny black","샤프":"Mechanical Pencil","가늘고 일정한 밑그림 선":"Thin, even sketch lines","색연필":"Colored Pencil","색이 종이 결에 걸리는 밀랍 질감, 겹쳐 칠해 진하게":"Waxy texture where color catches the paper grain; layer it to darken","연필 눕혀 칠하기":"Pencil (side)","연필을 눕혀 넓게 음영 넣기":"Lay the pencil on its side for broad shading","목탄 연필":"Charcoal Pencil","거칠고 깊은 검정, 결이 가로로 비쳐요":"Rough, deep black with horizontal grain showing through","G펜":"G-Pen","필압으로 굵기가 바뀌는 매끈한 펜 선":"Smooth pen lines whose width changes with pressure","마루펜":"Maru Pen","가늘고 단단한 펜. 세밀한 선":"Thin, firm pen for fine lines","테크니컬 펜":"Technical Pen","굵기가 일정한 제도 펜":"Drafting pen with a constant width","붓펜":"Brush Pen","끝이 날렵한 붓펜":"Brush pen with a sharp tip","먹 붓":"Ink Brush","누르는 만큼 확 굵어지는 먹선":"Ink lines that swell sharply with pressure","마른 먹":"Dry Ink","그을수록 먹이 말라 갈라지는 붓 선":"Brush lines where the ink dries and splits as you drag","캘리그래피 펜":"Calligraphy Pen","각도가 고정된 납작 펜촉 (가로획 굵고 세로획 가늘게)":"Flat nib at a fixed angle (thick horizontal, thin vertical strokes)","펠트펜":"Felt Pen","가장자리가 살짝 번진 사인펜":"Felt-tip pen with slightly bleeding edges","사각 마커":"Chisel Marker","겹칠수록 진해지는 납작 마커":"Flat marker that darkens where strokes overlap","알코올 마커":"Alcohol Marker","부드러운 가장자리, 덧칠하면 한 단계씩 진해짐":"Soft edges; each layer darkens it one step","형광펜":"Highlighter","아래 그림이 비치는 형광 띠":"Highlighter band that lets the drawing below show through","버드나무 목탄":"Willow Charcoal","가볍고 부드러운 목탄. 손에 묻어나듯 결이 많이 남아요":"Light, soft charcoal. Leaves lots of grain, like it rubs off on your hand","압축 목탄":"Compressed Charcoal","진하고 무거운 검정, 세게 누르면 꽉 메워짐":"Dark, heavy black; fills in solid when you press hard","목탄 옆면":"Charcoal (side)","목탄을 눕혀 넓게 끌기 — 큰 면과 음영":"Drag charcoal on its side — big areas and shading","콩테":"Conté","단단한 사각 스틱, 또렷한 결":"Hard square stick with crisp grain","소프트 파스텔":"Soft Pastel","가루가 날리는 부드러운 파스텔, 큰 종이 결":"Soft, dusty pastel with large paper grain","오일 파스텔":"Oil Pastel","끈적하게 밀리며 밑색과 살짝 섞이는 밀랍 파스텔":"Waxy pastel that drags stickily and mixes slightly with the color below","크레용":"Crayon","어린이 크레용처럼 오돌토돌하게":"Bumpy, like kids' crayons","분필":"Chalk","칠판 분필, 가루와 끊김":"Blackboard chalk, dusty and broken","갈필 (마른 붓)":"Dry Brush","물감이 마르며 털 자국이 갈라지는 붓 — 길게 그어 보세요":"A brush whose bristle marks split as the paint dries — try a long stroke","스펀지":"Sponge","스펀지로 두드린 구멍 숭숭한 자국":"Porous marks dabbed with a sponge","점묘":"Stippling","펜 끝으로 콕콕 찍은 점 음영":"Dot shading tapped with a pen tip","수채 둥근 붓":"Round Watercolor","가장자리에 물감이 고이는 맑은 수채":"Clear watercolor with paint pooling at the edges","수채 세필":"Fine Watercolor","작은 붓으로 그리는 가는 수채 선":"Thin watercolor lines with a small brush","수채 번짐":"Watercolor Bleed","젖은 종이에 떨어뜨린 듯 가장자리가 풀리는 수채":"Watercolor whose edges spread, as if dropped on wet paper","수채 글레이즈":"Watercolor Glaze","넓고 고르게 까는 투명한 막 — 덧칠할수록 한 겹씩 진해져요":"A wide, even transparent wash — each layer darkens it one step","수채 알갱이":"Granulating Watercolor","울트라마린처럼 안료가 종이 골에 가라앉아 오돌토돌":"Pigment settles into the paper grooves for a bumpy look, like ultramarine","마른 수채":"Dry Watercolor","물기 적은 붓이 종이 결 위로 스치는 거친 수채":"Rough watercolor from a dry brush skimming the paper grain","수채 평붓":"Flat Watercolor","넓은 면을 고르게 바르는 납작 수채 붓, 옅은 털 결":"Flat watercolor brush for even, wide areas, with faint bristle grain","수채 물 번지기":"Watercolor Water Blend","밑색을 끌어와 물로 풀어 주는 붓":"A brush that pulls the underlying color and loosens it with water","유화 둥근 붓":"Round Oil Brush","털 결이 남고 밑색과 섞이는 유화, 길게 그으면 갈라져요":"Oil paint that leaves bristle grain and mixes with the color below; splits on long strokes","유화 평붓":"Flat Oil Brush","넓은 평붓으로 물감을 밀어 바르기":"Push paint on with a wide flat brush","유화 임파스토":"Oil Impasto","물감을 두껍게 올려 붓 자국이 도드라지는 유화":"Oil paint laid on thick so the brushstrokes stand out","마른 붓 (스컴블)":"Dry Brush (Scumble)","물감 적은 붓을 문질러 털 자국만 거칠게 남기기":"Rub a brush with little paint to leave only rough bristle marks","구아슈":"Gouache","불투명하고 무광으로 고르게 덮이는 물감":"Opaque, matte paint that covers evenly","구아슈 둥근 붓":"Round Gouache","작은 면과 디테일을 납작하게 메우는 구아슈":"Gouache for filling small areas and details flat","아크릴":"Acrylic","빨리 마르는 진한 물감, 끝으로 갈수록 털 자국":"Fast-drying rich paint, with bristle marks toward the end","팔레트 나이프":"Palette Knife","칼날로 물감을 펴 바르면 가장자리에 물감 둑이 생겨요":"Spread paint with the blade and ridges of paint form at the edges","색 섞기 붓":"Color Blender","밑색을 끌며 부드럽게 섞기":"Pull the underlying color and blend softly","유화 블렌더":"Oil Blender","마른 붓으로 물감 경계를 털 결 따라 풀어 주기":"Loosen paint edges along the bristle grain with a dry brush","손끝 (문지르기)":"Finger Blend (Smudge)","색 없이 손가락으로 문지르기":"Smudge with your finger, no color","거친 문지르기":"Rough Smudge","결이 남게 문질러 펴기 (목탄·파스텔 문지르기)":"Smudge and spread while keeping the grain (for charcoal/pastel)","붓털 문지르기":"Bristle Smudge","털 결을 따라 색을 끌어 늘이기":"Drag and stretch color along the bristle grain","부드러운 에어브러시":"Soft Airbrush","아주 부드러운 그러데이션":"Very soft gradient","단단한 에어브러시":"Hard Airbrush","가장자리가 조금 더 또렷한 에어브러시":"Airbrush with slightly crisper edges","거친 에어브러시":"Rough Airbrush","알갱이가 보이는 그러데이션 (노이즈 음영)":"Gradient with visible grain (noise shading)","흩뿌린 물감 입자":"Scattered paint particles","종이결 칠":"Paper Texture","종이 결이 살아 있는 넓은 음영":"Broad shading with lively paper grain","캔버스결 칠":"Canvas Texture","캔버스 천 결이 비치는 칠":"Fill with the canvas weave showing through","그런지":"Grunge","낡고 얼룩진 질감 칠하기":"Paint a worn, stained texture","물감 튀김":"Paint Splatter","튀긴 물감 방울":"Splattered paint drops","빗금 칠":"Hatching","칠한 곳에 빗금 무늬":"Hatching pattern where you paint","망점 (스크린톤)":"Halftone (Screentone)","칠한 곳에 망점 무늬":"Halftone pattern where you paint","풀":"Grass","풀잎 무더기를 이어 찍기":"Stamp clumps of grass in a row","털 (레이크)":"Fur (Rake)","나란한 털 결을 한 번에":"Parallel fur strands in one go","털 가닥":"Hair Strands","짐승 털·머리카락 뭉치":"Clumps of animal fur or hair","잎 뿌리기":"Leaf Scatter","흩날리는 잎":"Drifting leaves","구름":"Clouds","뭉게구름 덩이":"Puffy cloud clumps","반짝이":"Sparkle","반짝이는 십자 빛":"Sparkling cross-shaped light","별 뿌리기":"Star Scatter","크기·색이 조금씩 다른 별":"Stars of slightly varying size and color","눈송이":"Snowflakes","흩날리는 눈송이":"Drifting snowflakes","연필":"Pencil","진한 연필":"Dark Pencil","유화 (물감 섞기)":"Oil (Paint Mixing)","수채 번짐 (곱하기)":"Watercolor Bleed (Multiply)","망점(스크린톤)":"Halftone (Screentone)","가져온 브러시":"Imported Brushes","내 브러시":"My Brushes","새 브러시 — 프리셋 ${ADV_PRESETS.length}종":"New Brush — ${ADV_PRESETS.length} presets","고르면 지금 색으로 새 브러시가 만들어져요":"Pick one to create a new brush in the current color","빈 브러시 (끝 모양만 고르기)":"Blank Brush (choose tip shape only)","찾기 — 예: 연필, 목탄, 수채, 결":"Search — e.g. pencil, charcoal, watercolor, grain","브러시를 만들지 못했어요: ":"Couldn't create the brush: ","전체":"All","\"${pr.name}\" 브러시를 만들었어요":"Created the \"${pr.name}\" brush","찾는 프리셋이 없어요":"No matching presets","마법봉":"Magic Wand","빠른 선택":"Quick Selection","고급 브러시":"Advanced Brush","블러":"Blur","퀵 마스크":"Quick Mask","마법봉 (Magic Wand)":"Magic Wand","빠른 선택 (Quick Selection)":"Quick Selection","고급 브러시 (CSP Brush)":"Advanced Brush (CSP Brush)","블러 (Blur)":"Blur","퀵 마스크 (Quick Mask)":"Quick Mask","투명색 전환 (Transparent Color)":"Transparent Color Toggle","아무 키 조합이나 누르세요":"Press any key combination","선택 모드를 바꾸지 못했어요":"Couldn't change the selection mode","Magma의 Copy merged(Ctrl+Shift+C)가 응답하지 않았어요":"Magma's Copy merged (Ctrl+Shift+C) didn't respond","선택 모양을 읽지 못했어요":"Couldn't read the selection shape","선택 위치 정보를 읽지 못했어요":"Couldn't read the selection position","선택 범위 ${n}px 확장":"Expand selection by ${n}px","선택 범위 ${-n}px 축소":"Shrink selection by ${-n}px","${label} 중…":"${label}…","화면 위치 정보를 읽지 못해 멈췄어요":"Stopped: couldn't read the screen position info","화면을 회전하거나 뒤집은 상태에서는 아직 쓸 수 없어요":"This doesn't work yet while the view is rotated or flipped","화면을 읽지 못했어요":"Couldn't read the screen","선택 영역이 화면에 충분히 보이도록 한 뒤 다시 해 주세요":"Make sure enough of the selection is visible on screen, then try again","화면 위치 계산이 맞지 않아 안전을 위해 멈췄어요":"Stopped for safety: the screen position calculation didn't match","${label}: 남는 영역이 없어서 선택을 해제했어요":"${label}: nothing was left, so the selection was cleared","${label} 완료":"${label} done","${grow ? '넓힐' : '좁힐'} 픽셀 수":"Pixels to ${grow ? '넓힐' : '좁힐'}","선택 범위 확장…":"Expand Selection…","선택 범위 축소…":"Shrink Selection…","작업 기록 (내 컴퓨터)…":"History (this computer)…","레이어 속성 (내 화면)…":"Layer Properties (my screen)…","저장된 그림을 찾지 못했어요":"Couldn't find the saved image","방금":"just now","${Math.round(s / 60)}분 전":"${Math.round(s / 60)} min ago","${Math.round(s / 3600)}시간 전":"${Math.round(s / 3600)} h ago","${Math.round(s / 86400)}일 전":"${Math.round(s / 86400)} d ago","오늘":"Today","보드를 연 상태에서 쓸 수 있어요":"Available while a board is open","이 컴퓨터 사용량 ${fmtMB(await histUsage())}":"Used on this computer: ${fmtMB(await histUsage())}","기록을 읽지 못했어요":"Couldn't read the history","아직 저장된 기록이 없어요. 그림을 그리면 몇 분 안에 저장돼요(지금 저장도 돼요).":"Nothing saved yet. It saves within a few minutes after you draw (or use Save now).","레이어 ${p.layers.length}개":"${p.layers.length} layers"," · ${p.changed}개 바뀜":" · ${p.changed} changed"," (빈 레이어)":" (empty layer)","복사":"Copy","복사 중…":"Copying…","복사됨":"Copied","\"${l.name}\"(${fmtTime(p.t).split(' · ')[0]})을 복사했어요 → Edit → Paste on new layer로 붙이세요":"Copied \"${l.name}\" (${fmtTime(p.t).split(' · ')[0]}) → paste it with Edit → Paste on new layer","복사하지 못했어요: ":"Couldn't copy: ","저장 중…":"Saving…","지금 저장":"Save now","지금 상태를 저장했어요":"Saved the current state","마지막 기록과 달라진 게 없어요":"Nothing has changed since the last save","이 보드 기록 지우기":"Clear this board's history","이 보드의 작업 기록을 지웠어요 (Magma 보드는 그대로예요)":"Cleared this board's history (the Magma board itself is unchanged)","지우지 못했어요":"Couldn't delete","보드가 너무 커서 레이어 스트로크를 쓸 수 없어요":"The board is too large for layer stroke","레이어를 고른 뒤 다시 열어 주세요":"Pick a layer, then open this again","\"${L.name}\" 레이어 스트로크를 지웠어요":"Removed the layer stroke from \"${L.name}\"","투명색 사용 중":"Transparent color in use","투명색":"Transparent color"," (${(S.akeys || []).map(comboText).join(', ') || '단축키 없음'}) — 누르면 지금 색과 바꿔요":" (${(S.akeys || []).map(comboText).join(', ') || '단축키 없음'}) — click to swap with the current color","투명색: 그리면 지워져요":"Transparent color: drawing erases","투명색 — 브러시가 지우개가 돼요":"Transparent color — the brush becomes an eraser","원래 색으로 돌아왔어요":"Back to the original color","올가미 채우기를 지우기 모드로 바꾸지 못했어요":"Couldn't switch Lasso fill to erase mode"," 못 했어요: ":" failed: ","지우지":"Erase","투명색 지우기":"Transparent color erase","흐리게 하지":"Blur","잠긴 레이어 획":"Locked layer stroke","투명 부분 잠금이 켜진 레이어라 지울 수 없어요":"This layer has transparent pixel lock on, so it can't be erased","선택 영역이 있으면 고급 브러시로 지울 수 없어요 — 선택을 풀고 다시 해 주세요":"The Advanced Brush can't erase while there's a selection — deselect and try again","흐리게 할 레이어를 먼저 골라 주세요":"Pick a layer to blur first","글자 레이어는 흐리게 할 수 없어요":"Text layers can't be blurred","선택 영역이 있으면 블러를 쓸 수 없어요 — 선택을 풀고 다시 해 주세요":"Blur doesn't work while there's a selection — deselect and try again","흐리게 하지 못했어요: ":"Couldn't blur: ","사각형 선택":"Rectangle Selection","타원 선택":"Ellipse Selection","올가미 선택":"Lasso Selection","리퀴파이":"Liquify","사각형":"Rectangle","타원":"Ellipse","도형":"Shapes","손 (화면 이동)":"Hand (pan)","화면 회전":"Rotate View","확대·축소":"Zoom"," — 누르면 같은 폴더 도구가 펼쳐져요":" — click to open the other tools in this group","레이어 내용 선택 메뉴를 찾지 못했어요":"Couldn't find the layer content selection menu","Magma 편집기를 찾지 못했어요":"Couldn't find the Magma editor","이 레이어를 알아보지 못했어요":"Couldn't recognize this layer","먼저 레이어 하나를 골라 주세요":"Pick a layer first","다른 사람 레이어는 함께 고를 수 없어요":"Other people's layers can't be selected together","지금 레이어는 늘 함께 바뀌어요":"The current layer always changes along with them","한 번에 함께 바꿀 수 있는 레이어는 ${MS_MAX + 1}개까지예요 (되돌리기가 15칸이라서)":"You can change up to ${MS_MAX + 1} layers together at once (undo only has 15 steps)","레이어 ${n + 1}개를 함께 골랐어요 — 변형(Ctrl+T)·이동(V)·눈·속성을 함께 바꿔요":"Selected ${n + 1} layers together — transform (Ctrl+T), move (V), visibility and properties change together","함께 고르기를 풀었어요":"Cleared multi-selection","선택을 풀지 못함":"couldn't deselect","올가미 선택으로 바꾸지 못함":"couldn't switch to Lasso selection","선택 모드를 바꾸지 못함":"couldn't change the selection mode","원래 선택을 다시 긋지 못함":"couldn't redraw the original selection","레이어를 고르지 못함":"couldn't pick the layer","빈 레이어":"empty layer","변형을 시작하지 못함":"couldn't start the transform","왜곡 모드 단추를 찾지 못함":"couldn't find the distort mode button","변형이 시작되지 않음":"transform didn't start","모양이 맞지 않음":"shape doesn't match","모양이 맞지 않음 — Ctrl+Z로 되돌려 주세요":"shape doesn't match — undo with Ctrl+Z","모양이 맞지 않아 그대로 둠":"shape doesn't match, left as is","함께 변형하다 멈췄어요: ":"Stopped while transforming together: ","여러 조각(또는 구멍)으로 된 선택은 지금 레이어만 바뀌어요":"With a selection made of several pieces (or holes), only the current layer changes","선택 영역이 있을 때는 함께 고른 레이어 ${MS_MAX_SEL}개까지만 같이 바뀌어요(레이어마다 되돌리기 3칸) — 지금 레이어만 바뀌어요":"With a selection, only up to ${MS_MAX_SEL} selected layers can change together (3 undo steps per layer) — only the current layer changes","잠긴 레이어(${locked.map((L) => L.name).join(', ')})가 있어 지금 레이어만 바뀌어요":"There are locked layers (${locked.map((L) => L.name).join(', ')}), so only the current layer changes","레이어 ${todo.length}개에 같은 ${ss.kind === 'move' ? '이동' : '변형'}을 하는 중…":"Applying the same ${ss.kind === 'move' ? '이동' : '변형'} to ${todo.length} layers…","앞 레이어에서 멈춤":"stopped at an earlier layer","함께 옮기기":"Move together","함께 변형":"Transform together","${results.length - bad.length}개는 함께 바꿨지만 ${bad.map(([L, e]) => `\"${L.name}\"(${e})`).join(', ')}은 못 바꿨어요":"Changed ${results.length - bad.length} together, but couldn't change ${bad.map(([L, e]) => `\"${L.name}\"(${e})`).join(', ')}","레이어 ${results.length + 1}개를 함께 ${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} (되돌리기는 레이어마다 ${ss.sel ? '3칸: 선택 해제·선택·변형' : '한 칸'})":"${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} ${results.length + 1} layers together (undo per layer: ${ss.sel ? '3칸: 선택 해제·선택·변형' : '한 칸'})","속성을 함께 바꾸다 멈췄어요: ":"Stopped while changing properties together: ","레이어 칸을 찾지 못함":"couldn't find the layer row","불투명도 칸을 찾지 못함":"couldn't find the opacity field","불투명도가 바뀌지 않음":"opacity didn't change","합성 모드를 찾지 못함":"couldn't find the blend mode","합성 모드가 바뀌지 않음":"blend mode didn't change","단추를 찾지 못함":"couldn't find the button","바뀌지 않음":"didn't change","레이어 ${todo.length}개에 같은 속성을 맞추는 중…":"Matching the same properties on ${todo.length} layers…","\"${L.name}\"(고르지 못함)":"\"${L.name}\"(couldn't pick)","속성 함께 바꾸기":"Change properties together","투명 픽셀 잠금":"Lock transparent pixels","잠금":"Lock","클리핑":"Clipping","일부는 못 바꿨어요: ${bad.join(', ')}":"Some couldn't be changed: ${bad.join(', ')}","레이어 ${todo.length + 1}개에 ${Object.keys(ch).map((k) => names[k]).join('·')} 함께 맞췄어요":"Matched ${Object.keys(ch).map((k) => names[k]).join('·')} on ${todo.length + 1} layers","보드가 너무 커서 퀵 마스크를 쓸 수 없어요":"The board is too large for Quick Mask","칠한 모양: Enter = 선택으로 만들기 · Esc = 처음 선택으로 · Ctrl+Z = 한 획 되돌리기":"Painted shape: Enter = make selection · Esc = back to original selection · Ctrl+Z = undo one stroke","화면을 회전·뒤집기 한 상태에서는 퀵 마스크를 선택으로 만들 수 없어요 — 화면을 원래대로 돌리고 Enter":"Quick Mask can't become a selection while the view is rotated/flipped — reset the view, then press Enter","선택을 모두 지웠어요":"Cleared the whole selection","선택 모양을 만들지 못했어요":"Couldn't make the selection shape","퀵 마스크 선택":"Quick Mask selection","퀵 마스크를 선택으로 만들었어요 (${cnt.toLocaleString()}픽셀)":"Turned the Quick Mask into a selection (${cnt.toLocaleString()} px)"," · 작은 조각 ${P.dropped}개는 뺐어요":" · Left out ${P.dropped} small pieces","선택으로 만들지 못했어요: ":"Couldn't make a selection: ","처음 선택으로 돌렸어요":"Restored the original selection","되돌릴 획이 없어요 (Magma 되돌리기는 퀵 마스크에서 나간 뒤에)":"No strokes to undo (use Magma's undo after leaving Quick Mask)","클리핑을 바꾸지 못했어요: ":"Couldn't change clipping: ","다른 사람 레이어는 클리핑할 수 없어요":"Other people's layers can't be clipped","레이어를 고르지 못했어요":"Couldn't pick the layer","클리핑 단추를 찾지 못했어요":"Couldn't find the clipping button","\"${L.name}\" 클리핑 ${L.clippingGroup ? '켬 (아래 레이어 모양 안에만 보여요)' : '끔'}":"\"${L.name}\" clipping ${L.clippingGroup ? '켬 (아래 레이어 모양 안에만 보여요)' : '끔'}","클리핑이 바뀌지 않았어요":"Clipping didn't change","${g.what} 되돌렸어요 (Magma 되돌리기 ${done}칸을 한 번에)":"Undid ${g.what} (${done} Magma undo steps at once)"," · 더 앞의 칸은 15칸 한도로 지워져 있었어요":" · earlier steps were already gone due to the 15-step limit","${g.what} — ${g.n}칸 중 ${done}칸만 되돌렸어요":"${g.what} — undid only ${done} of ${g.n} steps","${r.what} 다시 했어요 (${done}칸을 한 번에)":"Redid ${r.what} (${done} steps at once)","${r.what} — ${r.n}칸 중 ${done}칸만 다시 했어요":"${r.what} — redid only ${done} of ${r.n} steps","칠할 영역을 이 픽셀만큼 넓히거나(+) 좁혀요(−). 0이면 Magma 그대로":"Grows (+) or shrinks (−) the fill area by this many pixels. 0 = Magma's default","확장/축소":"Expand/Shrink","Mode가 opacity·smart이거나 Target layer가 above·below면 확장/축소·빈틈 닫기 없이 Magma 그대로 칠해요":"If Mode is opacity/smart or Target layer is above/below, it fills the normal Magma way, without expand/shrink or gap closing","칠하지 못했어요: ":"Couldn't fill: ","칠할 레이어를 먼저 골라 주세요":"Pick a layer to fill first","그림을 읽지 못했어요":"Couldn't read the image","칠할 곳이 없어요 (너무 많이 좁혔어요)":"Nothing to fill (shrunk too much)","칠할 영역을 만들지 못했어요":"Couldn't create the fill area","올가미 채우기 모드를 맞추지 못해 안전을 위해 멈췄어요":"Stopped for safety: couldn't set the Lasso fill mode","${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀":"${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()} px"," (영역 ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)":" (area ${S.fillGrow > 0 ? '+' : ''}${S.fillGrow}px)"," · 틈 ${ff.bridges}곳 이음":" · bridged ${ff.bridges} gaps","${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()}픽셀 · 안티에일리어스":"${erase ? '지움' : '칠함'}: ${cnt.toLocaleString()} px · anti-aliased","원 (딱딱)":"Circle (hard)","원 (부드러움)":"Circle (soft)","납작붓":"Flat Brush","연필 (거친)":"Pencil (rough)","스프레이 점":"Spray Dots","붓털":"Bristles","수채 얼룩":"Watercolor Blot","흑연":"Graphite","목탄 끝":"Charcoal Tip","파스텔 덩이":"Pastel Chunk","마른 붓털":"Dry Bristles","납작 붓털":"Flat Bristles","레이크":"Rake","별":"Star","하트":"Heart","잎":"Leaf","삼각형":"Triangle","종이":"Paper","수채 종이":"Watercolor Paper","캔버스 천":"Canvas","노이즈":"Noise","거친 결":"Rough Grain","드로잉지 결":"Drawing Paper","목탄지":"Charcoal Paper","중목 종이":"Medium-Grain Paper","사포":"Sandpaper","빗금":"Hatching","망점":"Halftone","기본 브러시 ":"Basic Brush ","한글이 보이도록 기본 글꼴을 \"${font}\"로 맞췄어요 (끄려면 오른쪽 '자동' 해제)":"Set the default font to \"${font}\" so Korean text shows up (to turn this off, uncheck 'Auto' on the right)","\"${f}\" 글꼴에는 한글이 없어 네모로 보여요 — 글자를 고르고 오른쪽 '한글' 글꼴 단추를 눌러 주세요":"The \"${f}\" font has no Korean characters, so they show as boxes — select the text and click the 'Korean' font button on the right","한글":"Korean","글꼴을 ${f}로 (한글이 보이는 Magma 글꼴)":"Set the font to ${f} (a Magma font that shows Korean)","한글을 치면 자동으로 한글 글꼴로 바꿔요":"Switch to a Korean font automatically when you type Korean","자동":"Auto","내 컴퓨터 글꼴…":"My computer's fonts…","컴퓨터에 설치된 글꼴로 글자를 그림으로 넣어요":"Add text as an image using fonts installed on your computer","글자를 써 주세요":"Please type some text","붙일 레이어를 먼저 골라 주세요":"Pick a layer to paste on first","글자 레이어 말고 그림 레이어를 골라 주세요":"Pick a drawing layer, not a text layer","글자를 붙였어요 — 이동 도구로 옮길 수 있어요":"Text added — you can move it with the Move tool","여기에는 그림이 있는 레이어가 없어요":"There's no layer with a drawing here","\"${L.name}\" 레이어":"Layer \"${L.name}\"","를 골랐어요":" selected"," — 다른 사람 레이어예요":" — it's someone else's layer","채울 레이어를 먼저 골라 주세요":"Pick a layer to fill first","Alt를 떼면 채워요 — 다시 눌러 주세요":"Fills when you release Alt — press it again","올가미 채우기 설정을 바꾸지 못했어요":"Couldn't change the Lasso fill settings","선택 영역을 지웠어요":"Erased the selection","레이어 전체를 지웠어요":"Erased the whole layer","선택 영역을 채웠어요":"Filled the selection","보드 전체를 채웠어요":"Filled the whole board","채우지 못했어요: ":"Couldn't fill: ","레이어 속성 — 브러시 설정 자리에 레이어 속성을 띄워요":"Layer Properties — shows layer properties where the brush settings are","레이어 속성":"Layer Properties","레이어를 고르면 속성이 보여요":"Pick a layer to see its properties","경계 효과 (테두리)":"Border Effect (outline)","테두리 두께":"Border thickness","흐리기":"Blur","테두리 색":"Border color","테두리 안티에일리어싱":"Border anti-aliasing","내 화면에만 보여요 (보드에는 평범한 레이어)":"Only visible on my screen (a normal layer on the board)","효과":"Effect","켜짐":"On","꺼짐":"Off","그리기: 손을 떼면 보드에 들어가요 · Alt: 스포이트 · Shift+클릭: 직선 · Ctrl+Alt 끌기·[ ]: 크기":"Draw: goes onto the board when you release · Alt: eyedropper · Shift+click: straight line · Ctrl+Alt drag / [ ]: size","문지르기: 흐리게(손을 떼면 보드에 들어가요, 되돌리기 2칸) · [ ]: 크기":"Drag: blur (goes onto the board when you release, 2 undo steps) · [ ]: size","빨간 곳 = 선택 · 칠하기: 넣기 · Alt: 반대로 · Enter: 선택으로 · Esc: 처음으로 · [ ]: 크기":"Red = selection · Paint: add · Alt: reverse · Enter: to selection · Esc: start over · [ ]: size","문지르기: 선택(선택이 있으면 추가) · Alt: 빼기 · [ ]: 브러시 크기":"Drag: select (adds to an existing selection) · Alt: subtract · [ ]: brush size","클릭한 영역을 지금 색으로 채워요":"Fills the clicked area with the current color","클릭: 선택 · Shift: 추가 · Alt: 빼기":"Click: select · Shift: add · Alt: subtract","불투명도 (%)":"Opacity (%)","강도 (흐림 반경 px)":"Strength (blur radius px)","밀도 (%)":"Density (%)","선택으로 만들기":"Make Selection","아직 칠한 게 없어요":"Nothing painted yet","처음으로":"Start Over","모두 지우기":"Clear All","선택을 비우고 새로 칠하기":"Empty the selection and paint from scratch","칠하기":"Paint","선택 넣기":"Add to selection","선택 빼기":"Subtract from selection","참조":"Reference","모든 레이어":"All layers","허용 오차":"Tolerance","영역 확장":"Expand area","동작":"Action","선택":"Select","채우기":"Fill","이어진 곳만":"Contiguous","전체 같은 색":"All matching colors","빈틈 닫기":"Close gaps","v${VERSION}으로 업데이트됐어요":"Updated to v${VERSION}","도구":"Tools","색상환":"Color wheel","브러시 목록":"Brush list","레이어":"Layers","펼치기":"Expand","접기":"Collapse","닫기 (Window 메뉴에서 다시 열기)":"Close (reopen from the Window menu)","Window — 패널·화면 배치":"Window — panels & layout","패널":"Panels","화면 모드":"View mode","두 줄":"Two rows","배치 처음으로 (이 모드)":"Reset layout (this mode)","사용자 지정 UI 끄기 (원래 화면)":"Turn off custom UI (original layout)","사용자 지정 UI 켜기":"Turn on custom UI","레이아웃 설정 단추를 찾지 못했어요":"Couldn't find the layout settings button","Magma 화면 조각을 찾지 못함":"couldn't find a Magma screen element","화면 배치에 문제가 생겨 원래 Magma 화면으로 돌렸어요. 다른 기능은 그대로 쓸 수 있어요 (Window 메뉴에서 다시 켜기)":"Something went wrong with the layout, so it switched back to the original Magma layout. Other features still work (turn it back on from the Window menu)","처음 보는 화면 조각: ":"Unknown screen element: ","대칭 자":"Symmetry Ruler","대칭 자 (Symmetry Ruler)":"Symmetry Ruler","원근 격자":"Perspective Grid","대칭":"Symmetry","켜기":"On","끄기":"Off","선 개수":"Lines","선대칭":"Line symmetry","보드 가운데":"Board center","자 지우기":"Remove ruler","축을 세로로":"Make the axis vertical","축을 가로로":"Make the axis horizontal","축을 보드 한가운데로":"Move the axis to the board center","이 보드의 대칭 자를 없애요":"Remove the symmetry ruler from this board","대칭 자는 내 화면에만 보여요. Magma 브러시는 건너편 획마다 되돌리기 한 칸":"Only you see the ruler. With Magma brushes, each mirrored stroke is one undo step","끌기: 새 축 · 가운데 점 끌기: 옮기기 · 네모 점 끌기: 돌리기(Shift: 15°씩)":"Drag: new axis · Drag center dot: move · Drag square: rotate (Shift: 15° steps)","보드에 끌어서 대칭 축을 만드세요 (Shift: 15°씩)":"Drag on the board to make a symmetry axis (Shift: 15° steps)","대칭 획":"Symmetry stroke","대칭 자는 내 화면에만 보여요. Ctrl+Z 한 번에 건너편 획까지 함께 되돌아가요":"Only you see the ruler. One Ctrl+Z undoes the mirrored strokes too","그리기":"Drawing","멈추면 도형으로 보정":"Hold to snap shapes (QuickShape)","멈추면 도형으로 보정 (긋다가 펜을 떼지 않고 1초 멈추기)":"Hold to snap shapes (pause 1 s while drawing)","투명색을 끄고 스포이트로 찍은 색을 골랐어요":"Transparent color off — picked the eyedropper color","채팅창이 닫혀 있을 때 새 채팅을 작게 알리기":"Show a small notice for new chat while the chat is closed","누르면 채팅을 열어요":"Click to open the chat","새 메시지":"New message"};
   const I18N = { built: false, exact: new Map(), subs: [], pats: [], obs: null, busy: false };
   const I18N_SCOPE = '[class*="mw-"], [class*="mx-"]';
   const I18N_ATTRS = ['title', 'placeholder', 'aria-label', 'tooltip'];
@@ -10633,7 +10878,7 @@ void main(){
   // Magma는 페이지 이동 없이 화면을 바꾸므로 주기적으로 상태를 맞춘다
   const tick = setInterval(() => {
     try { i18nStart(); i18nTick(); } catch (e) { /* 무시 */ }
-    try { dkTick(); } catch (e) { console.warn('[MagmaWand] 사용자 지정 UI', e); }
+    try { dkTick(); bszSync(); } catch (e) { console.warn('[MagmaWand] 사용자 지정 UI', e); }
     if (!getCanvas()) { if (S.active) setActive(false); return; }
     ensureStyle();
     ensureGroups();

@@ -3,7 +3,7 @@
 // 2) 여기(백그라운드)서는 GitHub 릴리스의 최신 wand.js를 받아 저장하고, 열린 Magma 탭에 넣는다.
 //    wand.js는 자기보다 낮은 버전 위에만 덮어써지므로 여러 번 넣어도 안전하다.
 const BASE = 'https://github.com/NampleS/magma-wand/releases/latest/download/';
-const CHECK_EVERY_MIN = 10;
+const CHECK_EVERY_MIN = 1;
 const MAGMA_URL = /^https:\/\/([a-z0-9-]+\.)?magma\.com\//i;
 
 async function sha256Hex(buf) {
@@ -16,7 +16,7 @@ async function checkUpdate(force = false) {
   if (checking) return checking;
   checking = (async () => {
     const { lastCheck = 0, wand } = await chrome.storage.local.get(['lastCheck', 'wand']);
-    if (!force && Date.now() - lastCheck < CHECK_EVERY_MIN * 60 * 1000) return false;
+    if (!force && Date.now() - lastCheck < 20 * 1000) return false; // Magma를 새로고침하면 바로 확인 (20초 안에 다시는 안 함)
     await chrome.storage.local.set({ lastCheck: Date.now() });
     const v = await (await fetch(BASE + 'version.json?t=' + Date.now(), { cache: 'no-store' })).json();
     if (wand && wand.version === v.version) return false;
@@ -57,11 +57,11 @@ chrome.runtime.onInstalled.addListener(async () => {
   await checkUpdate(true);
   await injectAll();
 });
-chrome.runtime.onStartup.addListener(async () => { await checkUpdate(true); await injectAll(); });
+chrome.runtime.onStartup.addListener(async () => { chrome.alarms.create('magma-wand-update', { periodInMinutes: CHECK_EVERY_MIN }); await checkUpdate(true); await injectAll(); });
 chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name === 'magma-wand-update' && (await checkUpdate(true))) await injectAll();
 });
-// Magma 페이지가 열릴 때마다: 저장된 최신 버전 넣기 + (10분 지났으면) 업데이트 확인
+// Magma 페이지가 열릴 때마다: 저장된 최신 버전 넣기 + 업데이트 확인
 chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (info.status !== 'complete' || !tab.url || !MAGMA_URL.test(tab.url)) return;
   await injectInto(tabId);

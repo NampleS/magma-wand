@@ -21,7 +21,7 @@ function Write-Log($msg) {
 
 function Get-Config {
   $p = Join-Path $Root 'config.json'
-  $cfg = [ordered]@{ base = 'https://github.com/NampleS/magma-wand/releases/latest/download/'; port = 39271; magma = ''; checkMinutes = 5 }
+  $cfg = [ordered]@{ base = 'https://github.com/NampleS/magma-wand/releases/latest/download/'; port = 39271; magma = ''; checkMinutes = 1 }
   if (Test-Path $p) {
     $j = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
     foreach ($k in @('base', 'port', 'magma', 'checkMinutes')) { if ($j.$k) { $cfg[$k] = $j.$k } }
@@ -433,7 +433,7 @@ try {
         }
       }
     }
-    # 5분마다 새 버전 확인 → 받으면 다음 바퀴에서 열린 화면에 바로 바꿔 끼움
+    # 1분마다 새 버전 확인(작은 version.json만, 새 버전일 때만 내려받음) → 받으면 다음 바퀴에서 열린 화면에 바로 바꿔 끼움
     if (((Get-Date) - $lastUpdate).TotalMinutes -ge [double]$Cfg.checkMinutes) {
       $lastUpdate = Get-Date
       try { Update-Files | Out-Null; Load-Wand; Sync-ChromeExtension } catch { Write-Log "업데이트 확인 실패: $_" }
