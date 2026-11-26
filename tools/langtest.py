@@ -43,8 +43,11 @@ def run(loc):
             st = lambda: ev("(()=>{const t=window.__magmaWand.internals.getEditor().activeTool;return [(document.querySelector('.mw-aarow .mw-aab.on')||{dataset:{}}).dataset.lv,t.pixelation,Math.round(t.hardness*100)]})()")
             pg.evaluate("(v)=>{const r=window.__magmaWand.internals.sizeRow(),en=r.querySelector('editable-number'),b=en.querySelector('button'),i=en.querySelector('input');b.click();i.value=String(v);i.dispatchEvent(new FocusEvent('blur'))}", 60); time.sleep(.5)
             for lv in ('none', 'weak', 'mid', 'strong'):
-                try: pg.locator('.mw-aarow .mw-aab[data-lv="%s"]' % lv).click(timeout=8000); time.sleep(3)
+                try: pg.locator('.mw-aarow .mw-aab[data-lv="%s"]' % lv).click(timeout=8000); time.sleep(2)
                 except Exception as e: check('AA ' + lv, False, str(e)[:60]); continue
+                for _ in range(20): # 느린 시험 컴퓨터에서는 표시가 조금 늦게 따라온다
+                    if st()[0] == lv: break
+                    time.sleep(.25)
                 s = st(); check('AA ' + lv, s[0] == lv and s[1] == (lv == 'none') and (s[2] == 100 if lv == 'weak' else True), s)
             # 필압·크기에 따라 흐림 유지: 강하게 → 텍스처 깊이 켜짐(약하게 → 꺼짐은 아래에서)
             x = I("(()=>{const t=I.getEditor().activeTool;return [I.aaDepth('strong',t),I.aaTexOurs(t),I.aaCurD(t),t.patternDepthPressure]})()"); check('필압 흐림 설정', x[0] > 0 and x[1] and abs(x[2] - x[0]) < .006 and x[3] is True, x)

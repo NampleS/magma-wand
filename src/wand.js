@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (function mwBoot() {
   'use strict';
-  const VERSION = '0.44.0';
+  const VERSION = '0.45.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -3188,11 +3188,14 @@ void main(){
     const D = E.drawing, W = D.w, H = D.h, full = { x: dOx(E), y: dOy(E), w: W, h: H, small: false };
     try {
       const v = E.view, m = E.computedView.inverseTransform;
-      if ((W * H < 1e5 && !S.pasteTest) || v.rotation || v.flipped || D.x || D.y || (E.model.settings && E.model.settings.pasteNewLayer) || !(v.width > 0)) return full;
+      if ((W * H < 1e5 && !S.pasteTest) || v.rotation || v.flipped || (E.model.settings && E.model.settings.pasteNewLayer) || !(v.width > 0)) return full;
+      // 화면 가운데·놓이는 범위는 '보드 안 좌표'(화면 변환과 같은 좌표), 붙일 사각형·결과는 모델 좌표 → 원점만큼 빼서 계산하고 더해 돌려준다
+      // (예전엔 원점이 0이 아닌 보드에서 매 획 보드 크기 그림을 붙여 획을 뗄 때마다 멈췄다)
+      const ox = dOx(E), oy = dOy(E);
       const px = v.width / 2, py = v.height / 2, cx = m[0] * px + m[2] * py + m[4], cy = m[1] * px + m[3] * py + m[5];
-      const bx = Math.max(0, box.x), by = Math.max(0, box.y), bx1 = Math.min(W, box.x + box.w), by1 = Math.min(H, box.y + box.h);
+      const bx = Math.max(0, box.x - ox), by = Math.max(0, box.y - oy), bx1 = Math.min(W, box.x - ox + box.w), by1 = Math.min(H, box.y - oy + box.h);
       const [x, w] = pasteSpan(cx, bx, bx1, W), [y, h] = pasteSpan(cy, by, by1, H);
-      return w * h < W * H * 0.6 ? { x, y, w, h, small: true } : full;
+      return w * h < W * H * 0.6 ? { x: x + ox, y: y + oy, w, h, small: true } : full;
     } catch { return full; }
   }
   on(window, 'wheel', (e) => { if (PASTE.hold > 0 && e.isTrusted && e.target === getCanvas()) { e.preventDefault(); e.stopImmediatePropagation(); } }, { capture: true, passive: false });
@@ -3506,9 +3509,190 @@ void main(){
       ].filter(Boolean).join('\n');
     }
     box.__mwRender = render;
-    advListRender = render;
+    advListRender = () => { render(); tgRender(); };
+    box.classList.toggle('mw-adv-docked', !!DK.on); // 패널을 쓰는 동안 목록은 '브러시 목록' 창에
     render();
     return box;
+  }
+  // ---------- 고급 브러시 목록 = '브러시 목록' 창 (클립 스튜디오 '보조 도구 그룹'처럼) ----------
+  // 위: 브러시 그룹 단추(4칸씩, 우클릭 = 추가·이름 바꾸기·지우기). 가운데: 그 그룹의 브러시(획 미리보기 + 이름).
+  // 누르기 = 고르기, Ctrl·Shift = 여러 개 고르기(설정 창에서 바꾸면 고른 브러시 모두에 적용), 끌기 = 순서 바꾸기, 그룹 단추로 끌기 = 그 그룹으로 옮기기.
+  // 아래: 설정·새 브러시·가져오기·복제·지우기 단추. 그룹·순서는 이 컴퓨터 설정(S.advGroups)에 저장.
+  const TG = { el: null, sel: new Set(), anchor: null, cur: null, menu: null, drag: null, fileIn: null };
+  const TG_SVG = {
+    gear: '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M7 1h2l.4 2 1.4.6 1.7-1.2 1.4 1.4-1.2 1.7.6 1.4 2 .4v2l-2 .4-.6 1.4 1.2 1.7-1.4 1.4-1.7-1.2-1.4.6L9 15H7l-.4-2-1.4-.6-1.7 1.2-1.4-1.4 1.2-1.7L2.7 9.6.7 9.2v-2l2-.4.6-1.4-1.2-1.7 1.4-1.4 1.7 1.2L6.6 3zM8 5.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5z"/></svg>',
+    add: '<svg viewBox="0 0 16 16"><path d="M3 2.5h7l3 3v8H3z" fill="none" stroke="currentColor"/><path d="M8 6v6M5 9h6" stroke="currentColor" stroke-width="1.4"/></svg>',
+    imp: '<svg viewBox="0 0 16 16"><path d="M8 2v8M4.5 6.5L8 10l3.5-3.5M2.5 11v2.5h11V11" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
+    dup: '<svg viewBox="0 0 16 16"><path d="M5 5h8v8H5z M3 11V3h8" fill="none" stroke="currentColor"/></svg>',
+    del: '<svg viewBox="0 0 16 16"><path d="M3 4.5h10M6 4.5V3h4v1.5M4.5 4.5l.7 9h5.6l.7-9" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    pen: '<svg viewBox="0 0 16 16"><path d="M11 2l3 3-7.5 7.5L3 13l.5-3.5z" fill="currentColor" opacity=".85"/><path d="M2 15h6" stroke="currentColor"/></svg>' };
+  // 그룹 정리: 모든 브러시가 꼭 한 그룹에 (처음이면 분류로 그룹을 만든다)
+  function tgSync(brushes) {
+    const ids = new Set(brushes.map((b) => b.id));
+    let G = Array.isArray(S.advGroups) ? S.advGroups.filter((g) => g && g.id) : [];
+    let dirty = false;
+    if (!G.length) {
+      const byCat = new Map();
+      for (const b of brushes) { const c = advCatOf(b); if (!byCat.has(c)) byCat.set(c, []); byCat.get(c).push(b.id); }
+      G = [...byCat].sort((x, y) => advCatOrder(x[0]) - advCatOrder(y[0])).map(([c, list]) => ({ id: 'g' + Math.random().toString(36).slice(2, 8), name: c, ids: list }));
+      if (!G.length) G = [{ id: 'g' + Math.random().toString(36).slice(2, 8), name: L('내 브러시', 'My brushes'), ids: [] }];
+      dirty = true;
+    }
+    const seen = new Set();
+    for (const g of G) { const before = g.ids.length; g.ids = (g.ids || []).filter((id) => ids.has(id) && !seen.has(id)); g.ids.forEach((id) => seen.add(id)); if (g.ids.length !== before) dirty = true; }
+    const cur = G.find((g) => g.id === S.advGroupCur) || G[0];
+    for (const b of brushes) if (!seen.has(b.id)) { // 새로 만든·가져온 브러시: 같은 이름의 그룹(분류)이 있으면 거기, 없으면 지금 그룹
+      const g = G.find((x) => x.name === advCatOf(b)) || cur; g.ids.push(b.id); dirty = true;
+    }
+    S.advGroups = G; if (!G.some((g) => g.id === S.advGroupCur)) { S.advGroupCur = (G.find((g) => ADV.brush && g.ids.includes(ADV.brush.id)) || G[0]).id; dirty = true; }
+    if (dirty) saveSettings();
+    return G;
+  }
+  function tgEl() {
+    if (TG.el) return TG.el;
+    const el = document.createElement('div'); el.className = 'mw-tg mw-el mw-noi18n';
+    el.innerHTML = '<div class="mw-tg-groups"></div><div class="mw-tg-list thin-dark-scrollbar"></div><div class="mw-tg-info"></div><div class="mw-tg-bar"><span class="mw-tg-b" data-a="gear"></span><span class="mw-tg-sp"></span><span class="mw-tg-b" data-a="add"></span><span class="mw-tg-b" data-a="imp"></span><span class="mw-tg-b" data-a="dup"></span><span class="mw-tg-b" data-a="del"></span></div>';
+    TG.el = el;
+    const fileIn = TG.fileIn = document.createElement('input'); fileIn.type = 'file'; fileIn.accept = '.sut'; fileIn.multiple = true; fileIn.style.display = 'none'; el.appendChild(fileIn);
+    const tips = { gear: L('브러시 설정 (고른 브러시 모두)', 'Brush settings (all selected brushes)'), add: L('새 브러시 (프리셋)', 'New brush (preset)'), imp: L('클립 스튜디오 브러시 가져오기 (.sut)', 'Import Clip Studio brushes (.sut)'), dup: L('복제', 'Duplicate'), del: L('지우기 (두 번 누르기)', 'Delete (press twice)') };
+    for (const b of el.querySelectorAll('.mw-tg-b')) { b.innerHTML = TG_SVG[b.dataset.a]; b.title = tips[b.dataset.a]; }
+    el.querySelector('.mw-tg-bar').addEventListener('click', (e) => { const b = e.target.closest('.mw-tg-b'); if (b) tgAction(b.dataset.a, b); });
+    fileIn.addEventListener('change', async () => {
+      const files = [...fileIn.files]; fileIn.value = '';
+      let last = null, fails = 0;
+      for (const f of files) { try { last = await advImportSut(f); } catch (err) { fails++; toast(`${f.name}: ${err && err.message || err}`); } }
+      if (last) { await advSelect(last.id); toast(L(`브러시 ${files.length - fails}개를 가져왔어요`, `Imported ${files.length - fails} brush(es)`)); }
+      advListRender?.();
+    });
+    // 그룹 줄: 우클릭 메뉴
+    el.querySelector('.mw-tg-groups').addEventListener('contextmenu', (e) => { e.preventDefault(); const g = e.target.closest('.mw-tg-g'); tgMenu(e.clientX, e.clientY, g ? g.dataset.id : null); });
+    el.addEventListener('pointerdown', (e) => { if (TG.menu && !TG.menu.contains(e.target)) { TG.menu.remove(); TG.menu = null; } });
+    return el;
+  }
+  // 이름 입력 (Electron 앱은 prompt를 못 씀) — 메뉴 자리에 작은 입력 칸
+  function tgAsk(x, y, def, done) {
+    const m = document.createElement('div'); m.className = 'mw-tg-menu mw-tg-ask mw-el mw-noi18n';
+    const inp = document.createElement('input'); inp.type = 'text'; inp.value = def; inp.className = 'mw-cs-sel';
+    m.appendChild(inp); document.body.appendChild(m); TG.menu = m;
+    Object.assign(m.style, { left: Math.min(x, innerWidth - 220) + 'px', top: Math.min(y, innerHeight - 60) + 'px' });
+    const fin = (ok) => { if (!m.isConnected) return; m.remove(); if (TG.menu === m) TG.menu = null; if (ok && inp.value.trim()) done(inp.value.trim()); };
+    inp.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') fin(true); if (e.key === 'Escape') fin(false); });
+    inp.addEventListener('blur', () => fin(true));
+    setTimeout(() => { inp.focus(); inp.select(); }, 0);
+  }
+  function tgMenu(x, y, gid) {
+    TG.menu?.remove();
+    const m = document.createElement('div'); m.className = 'mw-tg-menu mw-el mw-noi18n';
+    const G = S.advGroups || [], g = G.find((q) => q.id === gid);
+    const item = (t, fn, dis) => { const b = document.createElement('div'); b.className = 'mw-tg-mi' + (dis ? ' dis' : ''); b.textContent = t; if (!dis) b.addEventListener('click', () => { m.remove(); TG.menu = null; fn(); }); m.appendChild(b); };
+    item(L('그룹 추가', 'Add group'), () => tgAsk(x, y, L('새 그룹', 'New group'), (n) => { const ng = { id: 'g' + Math.random().toString(36).slice(2, 8), name: n.trim() || L('새 그룹', 'New group'), ids: [] }; const i = g ? G.indexOf(g) + 1 : G.length; G.splice(i, 0, ng); S.advGroupCur = ng.id; saveSettings(); tgRender(); }));
+    item(L('이름 바꾸기', 'Rename'), () => tgAsk(x, y, g.name, (n) => { g.name = n; saveSettings(); tgRender(); }), !g);
+    item(L('그룹 지우기 (브러시는 앞 그룹으로)', 'Remove group (brushes move to the previous group)'), () => {
+      const i = G.indexOf(g), to = G[i - 1] || G[i + 1];
+      if (!to) { toast(L('그룹이 하나뿐이라 지울 수 없어요', 'The only group cannot be removed')); return; }
+      to.ids.push(...g.ids); G.splice(i, 1); if (S.advGroupCur === g.id) S.advGroupCur = to.id; saveSettings(); tgRender();
+    }, !g || G.length < 2);
+    document.body.appendChild(m); TG.menu = m;
+    Object.assign(m.style, { left: Math.min(x, innerWidth - 220) + 'px', top: Math.min(y, innerHeight - 100) + 'px' });
+    const off = (e) => { if (!m.contains(e.target)) { m.remove(); if (TG.menu === m) TG.menu = null; window.removeEventListener('pointerdown', off, true); } };
+    setTimeout(() => window.addEventListener('pointerdown', off, true), 0);
+  }
+  async function tgAction(a, btn) {
+    if (a === 'gear') { openBrushSettings(); return; }
+    if (a === 'add') { openPresetPicker(() => advListRender?.()); return; }
+    if (a === 'imp') { TG.fileIn.click(); return; }
+    const brushes = await advListBrushes().catch(() => []), sel = brushes.filter((b) => TG.sel.has(b.id) || (ADV.brush && b.id === ADV.brush.id));
+    if (!sel.length) return;
+    if (a === 'dup') {
+      const G = S.advGroups || [], g = G.find((q) => q.id === S.advGroupCur);
+      let last = null;
+      for (const b of sel) { const c = JSON.parse(JSON.stringify(b)); c.id = 'b_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); c.added = Date.now(); c.name = b.name + L(' 사본', ' copy'); await advSaveBrush(c); if (g) { const i = g.ids.indexOf(b.id); g.ids.splice(i >= 0 ? i + 1 : g.ids.length, 0, c.id); } last = c; }
+      saveSettings(); if (last) await advSelect(last.id); TG.sel.clear(); advListRender?.(); return;
+    }
+    if (a === 'del') {
+      if (!btn.classList.contains('armed')) { btn.classList.add('armed'); btn.title = L(`한 번 더 누르면 ${sel.length}개를 지워요`, `Press again to delete ${sel.length}`); setTimeout(() => { btn.classList.remove('armed'); }, 3000); return; }
+      btn.classList.remove('armed');
+      for (const b of sel) await advDeleteBrush(b);
+      TG.sel.clear(); ADV.brush = null; await advSelect(null); advListRender?.();
+    }
+  }
+  async function tgRender() {
+    const el = TG.el; if (!el) return;
+    const brushes = await advListBrushes().catch(() => []);
+    const byId = new Map(brushes.map((b) => [b.id, b]));
+    const G = tgSync(brushes), cur = G.find((g) => g.id === S.advGroupCur) || G[0];
+    for (const id of [...TG.sel]) if (!byId.has(id)) TG.sel.delete(id);
+    // 그룹 단추
+    const gw = el.querySelector('.mw-tg-groups'); gw.textContent = '';
+    for (const g of G) {
+      const b = document.createElement('div'); b.className = 'mw-tg-g' + (g === cur ? ' on' : ''); b.dataset.id = g.id; b.title = g.name + ` (${g.ids.length})`;
+      b.innerHTML = TG_SVG.pen + '<span></span>'; b.lastChild.textContent = g.name;
+      b.addEventListener('click', () => { S.advGroupCur = g.id; saveSettings(); tgRender(); });
+      gw.appendChild(b);
+    }
+    // 브러시 줄
+    const list = el.querySelector('.mw-tg-list'), keep = list.scrollTop; list.textContent = '';
+    const order = cur ? cur.ids.filter((id) => byId.has(id)) : [];
+    if (!order.length) { const n = document.createElement('div'); n.className = 'mw-tg-empty'; n.textContent = brushes.length ? L('이 그룹은 비어 있어요. 다른 그룹에서 브러시를 끌어다 놓거나 아래 ＋로 만드세요.', 'This group is empty. Drag brushes here from another group or create one with ＋ below.') : L('브러시가 없어요. 아래 ＋(프리셋)나 가져오기(.sut)로 만드세요.', 'No brushes yet. Create one with ＋ (preset) or import (.sut) below.'); list.appendChild(n); }
+    for (const id of order) {
+      const b = byId.get(id), row = document.createElement('div');
+      row.className = 'mw-tg-row' + (ADV.brush && ADV.brush.id === id ? ' on' : '') + (TG.sel.has(id) ? ' sel' : ''); row.dataset.id = id; row.title = b.name;
+      const cv = document.createElement('canvas'); cv.width = SMP_W; cv.height = SMP_H;
+      const nm = document.createElement('span'); nm.textContent = b.name + (b.tips.some((t) => t.needPng) || (b.texture && b.texture.needPng) ? ' ⚠' : '');
+      row.append(cv, nm); smpRequest('b', b, cv);
+      row.addEventListener('click', async (e) => {
+        if (TG.justDragged) { TG.justDragged = false; return; }
+        if (e.ctrlKey || e.metaKey) { if (TG.sel.has(id)) TG.sel.delete(id); else TG.sel.add(id); if (ADV.brush && !TG.sel.size) TG.sel.add(ADV.brush.id); TG.anchor = id; tgRender(); return; }
+        if (e.shiftKey && TG.anchor) { const i0 = order.indexOf(TG.anchor), i1 = order.indexOf(id); if (i0 >= 0) { TG.sel.clear(); for (let i = Math.min(i0, i1); i <= Math.max(i0, i1); i++) TG.sel.add(order[i]); tgRender(); return; } }
+        TG.sel.clear(); TG.anchor = id; await advSelect(id); advListRender?.(); if (BSET.el) openBrushSettings();
+      });
+      row.addEventListener('dblclick', () => openBrushSettings());
+      row.addEventListener('pointerdown', (e) => { if (e.button !== 0) return; TG.pd = { id, x: e.clientX, y: e.clientY, order, G, cur, pid: e.pointerId }; });
+      list.appendChild(row);
+    }
+    list.scrollTop = keep;
+    const c = ADV.brush, need = c ? c.tips.filter((t) => t.needPng).length + (c.texture && c.texture.needPng ? 1 : 0) : 0;
+    el.querySelector('.mw-tg-info').textContent = TG.sel.size > 1 ? L(`${TG.sel.size}개 고름 — ⚙ 설정에서 바꾸면 모두에 적용`, `${TG.sel.size} selected — changes in ⚙ settings apply to all`) : need ? L(`⚠ 보호된 소재 ${need}개: 설정의 [브러시 모양]에서 바꿔 주세요`, `⚠ ${need} protected material(s): change it under [Brush shape] in settings`) : '';
+  }
+  // 끌기: 줄 사이 = 순서 바꾸기, 그룹 단추 = 그 그룹으로 옮기기 (브라우저 기본 끌기 대신 포인터로 — 앱·펜에서 확실하게)
+  on(window, 'pointermove', (e) => {
+    const p = TG.pd; if (!p || e.pointerId !== p.pid) return;
+    if (!TG.drag) { if (Math.hypot(e.clientX - p.x, e.clientY - p.y) < 6) return; TG.drag = TG.sel.has(p.id) && TG.sel.size > 1 ? p.order.filter((x) => TG.sel.has(x)) : [p.id]; document.documentElement.classList.add('mw-tg-dragging'); }
+    e.preventDefault();
+    for (const x of TG.el.querySelectorAll('.ins-top,.ins-bot,.drop')) x.classList.remove('ins-top', 'ins-bot', 'drop');
+    const t = document.elementFromPoint(e.clientX, e.clientY), row = t && t.closest && t.closest('.mw-tg-row'), g = t && t.closest && t.closest('.mw-tg-g');
+    if (row && TG.el.contains(row)) { const r = row.getBoundingClientRect(); row.classList.add(e.clientY < r.top + r.height / 2 ? 'ins-top' : 'ins-bot'); }
+    else if (g && TG.el.contains(g)) g.classList.add('drop');
+  }, true);
+  on(window, 'pointerup', (e) => {
+    const p = TG.pd; if (!p || e.pointerId !== p.pid) return;
+    TG.pd = null;
+    const mv = TG.drag; TG.drag = null; document.documentElement.classList.remove('mw-tg-dragging');
+    if (!mv) return;
+    TG.justDragged = true; setTimeout(() => { TG.justDragged = false; }, 50);
+    const ins = TG.el.querySelector('.ins-top,.ins-bot'), gb = TG.el.querySelector('.mw-tg-g.drop');
+    for (const x of TG.el.querySelectorAll('.ins-top,.ins-bot,.drop')) x.classList.remove('ins-top', 'ins-bot', 'drop');
+    const G = S.advGroups || [];
+    if (gb) { const g = G.find((q) => q.id === gb.dataset.id); if (!g || g.ids.includes(mv[0]) && mv.every((x) => g.ids.includes(x))) return; for (const q of G) q.ids = q.ids.filter((x) => !mv.includes(x)); g.ids.push(...mv); saveSettings(); tgRender(); toast(L(`${mv.length}개를 "${g.name}"(으)로 옮겼어요`, `Moved ${mv.length} to "${g.name}"`)); return; }
+    if (ins) { const tid = ins.dataset.id, top = ins.classList.contains('ins-top'); if (mv.includes(tid)) return; const cur = G.find((q) => q.ids.includes(tid)); if (!cur) return; for (const q of G) q.ids = q.ids.filter((x) => !mv.includes(x)); const i = cur.ids.indexOf(tid); cur.ids.splice(top ? i : i + 1, 0, ...mv); saveSettings(); tgRender(); }
+  }, true);
+  // 브러시 목록 창에 붙이기: 고급 브러시 도구일 때는 Magma 목록 대신 이 목록
+  function tgTick() {
+    const pb = DK.on && DK.pb && DK.pb.presets;
+    if (!pb) return;
+    const el = tgEl();
+    if (el.parentNode !== pb) { pb.appendChild(el); tgRender(); }
+    const on1 = !!(S.active && S.tool === 'brush');
+    if (pb.classList.contains('mw-tg-on') !== on1) { pb.classList.toggle('mw-tg-on', on1); if (on1) tgRender(); }
+  }
+  // 여러 브러시를 함께 고쳤을 때: 설정 창에서 바뀐 항목을 고른 다른 브러시에도 (이름·분류·기본값은 제외)
+  async function tgApplyMulti(b, beforeJson) {
+    if (!(TG.sel.size > 1) || !TG.sel.has(b.id)) return;
+    const before = JSON.parse(beforeJson), skip = new Set(['id', 'name', 'cat', 'added', 'orig', 'tips', 'texture', 'dual']);
+    const keys = Object.keys(b).filter((k) => !skip.has(k) && JSON.stringify(b[k]) !== JSON.stringify(before[k]));
+    if (!keys.length) return;
+    const all = await advListBrushes().catch(() => []);
+    for (const o of all) if (o.id !== b.id && TG.sel.has(o.id)) { for (const k of keys) o[k] = JSON.parse(JSON.stringify(b[k] ?? null)); await advSaveBrush(o); }
   }
   function openAdvPngDialog(brush, after) {
     document.querySelector('.mw-dialog-wrap')?.remove();
@@ -3614,7 +3798,7 @@ void main(){
     BSET.el = el;
     if (keepPos && keepPos.left) Object.assign(el.style, { left: keepPos.left, top: keepPos.top, right: 'auto' });
     const q = (s) => el.querySelector(s);
-    const setTitle = () => { q('.mw-cs-title').textContent = L('고급 브러시 설정', 'Advanced Tool Settings'); q('.mw-cs-chip').textContent = b.name; };
+    const setTitle = () => { q('.mw-cs-title').textContent = L('고급 브러시 설정', 'Advanced Tool Settings'); q('.mw-cs-chip').textContent = b.name + (TG.sel.size > 1 && TG.sel.has(b.id) ? L(` 외 ${TG.sel.size - 1}개 (함께 바뀜)`, ` + ${TG.sel.size - 1} more (changed together)`) : ''); };
     setTitle();
     q('.mw-cs-x').title = L('닫기', 'Close');
     q('.mw-cs-x').addEventListener('click', () => { el.remove(); BSET.el = null; });
@@ -3630,7 +3814,8 @@ void main(){
     const pv = q('.mw-cs-pv canvas');
     let pvT = 0;
     const preview = () => { clearTimeout(pvT); pvT = setTimeout(() => { if (el.isConnected) smpRequest('b', b, pv); }, 250); };
-    const save = () => { advSaveSoon(); preview(); };
+    let multiSnap = JSON.stringify(b);
+    const save = () => { advSaveSoon(); preview(); const s0 = multiSnap; multiSnap = JSON.stringify(b); tgApplyMulti(b, s0).catch(() => { }); };
     // 도움말
     const helpB = q('.mw-cs-help b'), helpS = q('.mw-cs-help span');
     const helpDef = () => { helpB.textContent = L('항목 도움말', 'About parameter help'); helpS.textContent = L('항목에 마우스를 올리면 설명이 보여요.', 'Move the cursor over an item to see its description.'); };
@@ -4323,9 +4508,13 @@ void main(){
     const a = document.activeElement;
     if (a && a !== document.body && (a.tagName === 'BUTTON' || (a.tagName === 'INPUT' && /^(checkbox|radio|range|color|button)$/i.test(a.type)) || (a.getAttribute && a.getAttribute('role') === 'button')) && a.closest && a.closest('.mw-el, .mx-power') && !a.closest('.mw-dialog-wrap')) a.blur();
   }, true);
-  on(window, 'keydown', (e) => { if (e.code === 'Space' && e.isTrusted) { const t = e.target; if (e.__mwHot || !(t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)))) spaceDown = true; } }, true);
-  on(window, 'keyup', (e) => { if (e.code === 'Space') spaceDown = false; }, true);
-  on(window, 'blur', () => { spaceDown = false; LSCR.pid = null; grabHover(null); document.documentElement.classList.remove('mw-lgrab', 'mw-lgrabbing'); });
+  on(window, 'keydown', (e) => { if (e.code === 'Space' && e.isTrusted) { const t = e.target; if (e.__mwHot || !(t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)))) { spaceDown = true; holdCls(true); } } }, true);
+  on(window, 'keyup', (e) => { if (e.code === 'Space') { spaceDown = false; holdCls(false); } }, true);
+  // Space(손 도구) 누르는 동안: 확장 도구의 커서(십자·브러시 원)를 걷고 손바닥 커서로 (눌렀는지 알 수 있게)
+  function holdCls(on1) { const h = document.documentElement; h.classList.toggle('mw-hold', !!on1); if (!on1) h.classList.remove('mw-holding'); if (on1 && Q.cursor) Q.cursor.style.display = 'none'; }
+  on(window, 'pointerdown', () => { if (spaceDown) document.documentElement.classList.add('mw-holding'); }, true);
+  on(window, 'pointerup', () => document.documentElement.classList.remove('mw-holding'), true);
+  on(window, 'blur', () => { spaceDown = false; holdCls(false); LSCR.pid = null; grabHover(null); document.documentElement.classList.remove('mw-lgrab', 'mw-lgrabbing'); });
   // Space+끌기를 그림판 둘레의 세로로 굴러가는 칸(레이어 목록·도구 설정·브러시 설정·메뉴 등) 위에서 하면
   // 그 칸을 위아래로만 쓸어 넘긴다 (손 도구처럼, 관성 없음). 그림판 위에서는 Magma 손 도구 그대로.
   const LSCR = { pid: null, y0: 0, top0: 0, el: null, block: false, hov: null };
@@ -4452,7 +4641,7 @@ void main(){
     if (S.tool === 'brush' && canvas) {
       const r = canvas.getBoundingClientRect();
       const over = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
-      advCursor(e.clientX, e.clientY, (over || ADV.stroke) && !BSZ.on);
+      advCursor(e.clientX, e.clientY, (over || ADV.stroke) && !BSZ.on && !(spaceDown && !ADV.stroke));
       if (ADV.stroke) { e.stopImmediatePropagation(); advPointerMove(e); }
       else if (QS.adv) { e.stopImmediatePropagation(); qsAdvAdjust(e); }
       return;
@@ -4460,21 +4649,21 @@ void main(){
     if (S.tool === 'qmask' && canvas) {
       const r = canvas.getBoundingClientRect();
       const over = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
-      qmCursor(e.clientX, e.clientY, (over || QM.st) && !BSZ.on);
+      qmCursor(e.clientX, e.clientY, (over || QM.st) && !BSZ.on && !(spaceDown && !QM.st));
       if (QM.st) { e.stopImmediatePropagation(); qmPointerMove(e); }
       return;
     }
     if (S.tool === 'blur' && canvas) {
       const r = canvas.getBoundingClientRect();
       const over = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
-      blurCursor(e.clientX, e.clientY, (over || BLR.st) && !BSZ.on);
+      blurCursor(e.clientX, e.clientY, (over || BLR.st) && !BSZ.on && !(spaceDown && !BLR.st));
       if (BLR.st) { e.stopImmediatePropagation(); blurPointerMove(e); }
       return;
     }
     if (S.tool === 'quick' && canvas) {
       const r = canvas.getBoundingClientRect();
       const over = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
-      qCursor(e.clientX, e.clientY, over || Q.stroking);
+      qCursor(e.clientX, e.clientY, (over && !spaceDown) || Q.stroking);
       if (Q.stroking) {
         e.stopImmediatePropagation();
         const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
@@ -11463,6 +11652,8 @@ void main(){
     .mw-brush { position: fixed; z-index: 2147481500; pointer-events: none; border-radius: 50%; display: none;
       border: 1px solid rgba(255,255,255,.95); box-shadow: 0 0 0 1px rgba(0,0,0,.7), inset 0 0 0 1px rgba(0,0,0,.35); }
     html.mw-on.mw-quick .editor-view, html.mw-on.mw-quick .editor-view * { cursor: none !important; }
+    html.mw-on.mw-hold .editor-view, html.mw-on.mw-hold .editor-view * { cursor: grab !important; }
+    html.mw-on.mw-hold.mw-holding .editor-view, html.mw-on.mw-hold.mw-holding .editor-view * { cursor: grabbing !important; }
     .mw-alpha { position: fixed; z-index: 900; width: 16px; height: 16px; box-sizing: border-box; cursor: pointer;
       border: 1px solid #9a9ca5; border-radius: 2px; box-shadow: 0 0 0 1px rgba(0,0,0,.55);
       background: conic-gradient(#c8c8c8 25%, #fff 0 50%, #c8c8c8 0 75%, #fff 0) 0 0 / 8px 8px; }
@@ -11478,6 +11669,33 @@ void main(){
     html.mw-lp editor-sliders > :not(.mw-lp-panel) { display: none !important; }
     .mw-lp-panel { padding: 4px 6px 6px; box-sizing: border-box; width: 100%; font-size: 12px; }
     .mw-lpd { position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden; }
+    .mw-adv-docked .mw-advlist, .mw-adv-docked .mw-advacts, .mw-adv-docked .mw-advinfo { display: none; }
+    .mw-tg { position: absolute; inset: 0; display: none; flex-direction: column; background: #3a3a3a; color: #dadada; font: 12px/1.3 system-ui, sans-serif; }
+    .mx-pbody.mw-tg-on > .mw-tg { display: flex; }
+    .mx-pbody.mw-tg-on > editor-properties-presets-list { display: none !important; }
+    .mw-tg-groups { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; padding: 3px; border-bottom: 1px solid #262626; }
+    .mw-tg-g { display: flex; align-items: center; gap: 3px; height: 22px; padding: 0 4px; background: #4a4a4a; border: 1px solid #5c5c5c; border-radius: 2px; cursor: pointer; overflow: hidden; white-space: nowrap; user-select: none; }
+    .mw-tg-g svg { flex: 0 0 13px; width: 13px; height: 13px; } .mw-tg-g span { overflow: hidden; text-overflow: ellipsis; }
+    .mw-tg-g:hover { background: #555; } .mw-tg-g.on { background: #5b7cc4; border-color: #7d9ae0; color: #fff; } .mw-tg-g.drop { outline: 2px solid #ffd24d; outline-offset: -2px; }
+    .mw-tg-list { flex: 1; min-height: 0; overflow-y: auto; padding: 2px; }
+    .mw-tg-row { position: relative; height: 34px; margin: 0 0 1px; background: #262626; cursor: pointer; overflow: hidden; user-select: none; }
+    .mw-tg-row canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; filter: invert(1) grayscale(1) brightness(1.15); pointer-events: none; }
+    .mw-tg-row span { position: absolute; right: 6px; bottom: 3px; color: #fff; text-shadow: 0 0 3px #000, 0 0 2px #000; max-width: 85%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
+    .mw-tg-row:hover { outline: 1px solid #777; outline-offset: -1px; }
+    .mw-tg-row.on { background: #c9d3e6; } .mw-tg-row.on canvas { filter: none; mix-blend-mode: multiply; } .mw-tg-row.on span { color: #1d2433; text-shadow: none; }
+    .mw-tg-row.sel { outline: 2px solid #6f8fd6; outline-offset: -2px; }
+    .mw-tg-row.ins-top { box-shadow: inset 0 3px 0 #ffd24d; } .mw-tg-row.ins-bot { box-shadow: inset 0 -3px 0 #ffd24d; }
+    .mw-tg-info { font-size: 11px; color: #bbb; padding: 0 5px; }
+    .mw-tg-info:empty { display: none; }
+    .mw-tg-empty { padding: 10px; color: #aaa; }
+    .mw-tg-bar { display: flex; align-items: center; gap: 2px; padding: 3px 4px; border-top: 1px solid #262626; }
+    .mw-tg-b { width: 22px; height: 20px; display: flex; align-items: center; justify-content: center; color: #cfcfcf; cursor: pointer; border-radius: 2px; }
+    .mw-tg-b:hover { background: #555; } .mw-tg-b svg { width: 15px; height: 15px; } .mw-tg-b.armed { background: #a33; color: #fff; }
+    .mw-tg-sp { flex: 1; }
+    .mw-tg-menu { position: fixed; z-index: 2147483000; background: #3f3f3f; border: 1px solid #222; box-shadow: 0 4px 14px rgba(0,0,0,.5); padding: 3px 0; min-width: 170px; font: 12px system-ui, sans-serif; color: #dadada; }
+    .mw-tg-mi { padding: 4px 12px; cursor: pointer; } .mw-tg-mi:hover { background: #606a80; } .mw-tg-mi.dis { opacity: .4; cursor: default; }
+    .mw-tg-ask { padding: 4px; } .mw-tg-ask input { width: 200px; }
+    html.mw-tg-dragging, html.mw-tg-dragging * { cursor: grabbing !important; }
     .mw-nav { position: absolute; inset: 0; background: #7b7b7b; overflow: hidden; }
     .mw-nav canvas { width: 100%; height: 100%; display: block; cursor: pointer; touch-action: none; }
     .mw-lp-cap { display: flex; align-items: center; gap: 6px; margin: 4px 0 5px; font-size: 11px; color: #a3a5ad; }
@@ -12730,6 +12948,7 @@ void main(){
       }
       dkAdopt(); dkEnsureAll(); dkRender();
       dkGuardTools();
+      tgTick(); // 고급 브러시 목록 → 브러시 목록 창
       // 브러시 목록 탭을 보고 있는데 Magma 설정의 'Brush list'가 꺼져 있으면 목록이 비어 보인다(실측: settings-hide-brushes=y) → 켠다
       { let hid = false; try { hid = localStorage.getItem('settings-hide-brushes') === 'y'; } catch { /* 무시 */ }
         const Ed = getEditor();
@@ -12846,6 +13065,9 @@ void main(){
   // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
   // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
   const NEWS = [
+    { v: '0.45.0',
+      ko: ['고급 브러시가 획을 뗀 뒤 멈추던 문제를 고쳤어요: 왼쪽·위로 넓힌 보드에서 획마다 보드 전체 크기 그림을 붙이던 것을 작은 그림으로 (보드에 들어가기까지 약 0.03초)', '고급 브러시 목록이 ‘브러시 목록’ 창으로 옮겨졌어요 (클립 스튜디오 보조 도구 그룹처럼): 위쪽 그룹 단추(우클릭 = 추가·이름 바꾸기·지우기), 획 미리보기 목록, 아래 설정·새 브러시·가져오기·복제·지우기', 'Ctrl·Shift로 여러 브러시를 고르고 설정을 한 번에 바꾸거나 지울 수 있어요. 끌어서 순서를 바꾸고, 그룹 단추로 끌면 그 그룹으로 옮겨요', '고급 브러시·블러 등을 쓰는 동안 Space를 누르면 손바닥 커서로 바뀌어요'],
+      en: ['Fixed the pause after lifting the pen with the advanced brush: on boards extended left/top it pasted a board-sized image for every stroke, now a small one (about 0.03 s to land)', 'The advanced brush list moved into the Brush list window (like Clip Studio’s sub tool group): group buttons on top (right-click = add, rename, remove), stroke-preview list, and settings/new/import/duplicate/delete at the bottom', 'Select several brushes with Ctrl/Shift to change their settings together or delete them. Drag to reorder, or drop on a group button to move them there', 'Holding Space while using the advanced brush, blur and similar tools now shows the hand cursor'] },
     { v: '0.44.0',
       ko: ['네비게이터 창을 만들었어요 (Window 메뉴에서 열기): 보드 전체가 작게 보이고, 빨간 사각형이 지금 보는 곳이에요(옆 창에 가린 부분은 빼고, 화면 회전도 따라가요). 누르거나 끌면 그 자리로 이동해요', '15칸 넘는 되돌리기가 자주 안 되던 문제를 고쳤어요 (빈 레이어에 처음 그은 획 등이 섞이면 기억해 둔 기록을 통째로 버리던 문제)', '체크 칸·드롭다운·숫자 칸·단추를 누른 뒤에도 도구 단축키가 바로 먹어요 (글자를 쓰는 칸만 예외)', '경계 효과가 켜진 레이어에 그릴 때 덜 무거워졌어요 (펜이 지나간 곳만 다시 계산)'],
       en: ['New Navigator window (open it from the Window menu): shows the whole board, and the red rectangle is what you are looking at (minus edges covered by docked windows, and it follows canvas rotation). Click or drag to move there', 'Fixed undo beyond 15 steps often not working (the saved history was thrown away when, for example, the first stroke on an empty layer was mixed in)', 'Tool shortcuts now work right after clicking a checkbox, dropdown, number box or button (only text boxes are excluded)', 'Drawing on a layer with the border effect is lighter (only the area the pen passed is recalculated)'] },
