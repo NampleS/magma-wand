@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (function mwBoot() {
   'use strict';
-  const VERSION = '0.46.0';
+  const VERSION = '0.47.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -142,9 +142,9 @@
   }
   function saveSettings() {
     try {
-      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn, chatToast, lassoOp, lassoBack, bszList, aaFollow, aaTex, aaLast, euOn } = S;
+      const { tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn, chatToast, lassoOp, lassoBack, bszList, aaFollow, aaTex, aaLast, euOn, advGroups, advGroupCur, advSeed, penCurveX, penCurveY } = S; // advGroups: 브러시 목록 그룹·순서 (예전엔 저장이 빠져 매번 초기화됨)
       localStorage.setItem('magmaWand.settings',
-        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn, chatToast, lassoOp, lassoBack, bszList, aaFollow, aaTex, aaLast, euOn }));
+        JSON.stringify({ tol, expand, action, ref, keys, contig, histOn, growPx, tool, brush, qtol, qexpand, qref, qkeys, bkeys, akeys, advBrushId, advOpacity, blurSize, blurStrength, blurDensity, koAuto, koFont, groupLast, txtFont, txtSize, gap, qmSize, qmMode, fillGrow, lkeys, mkeys, lang, ykeys, symOn, symN, symMirror, qsOn, chatToast, lassoOp, lassoBack, bszList, aaFollow, aaTex, aaLast, euOn, advGroups, advGroupCur, advSeed, penCurveX, penCurveY }));
     } catch { /* 저장 못 해도 동작에는 지장 없음 */ }
   }
 
@@ -2161,9 +2161,9 @@
   const ADV = { gl: null, cv: null, P: {}, vao: null, ibuf: null, fb: null, W: 0, H: 0, S: null, C: null, cTimer: 0,
     pend: [], tips: new Map(), tex: null, brush: null, tipTex: [], texInfo: null, stroke: null, batch: [], dbatch: [], raf: 0, lost: false, commitQ: Promise.resolve() };
   const ADV_VS = `#version 300 es
-in vec2 aPos; in float aSize; in float aAngle; in vec2 aSq; in float aAlpha; in vec3 aColor; in vec2 aFlip; in vec2 aV; in vec2 aX; in float aTD;
+in vec2 aPos; in float aSize; in float aAngle; in vec2 aSq; in float aAlpha; in vec3 aColor; in vec2 aFlip; in vec2 aV; in vec2 aX; in float aTD; in float aMA;
 uniform vec2 uDoc; uniform float uRibbon; uniform vec2 uOrg; uniform float uQuad;
-out vec2 vUV; out float vA; out vec3 vC; out vec2 vDoc; out vec2 vVSpan; out vec2 vX; out float vTD;
+out vec2 vUV; out float vA; out vec3 vC; out vec2 vDoc; out vec2 vVSpan; out vec2 vX; out float vTD; out float vMA;
 void main(){
   int k = gl_VertexID; vec2 c = vec2((k == 1 || k == 2 || k == 4) ? 1.0 : -1.0, (k == 2 || k == 4 || k == 5) ? 1.0 : -1.0);
   if (uQuad > 0.5) c *= uQuad; // 클립 스튜디오식 원형 끝: 부드러운 꼬리가 크기 바깥(최대 1.32배)까지
@@ -2172,12 +2172,13 @@ void main(){
   if (uRibbon > 0.5) hs = vec2(aSize * 0.5 * aSq.x, aSq.y * 0.5);
   vec2 l = c * hs; float cs = cos(aAngle), sn = sin(aAngle);
   vec2 p = aPos + vec2(l.x * cs - l.y * sn, l.x * sn + l.y * cs) - uOrg; // 보드 안 좌표
-  vDoc = p; vA = aAlpha; vC = aColor; vVSpan = aV; vX = aX; vTD = aTD;
+  vDoc = p; vA = aAlpha; vC = aColor; vVSpan = aV; vX = aX; vTD = aTD; vMA = aMA;
   gl_Position = vec4(p / uDoc * 2.0 - 1.0, 0.0, 1.0);
 }`;
   const ADV_FS = `#version 300 es
 precision highp float;
-in vec2 vUV; in float vA; in vec3 vC; in vec2 vDoc; in vec2 vVSpan; in vec2 vX; in float vTD;
+in vec2 vUV; in float vA; in vec3 vC; in vec2 vDoc; in vec2 vVSpan; in vec2 vX; in float vTD; in float vMA;
+uniform float uRep;
 uniform vec2 uTexR;
 uniform sampler2D uTip; uniform sampler2D uTex; uniform float uRound; uniform float uHard; uniform float uAA; uniform float uCsp;
 uniform float uUseTex; uniform float uTexDen; uniform vec2 uTexScale; uniform float uTexInv; uniform float uRibbon; uniform float uTexCon;
@@ -2237,7 +2238,7 @@ void main(){
   }
   if (uAA < 0.5) m = m >= 0.5 ? 1.0 : 0.0;
   if (uUseTex > 0.5) { vec2 tq = vec2(uTexR.x * vDoc.x - uTexR.y * vDoc.y, uTexR.y * vDoc.x + uTexR.x * vDoc.y); float t = texture(uTex, tq / uTexScale).r; if (uTexInv > 0.5) t = 1.0 - t; t = clamp((t - 0.5) * (1.0 + uTexCon * 4.0) + 0.5, 0.0, 1.0); m *= mix(1.0, t, clamp(uTexDen * vTD, 0.0, 1.0)); }
-  if (uPass > 0.5) { // 두께(높이) 버퍼: 맨 위 물감 면의 높낮이. 묽은 물감일수록 얇게 덮는다
+  if (uPass > 0.5 && uPass < 1.5) { // 두께(높이) 버퍼: 맨 위 물감 면의 높낮이. 묽은 물감일수록 얇게 덮는다
     float h = hgt >= 0.0 ? hgt : m;
     float ah = clamp(m * min(1.0, vA * 2.5), 0.0, 1.0) * 0.55;
     if (ah <= 0.0005) discard;
@@ -2245,6 +2246,8 @@ void main(){
   }
   float a = clamp(m * vA, 0.0, 1.0);
   if (a <= 0.0005) discard;
+  // 바꿔 칠하기(클립 스튜디오 색 혼합): a = 덮는 정도, vMA = 묻은 물감의 진하기. 획 버퍼 = (색×진하기×a, a), 진하기 버퍼(uPass 2) = (진하기×a, ·, ·, a)
+  if (uRep > 0.5) { o = uPass > 1.5 ? vec4(vMA * a, 0.0, 0.0, a) : vec4(col * vMA * a, a); return; }
   o = vec4(col * a, a);
 }`;
   const ADV_SHOW_VS = `#version 300 es
@@ -2256,10 +2259,10 @@ uniform sampler2D uS; uniform sampler2D uTex; uniform vec3 uInv0; uniform vec3 u
 uniform float uOp; uniform float uUseTex; uniform float uTexDen; uniform vec2 uTexScale; uniform float uTexInv; uniform float uMode; uniform vec2 uOff; uniform vec2 uTexR;
 uniform sampler2D uD; uniform float uUseD; uniform float uTexCon;
 uniform float uTexMode; uniform float uTexFloor;
-uniform float uCtx; uniform sampler2D uK; uniform float uUseK; uniform sampler2D uA; uniform float uUseA;
+uniform float uCtx; uniform sampler2D uK; uniform float uUseK; uniform sampler2D uA; uniform float uUseA; uniform float uRep; uniform sampler2D uM;
 uniform float uErase; uniform float uMul; uniform float uLock; uniform float uLop;
 uniform float uImp; uniform float uShine; uniform sampler2D uHb;
-uniform float uWet; uniform float uWob; uniform float uGran; uniform float uSoft; uniform sampler2D uNz; uniform float uNzS; uniform vec3 uEdge;
+uniform float uWet; uniform float uWob; uniform float uGran; uniform float uSoft; uniform sampler2D uNz; uniform float uNzS; uniform vec3 uEdge; uniform float uEdgeC;
 out vec4 o;
 float aAt(vec2 q){ q = clamp(q, vec2(0.0), uDoc - 1.0); return uMode > 0.5 ? texelFetch(uS, ivec2(q), 0).a : textureLod(uS, q / uDoc, 0.0).a; }
 // 젖은 물감: 쌓인 물감 양의 등고선 하나를 물 가장자리로 삼아 또렷하게, 낮은 주파수 노이즈로 가장자리가 구불구불
@@ -2293,7 +2296,8 @@ void main(){
       }
       B /= 25.0;
       float e = clamp((sh - B) * 2.5, 0.0, 1.0);
-      na = min(1.0, na + (1.0 - na) * uEdge.y * e + na * uEdge.y * e * 0.6);
+      if (uEdgeC > 0.0) { e = clamp((sh - B) / max(sh, 0.05) * 2.0, 0.0, 1.0); na = min(1.0, na * (1.0 + uEdgeC * e)); } // 클립 스튜디오: 획 바깥 1~2px 테가 진해진다 (실측: 안 0.40 → 테 0.56)
+      else na = min(1.0, na + (1.0 - na) * uEdge.y * e + na * uEdge.y * e * 0.6);
       cc *= 1.0 - uEdge.z * e * 0.55;
     }
     if (uGran > 0.0) {
@@ -2330,6 +2334,11 @@ void main(){
   }
   if (uMode > 0.5) { o = c.a > 0.00001 ? vec4(clamp(c.rgb / c.a, 0.0, 1.0), clamp(c.a * k, 0.0, 1.0)) : vec4(0.0); return; }
   vec4 s = c * k;
+  if (uRep > 0.5) { // 바꿔 칠하기: 결과 = 칠한 물감 + 원래 그림×(1−덮음). 투명을 끌어온 만큼(덮음−진하기) 아래 그림이 드러난다 (K.rgb = 아래 그림)
+    float Pa = texture(uM, p / uDoc).r * k;
+    vec4 K = uCtx > 0.5 && uUseK > 0.5 ? texelFetch(uK, ivec2(p), 0) : vec4(1.0);
+    o = vec4(s.rgb + K.rgb * max(0.0, s.a - Pa), s.a) * K.a; return;
+  }
   if (uCtx < 0.5) { o = s; return; }
   // 실제 결과처럼: K.a = 보이는 정도(위 레이어에 가린 만큼·클리핑·선택 영역), K.rgb = 지울 때 드러날 아래 그림
   ivec2 ip = ivec2(p);
@@ -2348,7 +2357,9 @@ void main(){
     for (let i = 0; i < n; i++) { const nm = gl.getActiveUniform(p, i).name; u[nm] = gl.getUniformLocation(p, nm); }
     return { p, u };
   };
-  const INST = 17; // aPos2 aSize aAngle aSq2 aAlpha aColor3 aFlip2 aV2 aX2(획 길이·남은 물감) aTD(텍스처 농도 배율)
+  let ADV_EDGEK0 = 1.5, ADV_EDGEK1 = 3; // 클립 스튜디오 수채 경계: 1단계(0.05)에서 테가 안쪽보다 약 1.4배
+  let ADV_MINDAB = 1.6, ADV_MINK = 0.37; // 가는 선: 최소 도장 크기(px)와 진하기 보정
+  const INST = 18; // aPos2 aSize aAngle aSq2 aAlpha aColor3 aFlip2 aV2 aX2(획 길이·남은 물감) aTD(텍스처 농도 배율) aMA(바꿔 칠하기의 물감 진하기)
   function advEnsureGL(canvas, W, H) {
     if (!ADV.cv || !ADV.cv.isConnected || ADV.cv.parentElement !== canvas.parentElement) {
       ADV.cv?.remove();
@@ -2356,8 +2367,8 @@ void main(){
       ADV.gl = ADV.cv.getContext('webgl2', { premultipliedAlpha: true, alpha: true, antialias: false });
       if (!ADV.gl) throw new Error('WebGL2를 쓸 수 없어요');
       ADV.cv.addEventListener('webglcontextlost', (e) => { e.preventDefault(); ADV.lost = true; });
-      ADV.cv.addEventListener('webglcontextrestored', () => { ADV.lost = false; ADV.P = {}; ADV.S = ADV.C = ADV.K = ADV.A = ADV.Hb = ADV.nz = null; ADV.tips.clear(); ADV.tex = null; ADV.W = 0; });
-      ADV.P = {}; ADV.S = ADV.C = ADV.K = ADV.A = ADV.Hb = ADV.nz = null; ADV.tips.clear(); ADV.tex = null; ADV.W = 0;
+      ADV.cv.addEventListener('webglcontextrestored', () => { ADV.lost = false; ADV.P = {}; ADV.S = ADV.C = ADV.K = ADV.A = ADV.Hb = ADV.M = ADV.nz = null; ADV.tips.clear(); ADV.tex = null; ADV.W = 0; });
+      ADV.P = {}; ADV.S = ADV.C = ADV.K = ADV.A = ADV.Hb = ADV.M = ADV.nz = null; ADV.tips.clear(); ADV.tex = null; ADV.W = 0;
       canvas.after(ADV.cv);
     }
     Object.assign(ADV.cv.style, { position: 'absolute', left: canvas.offsetLeft + 'px', top: canvas.offsetTop + 'px',
@@ -2370,7 +2381,7 @@ void main(){
       ADV.ibuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, ADV.ibuf);
       const p = ADV.P.stamp.p, stride = INST * 4;
       const attr = (name, n, off) => { const loc = gl.getAttribLocation(p, name); if (loc < 0) return; gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, n, gl.FLOAT, false, stride, off * 4); gl.vertexAttribDivisor(loc, 1); };
-      attr('aPos', 2, 0); attr('aSize', 1, 2); attr('aAngle', 1, 3); attr('aSq', 2, 4); attr('aAlpha', 1, 6); attr('aColor', 3, 7); attr('aFlip', 2, 10); attr('aV', 2, 12); attr('aX', 2, 14); attr('aTD', 1, 16);
+      attr('aPos', 2, 0); attr('aSize', 1, 2); attr('aAngle', 1, 3); attr('aSq', 2, 4); attr('aAlpha', 1, 6); attr('aColor', 3, 7); attr('aFlip', 2, 10); attr('aV', 2, 12); attr('aX', 2, 14); attr('aTD', 1, 16); attr('aMA', 1, 17);
       gl.bindVertexArray(null);
       ADV.fb = gl.createFramebuffer();
       const blank = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, blank);
@@ -2400,7 +2411,9 @@ void main(){
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       if (ADV.Hb) gl.deleteTexture(ADV.Hb);
       ADV.Hb = mk(); // 두께(높이) 버퍼
-      advClear(ADV.S, null); advClear(ADV.C, null); advClear(ADV.D, null); advClear(ADV.Hb, null);
+      if (ADV.M) gl.deleteTexture(ADV.M);
+      ADV.M = mk(); // 바꿔 칠하기의 물감 진하기 버퍼
+      advClear(ADV.S, null); advClear(ADV.C, null); advClear(ADV.D, null); advClear(ADV.Hb, null); advClear(ADV.M, null);
       for (const t of [ADV.K, ADV.A]) if (t) gl.deleteTexture(t);
       ADV.K = ADV.A = null;
     }
@@ -2499,6 +2512,15 @@ void main(){
     return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
   }
   // 획 시작
+  // 공통 필압 곡선: (0,0)–(cx,cy)–(1,1) 2차 베지어. cx=cy면 그대로
+  function penCurve(p) {
+    const cx = (S.penCurveX == null ? 50 : S.penCurveX) / 100, cy = (S.penCurveY == null ? 50 : S.penCurveY) / 100;
+    p = Math.max(0, Math.min(1, p));
+    if (Math.abs(cx - cy) < 1e-3) return p;
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 24; i++) { const t = (lo + hi) / 2, x = 2 * t * (1 - t) * cx + t * t; if (x < p) lo = t; else hi = t; }
+    const t = (lo + hi) / 2; return 2 * t * (1 - t) * cy + t * t;
+  }
   function advStrokeStart(e) {
     const b = ADV.brush;
     if (!b) return false;
@@ -2512,6 +2534,7 @@ void main(){
     }
     s.hsv = hsv(...s.color);
     if (b.mix && b.mix.mode !== 'none' && !s.erase) s.mix = advMixStart(b);
+    s.rep = !!(s.mix && b.sutVer >= 2 && !b.mix.km); // 클립 스튜디오 색 혼합 = 바꿔 칠하기 (투명을 끌어오면 그림이 옅어짐)
     s.ctx = advCtxStart(s, b);
     if (ADV.cv) ADV.cv.style.mixBlendMode = s.erase || !s.ctx ? '' : cssBlend(s.ctx.L.mode);
     ADV.stroke = s;
@@ -2529,7 +2552,7 @@ void main(){
     if (!s || !b) return;
     let [x, y] = docPt || advDocPoint(e);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-    const pr = e.pointerType === 'pen' ? Math.pow(Math.max(0.01, e.pressure || 0), b.pressGamma || 1) : 1; // 필압 곡선(감도)
+    const pr = e.pointerType === 'pen' ? Math.pow(Math.max(0.002, penCurve(e.pressure || 0)), b.pressGamma || 1) : 1; // 필압 곡선(공통) → 브러시별 감도
     const t = e.timeStamp || performance.now();
     // 튀는 점 막기: 아주 짧은 시간에 화면에서 300픽셀 넘게 건너뛴 점은 입력 오류로 보고 버린다
     if (s.rawLast && !s.straight) { const jump = Math.hypot(x - s.rawLast.x, y - s.rawLast.y) * viewZoom(); if (jump > 300 && t - s.rawLast.t < 40) return; }
@@ -2599,14 +2622,10 @@ void main(){
     if (br) { angle = ang + Math.PI / 2 + (rnd() - 0.5) * 0.03; sq = [1, Math.max(0.08, Math.min(1, th))]; } // 붓털: 폭이 획을 가로지르게
     if (b.rotMask & 0x80) angle += (rnd() - 0.5) * 2 * Math.PI * b.rotRandom;
     const texD = b.texDensEff ? effectorValue(b.texDensEff, p, s.speed, rnd()) : 1; // 텍스처 농도의 필압 등
-    let col = s.color, mixA = 1;
+    let col = s.color, mixA = 1, paintA = 1;
     if (s.mix) {
       const r = advMixColor(s, b, x, y, size, p, stepLen); col = r.c; mixA = r.a;
-      // 클립 스튜디오: 묻은 물감이 옅으면(투명을 묻힘) 도장이 겹쳐도 그 옅기 이상 진해지지 않는다 → 불투명도처럼 도장 하나의 진하기를 정한다
-      if (b.sutVer >= 2 && !b.mix.km && r.a < 0.999 && flow > 0) {
-        const A = 1 - Math.pow(1 - Math.min(0.999999, flow), 1 / gapK), T = r.a * A;
-        mixA = (1 - Math.pow(1 - T, gapK)) / flow;
-      }
+      if (s.rep) { paintA = r.a; mixA = 1; } // 바꿔 칠하기: 덮는 정도와 물감 진하기를 따로 (겹쳐도 그 진하기 이상 안 진해지고, 투명을 끌어오면 옅어짐)
     }
     if (b.jitter && (b.jitter.h || b.jitter.s || b.jitter.v)) {
       const [h, sat, v] = s.hsv;
@@ -2629,7 +2648,7 @@ void main(){
       let v = [0, 1];
       let sy = sqy * asp[1], sx = sqx * asp[0];
       if (b.ribbon) { const t = ADV.tipTex[ti]; const len = Math.max(0.5, stepLen || sz * 0.1); const rel = t ? (len / sz) * (t.w / t.h) : 0.01; v = [s.v, rel]; s.v = (s.v + rel) % 1; sy = len + 1; }
-      ADV.batch.push({ ti, dist: s.dist, c: b.spray ? [x, y] : null, d: [px, py, sz, a, sx, sy, alpha * mixA, col[0], col[1], col[2], fl[0], fl[1], v[0], v[1], s.dist / Math.max(1, b.size), load, texD] });
+      ADV.batch.push({ ti, dist: s.dist, c: b.spray ? [x, y] : null, d: [px, py, sz, a, sx, sy, alpha * mixA, col[0], col[1], col[2], fl[0], fl[1], v[0], v[1], s.dist / Math.max(1, b.size), load, texD, paintA] });
       const ext = sz * 0.75 * Math.max(sx, b.ribbon ? 1 : sy, 1) + (b.ribbon ? sy : 0) + 3;
       const bx = { x: Math.floor(px - ext), y: Math.floor(py - ext), w: Math.ceil(2 * ext) + 1, h: Math.ceil(2 * ext) + 1 };
       s.box = runion(s.box, bx);
@@ -2652,7 +2671,13 @@ void main(){
     } else {
       // 흩어짐: 도장 자리를 크기에 비례해 조금씩 흔든다 (목탄·파스텔 가장자리가 매끈하게 반복되지 않게)
       if (b.scatter > 0 && !br) { const a = rnd() * Math.PI * 2, r = size * b.scatter * Math.sqrt(rnd()); x += Math.cos(a) * r; y += Math.sin(a) * r; }
-      push(x, y, Math.max(0.5, size), angle, sq[0], sq[1], flow, pickTip());
+      if (size < ADV_MINDAB && !b.minPx) {
+        // 아주 가는 선(약한 필압): 작은 도장이 픽셀 중심에 걸릴 때만 찍혀 점선이 되던 것 → 최소 크기로 찍고 진하기를 굵기 비율만큼 낮춘다
+        // (클립 스튜디오처럼 0.06px 선은 아주 옅게 이어짐, 실측). 겹치는 도장 수 n만큼 나눠 쌓였을 때 그 진하기가 되게
+        const n = Math.max(1, ADV_MINDAB / Math.max(0.05, stepLen > 0 ? stepLen : size * b.interval));
+        const full = 1 - Math.pow(1 - Math.min(0.999999, flow), n), T = Math.min(1, full * size / ADV_MINDAB * (1 + ADV_MINK * (size / ADV_MINDAB) ** 2)); // 최소 크기 근처에서 보통 도장과 진하기가 이어지게
+        push(x, y, ADV_MINDAB, angle, sq[0], sq[1], 1 - Math.pow(1 - T, 1 / n), pickTip());
+      } else push(x, y, Math.max(0.5, size), angle, sq[0], sq[1], flow, pickTip());
     }
     // 2중 브러시: 자기 간격마다 두 번째 끝 모양을 D 버퍼용으로 찍는다
     const du = advDual(b);
@@ -2723,6 +2748,8 @@ void main(){
     if (ADV.stroke && ADV.stroke.seed == null) ADV.stroke.seed = Math.random() * 50;
     gl.uniform1f(P.u.uBSeed, ADV.stroke ? ADV.stroke.seed : 0);
     gl.uniform1f(P.u.uPass, 0);
+    const rep = !!(ADV.stroke && ADV.stroke.rep && ADV.M);
+    gl.uniform1f(P.u.uRep, rep ? 1 : 0);
     const imp = advImp(b) && ADV.Hb;
     gl.bindBuffer(gl.ARRAY_BUFFER, ADV.ibuf);
     // 출(끝 가늘게): 획이 끝날 때 줄일 수 있도록 끝에서 taperOut 길이만큼의 도장은 붙잡아 둔다
@@ -2746,6 +2773,11 @@ void main(){
         gl.uniform1f(P.u.uPass, 1); gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, list.length); gl.uniform1f(P.u.uPass, 0);
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ADV.S, 0);
       }
+      if (rep) { // 같은 도장을 물감 진하기 버퍼에도
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ADV.M, 0);
+        gl.uniform1f(P.u.uPass, 2); gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, list.length); gl.uniform1f(P.u.uPass, 0);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ADV.S, 0);
+      }
     }
     gl.blendEquation(gl.FUNC_ADD);
     gl.bindVertexArray(null);
@@ -2763,6 +2795,7 @@ void main(){
     gl.uniform1f(P.u.uWet, w ? 1 : 0); gl.uniform1f(P.u.uWob, w ? (w.wobble == null ? 0.3 : w.wobble) : 0); gl.uniform1f(P.u.uGran, w ? (w.gran || 0) : 0); gl.uniform1f(P.u.uSoft, w ? (w.soft || 0) : 0);
     gl.uniform1f(P.u.uNzS, Math.max(24, (b ? b.size : 40) * 2.2));
     gl.uniform3f(P.u.uEdge, we ? Math.max(1, we.radius || 4) : 0, we ? (we.alpha == null ? 0.6 : we.alpha) : 0, we ? (we.value == null ? 0.3 : we.value) : 0);
+    gl.uniform1f(P.u.uEdgeC, we && b.sutVer >= 2 ? ADV_EDGEK0 + ADV_EDGEK1 * (we.alpha || 0) : 0); // 클립 스튜디오 수채 경계 세기
     gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, im ? ADV.Hb : ADV.blank); gl.uniform1i(P.u.uHb, 5);
     gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, ADV.nz || ADV.blank); gl.uniform1i(P.u.uNz, 6);
     gl.activeTexture(gl.TEXTURE0);
@@ -2776,7 +2809,7 @@ void main(){
     gl.useProgram(P.p); gl.bindVertexArray(ADV.vao);
     gl.uniform2f(P.u.uDoc, ADV.W, ADV.H); gl.uniform2f(P.u.uOrg, ADV.ox || 0, ADV.oy || 0);
     const round = !ADV.dualTex;
-    gl.uniform1f(P.u.uRound, round ? 1 : 0); gl.uniform1f(P.u.uHard, du ? du.hardness : 1); gl.uniform1f(P.u.uAA, 1); gl.uniform1f(P.u.uCsp, 0); gl.uniform1f(P.u.uQuad, 1); gl.uniform1f(P.u.uRibbon, 0); gl.uniform1f(P.u.uUseTex, 0);
+    gl.uniform1f(P.u.uRound, round ? 1 : 0); gl.uniform1f(P.u.uHard, du ? du.hardness : 1); gl.uniform1f(P.u.uAA, 1); gl.uniform1f(P.u.uCsp, 0); gl.uniform1f(P.u.uQuad, 1); gl.uniform1f(P.u.uRep, 0); gl.uniform1f(P.u.uRibbon, 0); gl.uniform1f(P.u.uUseTex, 0);
     gl.uniform1f(P.u.uBN, 0); gl.uniform1f(P.u.uPass, 0);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, ADV.blank); gl.uniform1i(P.u.uTex, 1);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, round ? ADV.blank : ADV.dualTex.tex); gl.uniform1i(P.u.uTip, 0);
@@ -2812,6 +2845,7 @@ void main(){
       advDualUniforms(P, tex === ADV.S && !!(advDual(b) && ADV.stroke));
       advFxUniforms(P, tex === ADV.S || !ADV.cBaked, tex === ADV.S ? ADV.stroke.erase : false);
       advCtxUniforms(P, tex === ADV.S ? ADV.stroke.ctx : ADV.cCtx);
+      advRepUniforms(P, tex === ADV.S && ADV.stroke.rep);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(P.u.uS, 0);
       gl.uniform1f(P.u.uOp, op);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -2852,7 +2886,7 @@ void main(){
     }
     if (L.clippingGroup) { const bi = baseOf(ai); ctx.clipBase = bi >= 0 ? Ls[bi] : null; }
     const prev = ADV.cBox && ADV.cCtx; // 지난 획이 아직 화면에 있으면 그 계산도 함께 (같은 타일을 다시 읽으므로)
-    ctx.wantB = ctx.erase || ctx.kmVis || !!(prev && prev.wantB);
+    ctx.wantB = ctx.erase || ctx.kmVis || !!s.rep || !!(prev && prev.wantB);
     if (ctx.wantB) {
       const m = /^#?([0-9a-f]{6})$/i.exec(String(E.drawing.background || ''));
       if (m) { const n = parseInt(m[1], 16); ctx.bg = [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; }
@@ -2957,6 +2991,12 @@ void main(){
     gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, ADV.A || ADV.blank); gl.uniform1i(P.u.uA, 4);
     gl.activeTexture(gl.TEXTURE0);
   }
+  function advRepUniforms(P, on) { // 바꿔 칠하기 화면: 물감 진하기 버퍼를 함께
+    const gl = ADV.gl; on = !!(on && ADV.M);
+    gl.uniform1f(P.u.uRep, on ? 1 : 0);
+    gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, on ? ADV.M : ADV.blank); gl.uniform1i(P.u.uM, 7);
+    gl.activeTexture(gl.TEXTURE0);
+  }
   const advDual = (b) => (b && b.dual && !b.dualOff ? b.dual : null);
   function advDualUniforms(P, on) {
     const gl = ADV.gl;
@@ -3001,7 +3041,7 @@ void main(){
     if (s.last) ADV.lastEnd = { x: s.last.x, y: s.last.y, p: s.last.p }; // Shift+클릭 직선용
     const gl = ADV.gl;
     const box = s.box ? rshift(rclip(rshift(s.box, -(ADV.ox || 0), -(ADV.oy || 0)), ADV.W, ADV.H), ADV.ox || 0, ADV.oy || 0) : null; // 절대 좌표, 보드 안으로 자름
-    if (cancel || !box) { advClear(ADV.S, box); if (ADV.D && box) advClear(ADV.D, box); if (ADV.Hb && box) advClear(ADV.Hb, box); advKick(); return; }
+    if (cancel || !box) { advClear(ADV.S, box); if (ADV.D && box) advClear(ADV.D, box); if (ADV.Hb && box) advClear(ADV.Hb, box); if (ADV.M && box) advClear(ADV.M, box); advKick(); return; }
     // 확정용: 획 버퍼 × 불투명도 × 획 단위 텍스처를 box 크기로 잘라 읽는다
     const op = advOpacity();
     const out = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, out); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, box.w, box.h);
@@ -3012,6 +3052,7 @@ void main(){
     const P = ADV.P.show; gl.useProgram(P.p); gl.bindVertexArray(ADV.vao);
     gl.uniform1f(P.u.uMode, 1); gl.uniform2f(P.u.uOff, box.x - (ADV.ox || 0), box.y - (ADV.oy || 0)); gl.uniform2f(P.u.uDoc, ADV.W, ADV.H); gl.uniform1f(P.u.uOp, op);
     advCtxUniforms(P, null);
+    advRepUniforms(P, false);
     advTexUniforms(P);
     advDualUniforms(P, !!advDual(ADV.brush));
     advFxUniforms(P, true, s.erase);
@@ -3019,17 +3060,26 @@ void main(){
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const px = new Uint8Array(box.w * box.h * 4);
     gl.readPixels(0, 0, box.w, box.h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    let pm = null;
+    if (s.rep && ADV.M) { // 바꿔 칠하기: 물감 진하기 버퍼도 같은 방법으로 (빨강 칸 = 진하기/덮음, 알파 = 덮음)
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.bindTexture(gl.TEXTURE_2D, ADV.M); gl.drawArrays(gl.TRIANGLES, 0, 3);
+      pm = new Uint8Array(box.w * box.h * 4);
+      gl.readPixels(0, 0, box.w, box.h, gl.RGBA, gl.UNSIGNED_BYTE, pm);
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.bindVertexArray(null); gl.deleteTexture(out);
     if (ADV.D) advClear(ADV.D, box);
     if (ADV.Hb) advClear(ADV.Hb, box);
+    if (ADV.M) advClear(ADV.M, box);
     // 화면에는 확정될 때까지 남겨 둔다 (획 버퍼 S는 비우고, 확정 대기 C에 실제 들어갈 모습으로 올림)
     advClear(ADV.S, box);
     // px = 일반 알파(GPU에서 미리곱셈을 풀어 줌; 수채 경계·두께감은 셰이더에서 이미 들어감) — 선택 밖 잘라내기
     const boxM = rshift(box, ADV.mx || 0, ADV.my || 0); // 레이어·선택은 모델 좌표
     advClipToSelection(px, boxM, false);
+    if (pm) advClipToSelection(pm, boxM, false);
     let any = false;
     for (let i = 3; i < px.length; i += 4) if (px[i]) { any = true; break; }
-    const item = { box, px, ctx: s.ctx || null, erase: !!s.erase };
+    const item = { box, px: pm ? advRepPreview(s.ctx, px, pm, boxM) : px, ctx: s.ctx || null, erase: !!s.erase };
     if (any) advPendAdd(item); // 화면에는 실제로 들어갈 모습 그대로
     advKick();
     const blend = !s.erase && bb && (bb.blend === 'multiply' || bb.blend === 'glaze') ? bb.blend : 'normal';
@@ -3044,7 +3094,7 @@ void main(){
       return;
     }
     const vis0 = blend === 'glaze' && s.ctx && s.ctx.kmVis ? advVisBelow(s.ctx, boxM) : null; // 보이는 그림(현재 레이어 아래) — 그은 때의 것
-    (ADV.pq || (ADV.pq = [])).push({ px, box: boxM, blend, vis: vis0, clearNow, done });
+    (ADV.pq || (ADV.pq = [])).push({ px, pm, box: boxM, blend: pm ? 'rep' : blend, vis: vis0, clearNow, done });
     if (!ADV.pqPend) { ADV.pqPend = true; ADV.commitQ = ADV.commitQ.then(advPasteFlush); }
   }
   // 기다리는 획들을 붙인다: 보통 합성 획이 이어지면 한 장으로 합쳐 한 번에 (곱하기·물감 겹치기·투명 픽셀 잠금은 한 획씩)
@@ -3055,6 +3105,7 @@ void main(){
     for (let i = 0; i < items.length;) {
       const it = items[i];
       try {
+        if (it.blend === 'rep') { await advRepCommit(E, L, it.px, it.pm, it.box, it.clearNow); i++; continue; } // 클립 스튜디오 색 혼합 (바꿔 칠하기)
         if (E && L && L.opacityLocked) { await advLockedCommit(E, L, it.px, it.box, it.blend, it.clearNow, it.vis); i++; continue; } // 투명 픽셀 잠금
         if (it.blend !== 'normal') { await advPastePx(E, L, E && L ? advMultiplyPx(E, L, it.px, it.box, it.blend === 'glaze', it.vis) : it.px, it.box, it.clearNow); i++; continue; }
         let j = i; while (j < items.length && items[j].blend === 'normal') j++;
@@ -3173,6 +3224,48 @@ void main(){
       out[i + 3] = As;
     }
     return out;
+  }
+  // ----- 바꿔 칠하기 (클립 스튜디오 색 혼합) -----
+  // px = (칠한 색, 덮음 T), pm = (물감 진하기/덮음, ·, ·, 덮음) — 둘 다 일반 알파. 결과 = 칠한 물감 + 원래 그림×(1−T), 진하기 = Pa + 원래 진하기×(1−T)
+  const repPa = (px, pm, i) => Math.min(px[i + 3], pm[i] * pm[i + 3] / 255) / 255;
+  // 확정될 때까지 화면에 둘 모습: 투명을 끌어온 만큼(T−Pa) 아래 그림이 드러나 보이게
+  function advRepPreview(ctx, px, pm, boxM) {
+    let need = false;
+    for (let i = 0; i < px.length; i += 4) if (px[i + 3] && px[i + 3] / 255 - repPa(px, pm, i) > 1.5 / 255) { need = true; break; }
+    if (!need) return px;
+    const B = ctx ? advVisBelow(ctx, boxM) : null, out = new Uint8Array(px);
+    for (let i = 0, j = 0; i < px.length; i += 4, j += 3) {
+      const T = px[i + 3] / 255; if (!T) continue;
+      const g = 1 - repPa(px, pm, i) / T; if (g <= 0) continue;
+      for (let c = 0; c < 3; c++) out[i + c] = Math.round(Math.min(255, px[i + c] + (B ? B[j + c] : 1) * 255 * g));
+    }
+    return out;
+  }
+  async function advRepCommit(E, L, px, pm, box, onLanded) {
+    if (!E || !L) { onLanded?.(); return; }
+    const before = readLayerEff(E, L, box), after = new Uint8ClampedArray(before), spx = new Uint8Array(px.length);
+    const lock = !!L.opacityLocked;
+    let any = false, paste = !lock;
+    for (let i = 0; i < px.length; i += 4) {
+      const T = px[i + 3] / 255; if (!T) continue;
+      const Pa = repPa(px, pm, i), Ba = before[i + 3] / 255;
+      if (lock && !Ba) continue;
+      any = true;
+      let A = Pa + Ba * (1 - T);
+      const out = [0, 0, 0];
+      for (let c = 0; c < 3; c++) out[c] = (px[i + c] / 255) * T + (before[i + c] / 255) * Ba * (1 - T); // 미리곱셈
+      if (lock) { const A0 = A; A = Ba; for (let c = 0; c < 3; c++) out[c] = A0 > 1e-6 ? out[c] / A0 * A : before[i + c] / 255 * A; }
+      after[i + 3] = Math.round(A * 255);
+      for (let c = 0; c < 3; c++) after[i + c] = A > 1e-6 ? Math.round(Math.min(1, out[c] / A) * 255) : 0;
+      if (!paste) continue;
+      // 덮어 붙이기 한 번으로 같은 결과가 되는지 (진하기가 줄지 않는 곳만 가능)
+      if (Ba < 0.5 / 255) { spx[i] = after[i]; spx[i + 1] = after[i + 1]; spx[i + 2] = after[i + 2]; spx[i + 3] = after[i + 3]; }
+      else if (T - Pa <= 1.5 / 255) { spx[i] = px[i]; spx[i + 1] = px[i + 1]; spx[i + 2] = px[i + 2]; spx[i + 3] = px[i + 3]; }
+      else paste = false;
+    }
+    if (!any) { onLanded?.(); return; }
+    if (paste) { await advPastePx(E, L, spx, box, onLanded); return; } // 대부분: 붙여넣기 한 번 (되돌리기 한 칸)
+    await replaceLayerRegion(E, L, box, before, after, '칠하지', onLanded); // 투명을 끌어와 옅어진 곳이 있으면 비우고 붙이기
   }
   // 투명 픽셀 잠금 레이어: 있는 그림의 투명도는 그대로 두고 색만 바꾼다 (붙여넣기는 잠금을 안 지키므로 비우기+붙여넣기로, 실측)
   async function advLockedCommit(E, L, px, box, blend, onLanded, vis) {
@@ -3391,7 +3484,7 @@ void main(){
   //  · 색은 화면색 그대로(RGB) 섞는다 — 감산이 아님 (노랑+파랑 = 칙칙한 황토, CSP와 같음)
   //  · 붓은 묻은 색(K)을 끌고 간다. 'blend(혼합)'는 색 늘이기가 클수록 오래 끌고, 'paint(물감 흐름)'는 늘 길게 끌며
   //    방금 칠한 물감(D)도 다시 묻혀 간다(그래서 아래 색이 덜 섞여 보인다)
-  const MIXC = { fPaint: 0.5, fPaintS: 0.07, rho: 0.7, rhoA: 0.9, fBlendK: 1.4, fBlendMin: 0.1 };
+  const MIXC = { fPaint: 0.5, fPaintS: 0.07, rho: 0.7, rhoA: 0.7, rhoAk: 0.3, fBlendK: 1.4, fBlendMin: 0.1 };
   function advMixColorCsp(s, b, x, y, size, p, stepLen) {
     const mx = b.mix, m = s.mix;
     const U = advMixSample(m, x, y, size / 2);
@@ -3407,7 +3500,7 @@ void main(){
     let src = U;
     if (paint) { // 방금 칠한 물감도 다시 묻힌다: 색은 rho만큼, 진하기는 rhoA만큼 (투명한 곳으로 나가도 물감이 쉽게 옅어지지 않음 — CSP)
       src = lerp4(U, m.D, MIXC.rho);
-      const ua = U[3] + (m.D[3] - U[3]) * MIXC.rhoA;
+      const ua = U[3] + (m.D[3] - U[3]) * Math.min(1, MIXC.rhoA + MIXC.rhoAk * amt); // 물감을 많이 섞는 붓일수록 제 물감 진하기를 오래 유지
       if (src[3] > 1e-6) { const k = ua / src[3]; src = [src[0] * k, src[1] * k, src[2] * k, ua]; } else src = [0, 0, 0, ua];
     }
     m.K = lerp4(m.K, src, f);
@@ -3703,15 +3796,59 @@ void main(){
       TG.sel.clear(); ADV.brush = null; await advSelect(null); advListRender?.();
     }
   }
+  // ----- 기본 브러시 목록: 모든 프리셋을 브러시로 만들어 5개 그룹(+내 브러시)에 나눠 넣는다 (한 번만, 사용자 요청 2026-11-27) -----
+  const SEED_V = 1;
+  const SEED_G = [
+    { k: 'pen', ko: '펜·연필', en: 'Pens & pencils', cats: ['연필·스케치', '잉크·펜', '마커'], csp: ['펜', '마커', '연필'] },
+    { k: 'wc', ko: '수채·먹', en: 'Watercolor & ink', cats: ['수채'], csp: ['수채', '먹'] },
+    { k: 'paint', ko: '물감·섞기', en: 'Paint & blend', cats: ['물감 (유화·구아슈)', '섞기·문지르기'], csp: ['두껍게 칠하기', '색 혼합'] },
+    { k: 'dry', ko: '파스텔·에어', en: 'Dry & airbrush', cats: ['드라이 (목탄·파스텔)', '에어브러시'], csp: ['파스텔', '에어브러시'] },
+    { k: 'fx', ko: '질감·지우개', en: 'Texture & erasers', cats: ['질감·특수', '장식·자연'], csp: ['지우개', '기타'] }];
+  let CSP_GRP = null; // 프리셋 이름 → 클립 스튜디오 분류 (CSP_DEFAULTS가 아래에서 만들어지므로 처음 쓸 때 만든다)
+  function seedGroupOf(b) {
+    const pn = b.preset, pr = pn && ADV_PRESETS.find((q) => q.name === pn);
+    if (pr && pr.cat === CAT_CSP) { CSP_GRP = CSP_GRP || new Map(CSP_DEFAULTS.map(([g, n]) => ['CSP ' + n, g])); const g = CSP_GRP.get(pn); return SEED_G.find((x) => x.csp.includes(g)) || null; }
+    const c = pr ? pr.cat : b.preset ? advCatOf(b) : null;
+    return c ? SEED_G.find((x) => x.cats.includes(c)) || null : null;
+  }
+  async function advSeedPresets() {
+    const have = await advListBrushes();
+    const names = new Set(have.map((b) => b.preset).filter(Boolean));
+    const tipBlob = new Map(), texBlob = new Map();
+    let t = Date.now();
+    for (const pr of ADV_PRESETS) {
+      if (names.has(pr.name)) continue;
+      const item = BUILTIN_TIPS.find((x) => x.id === pr.tip) || BUILTIN_TIPS[0];
+      if (!tipBlob.has(item.id)) tipBlob.set(item.id, await builtinBlob(item));
+      const b = presetBrushObj(pr);
+      b.id = 'b_' + (t).toString(36) + Math.random().toString(36).slice(2, 6); b.added = t++; b.builtin = true;
+      b.tips = [{ key: await advPutImage(tipBlob.get(item.id)), thumbKey: null, needPng: false, builtinId: item.id, bver: BUILTIN_VER }];
+      const tx = pr.tex && BUILTIN_TEX.find((x) => x.id === pr.tex);
+      if (tx) { if (!texBlob.has(tx.id)) texBlob.set(tx.id, await builtinBlob(tx)); b.texture = { key: await advPutImage(texBlob.get(tx.id)), thumbKey: null, needPng: false, builtinId: tx.id, bver: BUILTIN_VER }; }
+      else b.texture = null;
+      await advSaveBrush(b);
+    }
+    // 그룹을 새로: 프리셋 5개 그룹 + (가져온·직접 만든 브러시가 있으면) 내 브러시
+    const all = await advListBrushes(), G = SEED_G.map((x) => ({ id: 'g' + x.k + Math.random().toString(36).slice(2, 6), name: L(x.ko, x.en), ids: [] })), mine = [];
+    for (const b of all) { const sg = seedGroupOf(b); if (sg) G[SEED_G.indexOf(sg)].ids.push(b.id); else mine.push(b.id); }
+    if (mine.length) G.push({ id: 'gmine' + Math.random().toString(36).slice(2, 6), name: L('내 브러시', 'My brushes'), ids: mine });
+    S.advGroups = G.filter((g) => g.ids.length);
+    S.advGroupCur = (S.advGroups.find((g) => ADV.brush && g.ids.includes(ADV.brush.id)) || S.advGroups[0] || {}).id;
+    S.advSeed = SEED_V; saveSettings();
+  }
   async function tgRender() {
     const el = TG.el; if (!el) return;
+    if (S.advSeed !== SEED_V) { // 처음 한 번: 기본 브러시 목록 채우기 (여러 번 불려도 한 번만 돈다)
+      if (!ADV.seeding) ADV.seeding = advSeedPresets().catch((e) => { console.warn('[MagmaWand] 기본 브러시 목록', e); S.advSeed = SEED_V; saveSettings(); }).finally(() => { ADV.seeding = null; });
+      await ADV.seeding;
+    }
     const brushes = await advListBrushes().catch(() => []);
     const byId = new Map(brushes.map((b) => [b.id, b]));
     const G = tgSync(brushes), cur = G.find((g) => g.id === S.advGroupCur) || G[0];
     for (const id of [...TG.sel]) if (!byId.has(id)) TG.sel.delete(id);
     // 그룹 단추 (3개 이하면 그 수만큼 칸을 나눠 폭을 꽉 채움)
     const gw = el.querySelector('.mw-tg-groups'); gw.textContent = '';
-    gw.style.gridTemplateColumns = `repeat(${Math.max(1, Math.min(4, G.length))}, minmax(0, 1fr))`;
+    gw.style.gridTemplateColumns = `repeat(${G.length <= 3 ? Math.max(1, G.length) : G.length <= 6 ? Math.ceil(G.length / 2) : 4}, minmax(0, 1fr))`; // 5~6개면 두 줄로 고르게
     for (const g of G) {
       const b = document.createElement('div'); b.className = 'mw-tg-g' + (g === cur ? ' on' : ''); b.dataset.id = g.id; b.title = g.name + ` (${g.ids.length})`;
       b.innerHTML = TG_SVG.pen + '<span></span>'; b.lastChild.textContent = g.name;
@@ -4156,6 +4293,8 @@ void main(){
       } },
       { id: 'corr', name: L('보정', 'Correction'), desc: L('펜 입력을 보정하는 설정이에요.', 'Settings for correcting pen input'), rows: () => [
         slider(L('손떨림 보정', 'Stabilization'), () => b.smoothing || 0, (v) => { b.smoothing = v; }, 0, 100, 1, { help: L('클수록 선이 매끄러워지지만 펜을 조금 늦게 따라와요.', 'Higher values give smoother lines but follow the pen a little later.') }),
+        slider(L('필압 곡선 점 - 입력 (모든 브러시)', 'Pressure curve point - input (all brushes)'), () => (S.penCurveX == null ? 50 : S.penCurveX), (v) => { S.penCurveX = v; saveSettings(); }, 1, 99, 1, { help: L('클립 스튜디오 [파일 > 필압 설정]의 곡선 점과 같게 맞추면 같은 힘으로 같은 굵기가 나와요. 입력·출력이 같으면 곡선 없음(그대로).', 'Match the curve point in Clip Studio [File > Pen pressure settings] to get the same width for the same force. Same input and output = no curve.') }),
+        slider(L('필압 곡선 점 - 출력 (모든 브러시)', 'Pressure curve point - output (all brushes)'), () => (S.penCurveY == null ? 50 : S.penCurveY), (v) => { S.penCurveY = v; saveSettings(); }, 1, 99, 1, { help: L('출력이 입력보다 크면 살살 눌러도 굵고 진해져요.', 'Output above input makes light pressure give thicker, darker strokes.') }),
       ] },
       { id: 'inout', name: L('시작과 끝', 'Starting and ending'), desc: L('획의 시작과 끝을 가늘게 하는 설정이에요.', 'Settings for starting and ending effects to brushstrokes.'), rows: () => [
         slider(L('시작', 'Starting'), () => b.taperIn || 0, (v) => { b.taperIn = v; }, 0, 500, 1, { help: L('획을 시작해서 이 길이(픽셀)만큼 점점 굵어져요. 0이면 꺼짐.', 'The stroke grows to full size over this length (pixels). 0 = off.') }),
@@ -4494,7 +4633,12 @@ void main(){
     const W = o.W || SMP_W, H = o.H || SMP_H, c = document.createElement('canvas'); c.width = W; c.height = H;
     if (!px) return c;
     const d = new Uint8ClampedArray(W * H * 4);
-    for (let i = 0; i < d.length; i += 4) { const a = px[i + 3]; if (a) { d[i] = d[i + 1] = d[i + 2] = 255; d[i + 3] = a; } }
+    // 옅은 브러시(수채 등)도 목록에서 보이게: 진한 쪽(상위 2%)이 거의 불투명해지도록 진하기를 올린다 (최대 4배)
+    const hist = new Uint32Array(256); let n = 0;
+    for (let i = 3; i < px.length; i += 4) if (px[i]) { hist[px[i]]++; n++; }
+    let acc = 0, p98 = 255; for (let v = 255; v > 0; v--) { acc += hist[v]; if (acc >= n * 0.02) { p98 = v; break; } }
+    const k = n ? Math.min(4, Math.max(1, 235 / Math.max(1, p98))) : 1;
+    for (let i = 0; i < d.length; i += 4) { const a = px[i + 3]; if (a) { d[i] = d[i + 1] = d[i + 2] = 255; d[i + 3] = Math.min(255, a * k); } }
     c.getContext('2d').putImageData(new ImageData(d, W, H), 0, 0);
     return c;
   }
@@ -4504,6 +4648,8 @@ void main(){
     SMP.q.push({ kind, obj, key, cv });
     setTimeout(smpPump, 0); // 카드가 화면에 붙은 뒤에 시작
   }
+  // 창이 가려져 화면 갱신(애니메이션 프레임)이 멈춰도 미리보기 만들기가 멈추지 않게: 다음 프레임 또는 60ms 중 먼저
+  const smpTick = () => Promise.race([nextFrame(), sleep(60)]);
   async function smpPump() {
     if (SMP.busy) return;
     SMP.busy = true;
@@ -4512,10 +4658,10 @@ void main(){
       while (SMP.q.length) {
         if (ADV.stroke || BSZ.on) { await sleep(150); continue; }
         const it = SMP.q.shift();
-        if (it.cv && !it.cv.isConnected) { if ((it.miss = (it.miss || 0) + 1) < 5) { SMP.q.push(it); await nextFrame(); } continue; } // 아직 화면에 안 붙었으면 조금 기다림
+        if (it.cv && !it.cv.isConnected) { if ((it.miss = (it.miss || 0) + 1) < 5) { SMP.q.push(it); await smpTick(); } continue; } // 아직 화면에 안 붙었으면 조금 기다림
         if (!SMP.cache.has(it.key)) {
           const canvas = getCanvas(), E = getEditor();
-          if (!canvas || !E) { if (++tries > 30) { SMP.q.length = 0; break; } SMP.q.unshift(it); await sleep(200); continue; } // 도구 바꾸는 중이면 잠깐 기다림
+          if (!canvas || !E) { SMP.q.unshift(it); if (++tries > 240) break; await sleep(500); continue; } // 도구 바꾸는 중·편집기를 아직 못 찾음: 기다린다 (예전엔 6초 뒤 대기 목록을 버려 미리보기가 빈 채로 남음). 2분 넘으면 멈추고 다음 요청 때 다시
           try {
             advEnsureGL(canvas, E.drawing.w, E.drawing.h);
             const brush = it.kind === 'p' ? presetBrushObj(it.obj) : it.obj;
@@ -4529,7 +4675,7 @@ void main(){
           } catch (e) { if (!SMP.warned) { SMP.warned = true; console.warn('[MagmaWand] 획 미리보기', e); } SMP.cache.set(it.key, null); }
         }
         smpDraw(it.cv, SMP.cache.get(it.key));
-        await nextFrame();
+        await smpTick();
       }
     } finally { SMP.busy = false; }
   }
@@ -8387,7 +8533,7 @@ void main(){
       const A = QS.adv, b = ADV.brush, pen = A.ptype === 'pen';
       st = qsStroke(A.Q, pen); color = A.color;
       const size = b ? (S.advSize > 0 ? S.advSize : b.size) : 4;
-      wOf = (p) => size * (b ? effectorValue(b.sizeEff, pen ? Math.pow(Math.max(0.01, p), b.pressGamma || 1) : 1, 0, 1) : 1);
+      wOf = (p) => size * (b ? effectorValue(b.sizeEff, pen ? Math.pow(Math.max(0.002, penCurve(p)), b.pressGamma || 1) : 1, 0, 1) : 1);
     }
     if (!st || st.length < 2) return null;
     const ws = st.map((q) => wOf(q.p));
@@ -11799,30 +11945,30 @@ void main(){
     .mw-lp-panel { padding: 4px 6px 6px; box-sizing: border-box; width: 100%; font-size: 12px; }
     .mw-lpd { position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden; }
     .mw-adv-docked .mw-advlist, .mw-adv-docked .mw-advacts, .mw-adv-docked .mw-advinfo { display: none; }
-    .mw-tg { position: absolute; inset: 0; display: none; flex-direction: column; background: #3a3a3a; color: #dadada; font: 12px/1.3 system-ui, sans-serif; }
+    .mw-tg { position: absolute; inset: 0; display: none; flex-direction: column; background: #232323; color: #f4f4f4; font: 12px/1.3 system-ui, sans-serif; }
     .mx-pbody.mw-tg-on > .mw-tg { display: flex; }
     .mx-pbody.mw-tg-on > editor-properties-presets-list { display: none !important; }
-    .mw-tg-groups { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; padding: 3px; border-bottom: 1px solid #262626; }
-    .mw-tg-g { display: flex; align-items: center; gap: 3px; height: 22px; padding: 0 4px; background: #4a4a4a; border: 1px solid #5c5c5c; border-radius: 2px; cursor: pointer; overflow: hidden; white-space: nowrap; user-select: none; }
+    .mw-tg-groups { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; padding: 3px; border-bottom: 1px solid #161616; }
+    .mw-tg-g { display: flex; align-items: center; gap: 3px; height: 22px; padding: 0 4px; background: #353535; border: 1px solid transparent; border-radius: 3px; cursor: pointer; overflow: hidden; white-space: nowrap; user-select: none; }
     .mw-tg-g svg { flex: 0 0 13px; width: 13px; height: 13px; } .mw-tg-g span { overflow: hidden; text-overflow: ellipsis; }
-    .mw-tg-g:hover { background: #555; } .mw-tg-g.on { background: #5b7cc4; border-color: #7d9ae0; color: #fff; } .mw-tg-g.drop { outline: 2px solid #ffd24d; outline-offset: -2px; }
+    .mw-tg-g:hover { background: #3f3f3f; } .mw-tg-g.on { background: #1f5ac7; border-color: #3e7cee; color: #fff; } .mw-tg-g.drop { outline: 2px solid #ffd24d; outline-offset: -2px; }
     .mw-tg-list { flex: 1; min-height: 0; overflow-y: auto; padding: 2px; }
     .mw-tg-row { position: relative; height: 34px; margin: 0 0 1px; background: transparent; cursor: pointer; overflow: hidden; user-select: none; }
-    .mw-tg-row canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; opacity: .92; pointer-events: none; }
-    .mw-tg-row span { position: absolute; right: 6px; bottom: 3px; color: #fff; text-shadow: 0 0 3px #000, 0 0 2px #000; max-width: 85%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
-    .mw-tg-row:hover { outline: 1px solid #777; outline-offset: -1px; }
-    .mw-tg-row.on { background: #c9d3e6; } .mw-tg-row.on canvas { filter: brightness(0); opacity: .85; } .mw-tg-row.on span { color: #1d2433; text-shadow: none; }
-    .mw-tg-row.sel { outline: 2px solid #6f8fd6; outline-offset: -2px; }
+    .mw-tg-row canvas { position: absolute; left: 0; top: 0; width: 62%; height: 100%; object-fit: cover; object-position: left center; opacity: .92; pointer-events: none; }
+    .mw-tg-row span { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); text-align: right; color: #f4f4f4; text-shadow: 0 0 3px #000, 0 0 2px #000; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
+    .mw-tg-row:hover { background: rgba(255,255,255,.05); }
+    .mw-tg-row.on { background: rgba(31,90,199,.3); box-shadow: inset 2px 0 0 #3e7cee; }
+    .mw-tg-row.sel { outline: 1px solid #3e7cee; outline-offset: -1px; }
     .mw-tg-row.ins-top { box-shadow: inset 0 3px 0 #ffd24d; } .mw-tg-row.ins-bot { box-shadow: inset 0 -3px 0 #ffd24d; }
-    .mw-tg-info { font-size: 11px; color: #bbb; padding: 0 5px; }
+    .mw-tg-info { font-size: 11px; color: #a2a2a2; padding: 0 5px; }
     .mw-tg-info:empty { display: none; }
-    .mw-tg-empty { padding: 10px; color: #aaa; }
-    .mw-tg-bar { display: flex; align-items: center; gap: 2px; padding: 3px 4px; border-top: 1px solid #262626; }
+    .mw-tg-empty { padding: 10px; color: #a2a2a2; }
+    .mw-tg-bar { display: flex; align-items: center; gap: 2px; padding: 3px 4px; border-top: 1px solid #161616; }
     .mw-tg-b { width: 22px; height: 20px; display: flex; align-items: center; justify-content: center; color: #cfcfcf; cursor: pointer; border-radius: 2px; }
-    .mw-tg-b:hover { background: #555; } .mw-tg-b svg { width: 15px; height: 15px; } .mw-tg-b.armed { background: #a33; color: #fff; }
+    .mw-tg-b:hover { background: #353535; } .mw-tg-b svg { width: 15px; height: 15px; } .mw-tg-b.armed { background: #a33; color: #fff; }
     .mw-tg-sp { flex: 1; }
-    .mw-tg-menu { position: fixed; z-index: 2147483000; background: #3f3f3f; border: 1px solid #222; box-shadow: 0 4px 14px rgba(0,0,0,.5); padding: 3px 0; min-width: 170px; font: 12px system-ui, sans-serif; color: #dadada; }
-    .mw-tg-mi { padding: 4px 12px; cursor: pointer; } .mw-tg-mi:hover { background: #606a80; } .mw-tg-mi.dis { opacity: .4; cursor: default; }
+    .mw-tg-menu { position: fixed; z-index: 2147483000; background: #232323; border: 1px solid #161616; box-shadow: 0 4px 14px rgba(0,0,0,.5); padding: 3px 0; min-width: 170px; font: 12px system-ui, sans-serif; color: #dadada; }
+    .mw-tg-mi { padding: 4px 12px; cursor: pointer; } .mw-tg-mi:hover { background: #1f5ac7; } .mw-tg-mi.dis { opacity: .4; cursor: default; }
     .mw-tg-ask { padding: 4px; } .mw-tg-ask input { width: 200px; }
     html.mw-tg-dragging, html.mw-tg-dragging * { cursor: grabbing !important; }
     .mw-nav { position: absolute; inset: 0; background: #161616; overflow: hidden; }
@@ -11876,56 +12022,56 @@ void main(){
     .mw-bs-text { flex: 1; background: #1e1f23; color: #eee; border: 1px solid #45464d; border-radius: 4px; padding: 2px 6px; }
     .mw-bs-acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
     .mw-bset { position: fixed; z-index: 2147482000; top: 60px; right: 280px; width: 540px; height: min(680px, calc(100vh - 80px)); display: flex; flex-direction: column;
-      background: #383838; color: #dadada; border: 1px solid #2a2a2a; box-shadow: 0 8px 28px rgba(0,0,0,.55); font: 12px/1.3 system-ui, sans-serif; padding: 0 4px 4px; box-sizing: border-box; }
-    .mw-cs-head { position: relative; height: 18px; flex: 0 0 18px; display: flex; align-items: center; justify-content: center; cursor: move; user-select: none; font-size: 11px; color: #dadada; }
-    .mw-cs-x { position: absolute; right: 2px; top: 0; height: 18px; width: 20px; background: none; border: 0; color: #bdbdbd; cursor: pointer; font-size: 11px; }
+      background: #232323; color: #f4f4f4; border: 1px solid #161616; border-radius: 4px; box-shadow: 0 8px 28px rgba(0,0,0,.55); font: 12px/1.3 system-ui, sans-serif; padding: 0 4px 4px; box-sizing: border-box; }
+    .mw-cs-head { position: relative; height: 18px; flex: 0 0 18px; display: flex; align-items: center; justify-content: center; cursor: move; user-select: none; font-size: 11px; color: #a2a2a2; }
+    .mw-cs-x { position: absolute; right: 2px; top: 0; height: 18px; width: 20px; background: none; border: 0; color: #a2a2a2; cursor: pointer; font-size: 11px; }
     .mw-cs-x:hover { color: #fff; background: #c0392b; }
-    .mw-cs-pv { position: relative; flex: 0 0 99px; background: linear-gradient(90deg, #b4b4b4 0 50%, #4e4e4e 50% 100%); border: 1px solid #313131; }
+    .mw-cs-pv { position: relative; flex: 0 0 99px; background: linear-gradient(90deg, #b4b4b4 0 50%, #4e4e4e 50% 100%); border: 1px solid #161616; }
     .mw-cs-pv canvas { width: 100%; height: 100%; display: block; }
-    .mw-cs-chip { position: absolute; left: 4px; top: 3px; padding: 1px 6px; background: rgba(40,40,40,.85); color: #dadada; font-size: 11px; border-radius: 2px; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mw-cs-chip { position: absolute; left: 4px; top: 3px; padding: 1px 6px; background: rgba(35,35,35,.88); color: #f4f4f4; font-size: 11px; border-radius: 2px; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .mw-cs-main { flex: 1; min-height: 0; display: flex; gap: 2px; margin-top: 2px; }
-    .mw-cs-cats { flex: 0 0 135px; background: #3f3f3f; border: 1px solid #313131; overflow-y: auto; padding: 2px 0; }
-    .mw-cs-cat { height: 18px; line-height: 18px; padding: 0 6px 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; color: #dadada; }
+    .mw-cs-cats { flex: 0 0 135px; background: #1c1c1c; border: 1px solid #161616; overflow-y: auto; padding: 2px 0; }
+    .mw-cs-cat { height: 18px; line-height: 18px; padding: 0 6px 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; color: #f4f4f4; }
     .mw-cs-cat.sub { padding-left: 13px; }
-    .mw-cs-cat:hover { background: #4a4a4a; }
-    .mw-cs-cat.on { background: #606a80; }
+    .mw-cs-cat:hover { background: #2f2f2f; }
+    .mw-cs-cat.on { background: rgba(31,90,199,.45); }
     .mw-cs-right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-    .mw-cs-banner { flex: 0 0 auto; min-height: 36px; background: #4e4e4e; border: 1px solid #313131; padding: 6px 8px; box-sizing: border-box; color: #dadada; }
-    .mw-cs-body { position: relative; flex: 1; min-height: 0; overflow-y: auto; background: #3f3f3f; border: 1px solid #313131; padding: 4px 8px 8px 10px; }
-    .mw-cs-help { flex: 0 0 86px; display: flex; gap: 8px; background: #4e4e4e; border: 1px solid #313131; padding: 8px; box-sizing: border-box; overflow: hidden; }
-    .mw-cs-help i { flex: 0 0 26px; height: 26px; border-radius: 5px; background: #dadada; color: #3f3f3f; font: italic 700 17px/26px Georgia, serif; text-align: center; }
+    .mw-cs-banner { flex: 0 0 auto; min-height: 36px; background: #2b2b2b; border: 1px solid #161616; padding: 6px 8px; box-sizing: border-box; color: #f4f4f4; }
+    .mw-cs-body { position: relative; flex: 1; min-height: 0; overflow-y: auto; background: #1c1c1c; border: 1px solid #161616; padding: 4px 8px 8px 10px; }
+    .mw-cs-help { flex: 0 0 86px; display: flex; gap: 8px; background: #2b2b2b; border: 1px solid #161616; padding: 8px; box-sizing: border-box; overflow: hidden; }
+    .mw-cs-help i { flex: 0 0 26px; height: 26px; border-radius: 5px; background: #a2a2a2; color: #232323; font: italic 700 17px/26px Georgia, serif; text-align: center; }
     .mw-cs-help b { display: block; margin-bottom: 2px; }
     .mw-cs-foot { flex: 0 0 auto; display: flex; justify-content: space-between; gap: 6px; margin: 4px 0 0 139px; }
-    .mw-cs-btn { background: #676767; border: 1px solid #7e7e7e; color: #dadada; padding: 2px 10px; font: inherit; cursor: pointer; border-radius: 2px; }
-    .mw-cs-btn:hover { background: #747474; }
+    .mw-cs-btn { background: #353535; border: 1px solid #505050; color: #f4f4f4; padding: 2px 10px; font: inherit; cursor: pointer; border-radius: 2px; }
+    .mw-cs-btn:hover { background: #3f3f3f; }
     .mw-cs-row { position: relative; padding: 3px 0 3px 0; }
     .mw-cs-row.mw-cs-child { padding-left: 16px; }
-    .mw-cs-row.mw-cs-child::before { content: ''; position: absolute; left: 5px; top: -3px; bottom: 50%; width: 6px; border-left: 1px solid #222; border-bottom: 1px solid #222; }
-    .mw-cs-lab { display: block; color: #dadada; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mw-cs-row.mw-cs-child::before { content: ''; position: absolute; left: 5px; top: -3px; bottom: 50%; width: 6px; border-left: 1px solid #505050; border-bottom: 1px solid #505050; }
+    .mw-cs-lab { display: block; color: #f4f4f4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .mw-cs-dd, .mw-cs-sg { display: flex; align-items: center; gap: 8px; }
     .mw-cs-dd .mw-cs-lab, .mw-cs-sg .mw-cs-lab { flex: 0 0 auto; max-width: 45%; }
     .mw-cs-line { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
-    .mw-cs-bar { position: relative; flex: 1; height: 10px; cursor: pointer; border-bottom: 1px solid #636363; box-sizing: border-box; }
-    .mw-cs-bar i { position: absolute; left: 0; bottom: -1px; height: 8px; background: #585858; border-top: 1px solid #6f6f6f; border-bottom: 1px solid #7b7b7b; box-sizing: border-box; }
-    .mw-cs-num { width: 46px; background: transparent; border: 0; color: #dadada; text-align: right; font: inherit; padding: 0; }
-    .mw-cs-num:focus { background: #2e2e2e; outline: 1px solid #606a80; }
-    .mw-cs-spin { display: flex; flex-direction: column; width: 10px; line-height: 7px; font-size: 9px; color: #b2b2b2; cursor: pointer; user-select: none; }
+    .mw-cs-bar { position: relative; flex: 1; height: 10px; cursor: pointer; border-bottom: 1px solid #505050; box-sizing: border-box; }
+    .mw-cs-bar i { position: absolute; left: 0; bottom: -1px; height: 8px; background: #505050; border-top: 1px solid #626262; border-bottom: 1px solid #6a6a6a; box-sizing: border-box; }
+    .mw-cs-num { width: 46px; background: transparent; border: 0; color: #f4f4f4; text-align: right; font: inherit; padding: 0; }
+    .mw-cs-num:focus { background: #161616; outline: 1px solid #3e7cee; }
+    .mw-cs-spin { display: flex; flex-direction: column; width: 10px; line-height: 7px; font-size: 9px; color: #a2a2a2; cursor: pointer; user-select: none; }
     .mw-cs-spin b { font-weight: 400; height: 8px; overflow: hidden; } .mw-cs-spin b:hover { color: #fff; }
-    .mw-cs-dyn { flex: 0 0 18px; height: 20px; padding: 0; display: flex; align-items: center; justify-content: center; background: #585858; border: 1px solid #6f6f6f; color: #b2b2b2; border-radius: 2px; cursor: pointer; }
-    .mw-cs-dyn svg { width: 13px; height: 13px; } .mw-cs-dyn.on { color: #fff; background: #606a80; }
+    .mw-cs-dyn { flex: 0 0 18px; height: 20px; padding: 0; display: flex; align-items: center; justify-content: center; background: #353535; border: 1px solid #505050; color: #a2a2a2; border-radius: 2px; cursor: pointer; }
+    .mw-cs-dyn svg { width: 13px; height: 13px; } .mw-cs-dyn.on { color: #fff; background: #1f5ac7; }
     .mw-cs-dyn.mw-cs-ph { visibility: hidden; }
     .mw-cs-chk { display: flex; align-items: center; gap: 6px; cursor: pointer; }
-    .mw-cs-chk input { width: 13px; height: 13px; margin: 0; accent-color: #606a80; }
-    .mw-cs-sel { flex: 1; min-width: 0; height: 20px; background: #585858; border: 1px solid #6f6f6f; color: #dadada; font: inherit; border-radius: 2px; padding: 0 4px; }
+    .mw-cs-chk input { width: 13px; height: 13px; margin: 0; accent-color: #1f5ac7; }
+    .mw-cs-sel { flex: 1; min-width: 0; height: 20px; background: #161616; border: 1px solid #505050; color: #f4f4f4; font: inherit; border-radius: 2px; padding: 0 4px; }
     .mw-cs-seg { flex: 1; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 1px; }
-    .mw-cs-seg button { min-height: 22px; padding: 0 8px; background: #585858; border: 1px solid #6f6f6f; color: #dadada; font: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 3px; }
+    .mw-cs-seg button { min-height: 22px; padding: 0 8px; background: #353535; border: 1px solid #505050; color: #f4f4f4; font: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 3px; }
     .mw-cs-seg button svg { width: 15px; height: 15px; }
-    .mw-cs-seg button.on { background: #798db9; color: #fff; }
+    .mw-cs-seg button.on { background: #1f5ac7; border-color: #3e7cee; color: #fff; }
     .mw-cs-dis { opacity: .45; pointer-events: none; }
-    .mw-cs-sep { height: 1px; background: #727272; margin: 5px 0 4px; opacity: .6; }
-    .mw-cs-note { color: #bdbdbd; margin: 4px 0 6px; }
+    .mw-cs-sep { height: 1px; background: #505050; margin: 5px 0 4px; opacity: .6; }
+    .mw-cs-note { color: #a2a2a2; margin: 4px 0 6px; }
     .mw-cs-acts { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
-    .mw-cs-pop { position: absolute; z-index: 5; width: 210px; background: #3f3f3f; border: 1px solid #222; box-shadow: 0 4px 14px rgba(0,0,0,.5); padding: 6px 8px; }
+    .mw-cs-pop { position: absolute; z-index: 5; width: 210px; background: #232323; border: 1px solid #161616; box-shadow: 0 4px 14px rgba(0,0,0,.5); padding: 6px 8px; }
     .mw-cs-pop .mw-cs-chk { margin: 3px 0; }
     .mw-preset { width: 520px; } .mw-presetgrid { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); max-height: 56vh; overflow: auto; }
     .layer.mw-msel { background: rgba(47,128,237,.22) !important; box-shadow: inset 3px 0 0 #2f80ed; }
@@ -13194,6 +13340,19 @@ void main(){
   // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
   // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
   const NEWS = [
+    { v: '0.47.0',
+      ko: ['★ 브러시 목록에 고급 브러시 프리셋 113종이 기본으로 들어가요: 펜·연필 / 수채·먹 / 물감·섞기 / 파스텔·에어 / 질감·지우개 5개 그룹 (가져온·직접 만든 브러시는 내 브러시)',
+        '★ 클립 스튜디오식 필압 곡선: 브러시 설정 > 보정의 [필압 곡선 점]을 CSP [파일 > 필압 설정]의 점과 같게 맞추면 같은 힘으로 같은 굵기가 나와요 (모든 브러시 공통)',
+        '★ 클립 스튜디오 색 혼합 브러시가 빈 곳(투명)을 끌어오면 그림이 옅어지는 것까지 CSP처럼 돼요',
+        '브러시 목록·브러시 설정 창 바탕색을 Magma 창과 같게, 목록 미리보기는 이름 왼쪽에 (CSP처럼)',
+        '아주 약한 필압의 가는 선이 점선처럼 끊기던 문제, 브러시 그룹·순서가 다시 열면 초기화되던 문제, 창이 가려져 있으면 목록 미리보기가 안 그려지던 문제를 고쳤어요',
+        '클립 스튜디오 브러시의 수채 경계가 획 바깥 테를 더 또렷하게 그려요'],
+      en: ['★ The brush list now comes with 113 advanced brush presets in 5 groups: Pens & pencils / Watercolor & ink / Paint & blend / Dry & airbrush / Texture & erasers (imported and your own brushes go to My brushes)',
+        '★ Clip Studio-style pressure curve: set Brush settings > Correction > Pressure curve point to the point in CSP [File > Pen pressure settings] to get the same width for the same force (all brushes)',
+        '★ Clip Studio color-mixing brushes now thin out the painting when they drag in empty (transparent) areas, just like CSP',
+        'Brush list and brush settings windows now use the Magma window colors, and list previews sit left of the name (like CSP)',
+        'Fixed very light-pressure thin lines breaking into dashes, brush groups and order resetting on reopen, and list previews not drawing while the window was hidden',
+        'The watercolor edge of Clip Studio brushes draws a crisper rim'] },
     { v: '0.46.0',
       ko: ['★ 클립 스튜디오 브러시(.sut·CSP 기본 브러시)의 색 섞기를 실제 CSP 화면과 나란히 재어 맞췄어요: 색은 CSP처럼 화면색 그대로 섞이고, 아래 색을 붓에 묻혀 끌고 가는 번짐 길이도 비슷해졌어요',
         '★ 클립 스튜디오 브러시의 가장자리·부드러운 끝 모양을 CSP와 같게: G펜 안티에일리어싱, 부드러운 브러시의 퍼짐, 에어브러시 진하기(간격에 맞춰 농도 조절)를 CSP에서 그은 획과 비교해 맞췄어요',
