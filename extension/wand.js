@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (function mwBoot() {
   'use strict';
-  const VERSION = '0.48.0';
+  const VERSION = '0.49.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -2383,6 +2383,7 @@ void main(){
   };
   let ADV_EDGEK0 = 2.0, ADV_EDGEK1 = 3; // 클립 스튜디오 수채 경계: 1단계(0.05)에서 테가 안쪽보다 약 1.4배
   const advInterval = (b) => (b.sutVer >= 2 && b.autoGap === 3 ? Math.min(b.interval, 0.025) : b.interval); // 클립 스튜디오 '좁게' 간격
+  const ADV_STAB = { tau: 2, ptau: 2 }; // 클립 스튜디오 손떨림 보정 1당 시간 상수(ms)
   let ADV_MINDAB = 1.6, ADV_MINK = 0.37; // 가는 선: 최소 도장 크기(px)와 진하기 보정
   const INST = 18; // aPos2 aSize aAngle aSq2 aAlpha aColor3 aFlip2 aV2 aX2(획 길이·남은 물감) aTD(텍스처 농도 배율) aMA(바꿔 칠하기의 물감 진하기)
   function advEnsureGL(canvas, W, H) {
@@ -2592,8 +2593,16 @@ void main(){
     // 튀는 점 막기: 아주 짧은 시간에 화면에서 300픽셀 넘게 건너뛴 점은 입력 오류로 보고 버린다
     if (s.rawLast && !s.straight) { const jump = Math.hypot(x - s.rawLast.x, y - s.rawLast.y) * viewZoom(); if (jump > 300 && t - s.rawLast.t < 40) return; }
     s.rawLast = { x, y, p: pr, t }; s.ptype = e.pointerType;
-    if (s.last && b.smoothing > 0 && !s.straight) { const k = Math.min(0.85, b.smoothing * 0.05); x = s.last.x + (x - s.last.x) * (1 - k); y = s.last.y + (y - s.last.y) * (1 - k); }
-    const cur = { x, y, p: pr, t };
+    let pp = pr;
+    if (s.last && b.smoothing > 0 && !s.straight) {
+      if (b.sutVer >= 2) { // 클립 스튜디오 손떨림 보정: 시간 기준으로 위치·필압을 함께 늦게 따라간다 (입력 빈도와 무관, CSP 획과 재어 맞춤)
+        const kk = 1 - Math.exp(-Math.max(0.5, t - s.last.t) / (ADV_STAB.tau * b.smoothing));
+        x = s.last.x + (x - s.last.x) * kk; y = s.last.y + (y - s.last.y) * kk;
+        const kp = 1 - Math.exp(-Math.max(0.5, t - s.last.t) / Math.max(0.5, ADV_STAB.ptau * b.smoothing));
+        pp = s.last.p + (pr - s.last.p) * kp;
+      } else { const k = Math.min(0.85, b.smoothing * 0.05); x = s.last.x + (x - s.last.x) * (1 - k); y = s.last.y + (y - s.last.y) * (1 - k); }
+    }
+    const cur = { x, y, p: pp, t };
     // 첫 점은 바로 찍지 않고 다음 점이 와서 속도·방향을 안 뒤에 찍는다 (속도 0·각도 0으로 찍으면 시작에 동그란 덩어리가 생김)
     if (!s.last) { s.last = cur; s.pend = cur; return; }
     const a = s.last, dx = x - a.x, dy = y - a.y, L = Math.hypot(dx, dy);
@@ -2615,7 +2624,7 @@ void main(){
     const rotStep = turns ? Math.abs(dA) * b.size * 0.5 : 0;
     let walked = 0;
     for (let guard = 0; guard < 20000; guard++) {
-      const pNow = a.p + (pr - a.p) * (walked / L);
+      const pNow = a.p + (cur.p - a.p) * (walked / L);
       const size = Math.max(0.5, b.size * effectorValue(b.sizeEff, pNow, s.speed, 1) * (b.tipScale || 1)); // 간격도 실제 끝 크기 기준
       let step = Math.max(0.3, (b.gapPx > 0 ? b.gapPx : size * advInterval(b)) * effectorValue(b.intervalEff, pNow, s.speed, Math.random()));
       if (rotStep > 1) step = Math.max(0.15, Math.min(step, L / rotStep));
@@ -2624,7 +2633,7 @@ void main(){
       walked += need; s.acc = 0;
       const f = walked / L;
       s.dist += need;
-      advStamp(a.x + dx * f, a.y + dy * f, a.p + (pr - a.p) * f, ang0 + dA * f, need);
+      advStamp(a.x + dx * f, a.y + dy * f, a.p + (cur.p - a.p) * f, ang0 + dA * f, need);
     }
     s.last = cur;
   }
@@ -2706,7 +2715,8 @@ void main(){
     } else {
       // 흩어짐: 도장 자리를 크기에 비례해 조금씩 흔든다 (목탄·파스텔 가장자리가 매끈하게 반복되지 않게)
       if (b.scatter > 0 && !br) { const a = rnd() * Math.PI * 2, r = size * b.scatter * Math.sqrt(rnd()); x += Math.cos(a) * r; y += Math.sin(a) * r; }
-      if (size < ADV_MINDAB && !b.minPx) {
+      if (size < 1 && !b.minPx && b.sutVer >= 2 && (ADV.tipTex.length || !b.aa)) { /* 클립 스튜디오: 그림 끝 모양이나 안티에일리어싱 없음이면 1px보다 작은 도장은 안 찍힌다 (BUTTER 묶음 실측) */ }
+      else if (size < ADV_MINDAB && !b.minPx) {
         // 아주 가는 선(약한 필압): 작은 도장이 픽셀 중심에 걸릴 때만 찍혀 점선이 되던 것 → 최소 크기로 찍고 진하기를 굵기 비율만큼 낮춘다
         // (클립 스튜디오처럼 0.06px 선은 아주 옅게 이어짐, 실측). 겹치는 도장 수 n만큼 나눠 쌓였을 때 그 진하기가 되게
         const n = Math.max(1, ADV_MINDAB / Math.max(0.05, stepLen > 0 ? stepLen : size * b.interval));
@@ -5078,6 +5088,7 @@ void main(){
     if (!getCanvas() || document.querySelector('.modal-dialog')) return;
     const c = comboOf(e);
     if (!c) return;
+    KEYSW = { pre: activeMember(), last: Object.assign({}, GRP.last), at: performance.now() }; // Magma 단축키로 묶음에 들어오면 마지막 도구로 (아래 grpKeyRedirect)
     // B: 이미 Magma 브러시면 고급 브러시로, 고급 브러시면 Magma 브러시로 (누를 때마다 번갈아)
     if (c === 'KeyB' && !S.busy) {
       if (S.active && S.tool === 'brush') { e.preventDefault(); e.stopImmediatePropagation(); activateMember('faPaintBrush'); return; }
@@ -7283,6 +7294,7 @@ void main(){
     faPaintBrush: '브러시', blendIcon: '블렌드', liquifyIcon: '리퀴파이', faSquare: '사각형', faCircle: '타원', faSplotch: '도형',
     faHandPaper: '손 (화면 이동)', faUndoAlt: '화면 회전', faSearch: '확대·축소', perspectiveGridToolIcon: '원근 격자', faWandMagicSparkles: '마법봉 (W)' };
   const GRP = { slots: {}, last: Object.assign({}, S.groupLast || {}) };
+  let KEYSW = null;
   const nativeBtn = (name) => toolButtons().find((b) => toolName(b) === name);
   // Magma 공식 마법봉(Magic Wand, 베타)이 생겨서 확장 마법봉은 공식이 없는 계정에서만 쓴다
   const nativeWand = () => nativeBtn('faWandMagicSparkles');
@@ -7417,6 +7429,19 @@ void main(){
   on(window, 'keydown', (e) => { if (flyEl && e.code === 'Escape') closeFlyout(); }, true);
   // 단축키로 숨은 도구를 골랐을 때도 폴더 칸 그림을 바로 바꾼다
   on(window, 'keyup', () => setTimeout(ensureGroups, 30), true);
+  // 묶음의 마지막 도구 기억 (클립 스튜디오처럼): 다른 도구에서 Magma 단축키(예: B)로 묶음에 들어왔는데
+  // 그 묶음에서 마지막에 쓴 것이 확장 도구(예: 고급 브러시)면 그 도구로 바로 간다. 퀵 마스크·대칭 자처럼 '모드'인 것은 제외.
+  const GRP_NOREDIR = new Set(['@qmask', '@sym']);
+  function grpKeyRedirect() {
+    const k = KEYSW; if (!k || performance.now() - k.at > 1500 || S.busy) return;
+    const m = activeMember(); if (m === k.pre) return;
+    KEYSW = null;
+    if (m[0] === '@') return; // 확장 도구 단축키로 고른 것은 그대로
+    const g = GROUPS.find((q) => q.members.includes(m)); if (!g || g.members.includes(k.pre)) return; // 같은 묶음 안에서 바꾼 건 그대로
+    const l = k.last[g.id];
+    if (l && l !== m && l[0] === '@' && !GRP_NOREDIR.has(l) && memberExists(l)) activateMember(l);
+  }
+  on(window, 'keyup', () => { setTimeout(grpKeyRedirect, 15); setTimeout(grpKeyRedirect, 120); }, true);
   cleanups.push(() => {
     for (const s of Object.values(GRP.slots)) s.remove();
     GRP.slots = {};
@@ -13389,6 +13414,13 @@ void main(){
   // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
   // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
   const NEWS = [
+    { v: '0.49.0',
+      ko: ['★ 도구 묶음이 마지막에 쓴 도구를 기억해요: 고급 브러시를 쓰다 다른 도구로 갔다가 B를 누르면 바로 고급 브러시로 돌아와요 (클립 스튜디오처럼)',
+        '★ 클립 스튜디오 브러시의 손떨림 보정을 CSP와 같게: 위치와 필압을 함께, 펜 입력 빈도와 상관없이 부드럽게 따라가요 (획 시작·작은 루프·급한 꺾임이 CSP 모양에 가까워짐)',
+        '클립 스튜디오 그림 끝 모양·안티에일리어싱 없음 브러시는 아주 약한 필압(1px 미만)에서 CSP처럼 아무것도 안 찍혀요 (가는 연결선이 남던 것)'],
+      en: ['★ Tool folders remember the last tool you used: after switching away from the advanced brush, pressing B goes straight back to it (like Clip Studio)',
+        '★ Stabilization of Clip Studio brushes now works like CSP: position and pressure follow smoothly together, regardless of pen report rate (stroke starts, tiny loops and sharp turns look closer to CSP)',
+        'Clip Studio brushes with image tips or no anti-aliasing no longer leave a faint connecting line at very light pressure (under 1px), like CSP'] },
     { v: '0.48.0',
       ko: ['★ 클립 스튜디오 브러시 묶음 파일(.sutg)도 가져올 수 있어요: 묶음 안 브러시가 모두 들어오고, 파일 이름으로 새 그룹이 만들어져요',
         '★ CSP 연필·수채 브러시의 결을 CSP와 같게: 연필은 픽셀 크기 흑연 알갱이, 수채는 고운 종이결과 또렷한 가장자리 테 (CSP에서 그은 불규칙 필압 획과 비교해 맞춤)',
