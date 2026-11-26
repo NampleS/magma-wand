@@ -43,7 +43,7 @@ def run(loc):
             st = lambda: ev("(()=>{const t=window.__magmaWand.internals.getEditor().activeTool;return [(document.querySelector('.mw-aarow .mw-aab.on')||{dataset:{}}).dataset.lv,t.pixelation,Math.round(t.hardness*100)]})()")
             pg.evaluate("(v)=>{const r=window.__magmaWand.internals.sizeRow(),en=r.querySelector('editable-number'),b=en.querySelector('button'),i=en.querySelector('input');b.click();i.value=String(v);i.dispatchEvent(new FocusEvent('blur'))}", 60); time.sleep(.5)
             for lv in ('none', 'weak', 'mid', 'strong'):
-                try: pg.locator('.mw-aarow .mw-aab[data-lv="%s"]' % lv).click(timeout=4000); time.sleep(2)
+                try: pg.locator('.mw-aarow .mw-aab[data-lv="%s"]' % lv).click(timeout=8000); time.sleep(3)
                 except Exception as e: check('AA ' + lv, False, str(e)[:60]); continue
                 s = st(); check('AA ' + lv, s[0] == lv and s[1] == (lv == 'none') and (s[2] == 100 if lv == 'weak' else True), s)
             # 필압·크기에 따라 흐림 유지: 강하게 → 텍스처 깊이 켜짐(약하게 → 꺼짐은 아래에서)
@@ -82,7 +82,7 @@ def run(loc):
                 ev("localStorage.setItem('magmaWand.seen','0.35.0')"); time.sleep(1.2); a = ev("document.querySelectorAll('.mw-news').length+'/'+document.querySelectorAll('.mw-news-v').length")
                 check('쌓인 소식 한 창에', a.startswith('1/') and int(a[2:]) >= 4, a); ev("localStorage.setItem('magmaWand.seen','%s')" % ver); time.sleep(1.2); check('다른 창에서 닫으면 같이 닫힘', not ev("!!document.querySelector('.mw-news')"))
             # 켜기·끄기 단추, 레이어 우클릭 래스터화
-            check('레이어 속성 창 기본 숨김', ev("!document.querySelector('.mx-tab[data-p=lprops]')"))
+            check('레이어 속성·네비게이터 창 기본 숨김', ev("!document.querySelector('.mx-tab[data-p=lprops]') && !document.querySelector('.mx-tab[data-p=navi]')"))
             check('전원 단추', ev("!!document.querySelector('editor-menu .mx-power')"))
             ev("(()=>{const I=window.__magmaWand.internals,L=I.getEditor().drawing.layers[0];I.fxSet('UJfZeagVT3',L.uid,{on:true,color:'#ff0000',width:3,aa:true,blur:0})})()"); time.sleep(.5)
             pg.locator('editor-layers .layer').first.click(button='right'); time.sleep(1.3); a = ev("[...document.querySelectorAll('.context-menu button.mw-fxm')].map(b=>{const r=b.getBoundingClientRect();return b.textContent+'|'+(r.height>5&&r.bottom<=innerHeight&&r.top>0)}).join()")

@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (function mwBoot() {
   'use strict';
-  const VERSION = '0.43.0';
+  const VERSION = '0.44.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -82,6 +82,27 @@
     target.addEventListener(type, fn, opts);
     cleanups.push(() => target.removeEventListener(type, fn, opts));
   }
+  // ---------- 단축키는 어디에 포커스가 있든 보드로 ----------
+  // Magma는 키를 받은 요소가 input·select·글 상자면 단축키를 무시한다(소스: 대상이 input|textarea|select·contenteditable이면 무시,
+  // 단 e.allowKeyboardService가 있으면 받음). 체크 칸·색 고르기·드롭다운·슬라이더·숫자 칸·단추를 한 번 누르면 포커스가 남아
+  // 도구 단축키가 막혔다 → 글을 쓰는 칸(글자 입력)·대화 상자·열린 메뉴 말고는 키를 보드 단축키로 보내고 포커스는 놓는다.
+  // 숫자 칸에서는 숫자·소수점·지우기·화살표만 칸이 받고, 글자 키는 단축키로.
+  function hotFix(e) {
+    if (!e.isTrusted) return;
+    const t = e.target;
+    if (!t || !t.tagName || t === document.body || t === document.documentElement) return;
+    if (t.closest && t.closest('.modal, .modal-dialog, .mw-dialog-wrap, .dropdown-menu.show, [role=dialog], [role=menu], [role=listbox], [role=combobox]')) return;
+    const tag = t.tagName, type = String(t.type || '').toLowerCase();
+    if (t.isContentEditable || tag === 'TEXTAREA') return;
+    if (tag === 'INPUT' && /^(text|search|email|url|password|tel|)$/.test(type)) return;
+    if (tag === 'INPUT' && type === 'number' && !(e.key.length === 1 && /[a-z]/i.test(e.key) && !e.ctrlKey && !e.metaKey)) return;
+    if (e.key === 'Tab' || e.key === 'Escape') return;
+    if (!(tag === 'INPUT' || tag === 'SELECT' || tag === 'BUTTON' || (t.getAttribute && t.getAttribute('role') === 'button'))) return;
+    e.__mwHot = true;
+    try { e.allowKeyboardService = true; } catch { /* 무시 */ }
+    if (e.type === 'keydown') { if (tag === 'SELECT' || (tag === 'INPUT' && type === 'number')) e.preventDefault(); try { t.blur(); } catch { /* 무시 */ } }
+  }
+  on(window, 'keydown', hotFix, true); on(window, 'keyup', hotFix, true);
 
   // ---------- 설정 ----------
   // action: 'select'(선택 영역 만들기) | 'fill'(바로 채우기),  ref: 'all'(모든 레이어) | 'layer'(현재 레이어)
@@ -3597,7 +3618,7 @@ void main(){
     setTitle();
     q('.mw-cs-x').title = L('닫기', 'Close');
     q('.mw-cs-x').addEventListener('click', () => { el.remove(); BSET.el = null; });
-    for (const t of ['keydown', 'keyup']) el.addEventListener(t, (e) => e.stopPropagation()); // 입력 칸의 키가 Magma 단축키로 새지 않게
+    for (const t of ['keydown', 'keyup']) el.addEventListener(t, (e) => { if (!e.__mwHot) e.stopPropagation(); }); // 입력 칸의 키가 Magma 단축키로 새지 않게
     q('.mw-cs-head').addEventListener('pointerdown', (e) => {
       if (e.target.closest('button')) return;
       const r = el.getBoundingClientRect(), ox = e.clientX - r.left, oy = e.clientY - r.top;
@@ -4302,7 +4323,7 @@ void main(){
     const a = document.activeElement;
     if (a && a !== document.body && (a.tagName === 'BUTTON' || (a.tagName === 'INPUT' && /^(checkbox|radio|range|color|button)$/i.test(a.type)) || (a.getAttribute && a.getAttribute('role') === 'button')) && a.closest && a.closest('.mw-el, .mx-power') && !a.closest('.mw-dialog-wrap')) a.blur();
   }, true);
-  on(window, 'keydown', (e) => { if (e.code === 'Space' && e.isTrusted) { const t = e.target; if (!(t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)))) spaceDown = true; } }, true);
+  on(window, 'keydown', (e) => { if (e.code === 'Space' && e.isTrusted) { const t = e.target; if (e.__mwHot || !(t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)))) spaceDown = true; } }, true);
   on(window, 'keyup', (e) => { if (e.code === 'Space') spaceDown = false; }, true);
   on(window, 'blur', () => { spaceDown = false; LSCR.pid = null; grabHover(null); document.documentElement.classList.remove('mw-lgrab', 'mw-lgrabbing'); });
   // Space+끌기를 그림판 둘레의 세로로 굴러가는 칸(레이어 목록·도구 설정·브러시 설정·메뉴 등) 위에서 하면
@@ -4473,7 +4494,7 @@ void main(){
   on(window, 'keydown', (e) => {
     if (!S.active || S.tool !== 'blur' || !e.isTrusted) return;
     const t = e.target;
-    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (!e.__mwHot && t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (e.code === 'Escape' && BLR.st) { e.preventDefault(); e.stopImmediatePropagation(); blurEnd(true); return; }
     if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && !e.ctrlKey && !e.altKey && !e.metaKey) {
       e.preventDefault(); e.stopImmediatePropagation();
@@ -4485,7 +4506,7 @@ void main(){
   on(window, 'keydown', (e) => {
     if (!S.active || S.tool !== 'brush' || !e.isTrusted || !ADV.brush) return;
     const t = e.target;
-    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (!e.__mwHot && t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (e.code === 'Escape' && ADV.stroke) { e.preventDefault(); e.stopImmediatePropagation(); advStrokeEnd(true); return; }
     if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && !e.ctrlKey && !e.altKey && !e.metaKey) {
       e.preventDefault(); e.stopImmediatePropagation();
@@ -4501,7 +4522,7 @@ void main(){
   on(window, 'keydown', (e) => {
     if (!S.active || S.tool !== 'quick' || !e.isTrusted) return;
     const t = e.target;
-    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (!e.__mwHot && t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (e.code === 'Escape' && Q.stroking) { e.preventDefault(); e.stopImmediatePropagation(); qFinish(getCanvas(), true); return; }
     // [ ] : 브러시 크기 (포토샵과 같음)
     if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && !e.ctrlKey && !e.altKey && !e.metaKey) {
@@ -4581,7 +4602,7 @@ void main(){
   on(window, 'keydown', (e) => {
     if (capturingKey || e.repeat) return;
     const t = e.target;
-    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (!e.__mwHot && t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (!getCanvas() || document.querySelector('.modal-dialog')) return;
     const c = comboOf(e);
     if (!c) return;
@@ -5304,7 +5325,7 @@ void main(){
       HS.orders.set(board, order);
       let thumb = null;
       try {
-        if (E.renderer.getDrawingSnapshotScaledBlob) thumb = await E.renderer.getDrawingSnapshotScaledBlob(d, { x: 0, y: 0, w: d.w, h: d.h }, 240, 'image/png');
+        if (E.renderer.getDrawingSnapshotScaledBlob) thumb = await E.renderer.getDrawingSnapshotScaledBlob(d, { x: dOx(E), y: dOy(E), w: d.w, h: d.h }, 240, 'image/png'); // 모델 좌표(실측)
       } catch { thumb = null; }
       await reqP((await hstore('points', 'readwrite')).add({ board, t: now, w: d.w, h: d.h, x: dOx(E), y: dOy(E), layers, thumb, title: document.title, changed }));
       await histPrune(board);
@@ -5507,7 +5528,9 @@ void main(){
   const FX_MAXR = 120;          // 두께 + 흐리기 상한(픽셀) — 거리 정보를 1바이트 오프셋에 담기 위함
   const FX = { gl: null, cv: null, prog: {}, raf: 0, board: null, layers: new Map(), upper: null, lastXf: '', lastCheck: 0,
     stroke: null, lost: false, W: 0, H: 0 };
-  function fxAll() { try { return JSON.parse(localStorage.getItem(FX_KEY) || '{}') || {}; } catch { return {}; } }
+  const FXC = { raw: null, obj: {} };
+  function fxAll() { try { const raw = localStorage.getItem(FX_KEY) || '{}'; if (raw !== FXC.raw) { FXC.raw = raw; FXC.obj = JSON.parse(raw) || {}; } return JSON.parse(JSON.stringify(FXC.obj)); } catch { return {}; } }
+  function fxAllRO() { fxAll(); return FXC.obj; } // 읽기만 할 때 (복사 없음)
   function fxGet(board, uid) { const a = fxAll(); return (a[board] && a[board][uid]) || null; }
   function fxSet(board, uid, cfg) {
     const a = fxAll();
@@ -5764,15 +5787,19 @@ void main(){
     gl.disable(gl.SCISSOR_TEST); gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.activeTexture(gl.TEXTURE0);
     st.ver = (st.ver || 0) + 1;
   }
-  function fxUpperState(gl, W, H) {
-    if (FX.upper && FX.upper.W === W && FX.upper.H === H) return FX.upper;
-    if (FX.upper) gl.deleteTexture(FX.upper.U);
-    FX.upper = { W, H, U: fxTex(gl, gl.R8, W, H, gl.RED, gl.UNSIGNED_BYTE, gl.LINEAR), sig: null, buf: new Uint8Array(W * H) };
-    return FX.upper;
+  function fxUpperState(gl, W, H, key) {
+    FX.uppers = FX.uppers || new Map();
+    let u = FX.uppers.get(key);
+    if (u && u.W === W && u.H === H) return u;
+    if (u) gl.deleteTexture(u.U);
+    if (FX.uppers.size > 6) { for (const v of FX.uppers.values()) gl.deleteTexture(v.U); FX.uppers.clear(); }
+    u = { W, H, U: fxTex(gl, gl.R8, W, H, gl.RED, gl.UNSIGNED_BYTE, gl.LINEAR), sig: null, buf: new Uint8Array(W * H) };
+    FX.uppers.set(key, u); FX.upper = u;
+    return u;
   }
   // 위 레이어들(보이는 것)의 알파를 합친 것 — 테두리를 그 밑에 숨기기 위함
   function fxUpdateUpper(E, gl, W, H, belowIndex, force) {
-    const up = fxUpperState(gl, W, H);
+    const up = fxUpperState(gl, W, H, belowIndex);
     const layers = E.drawing.layers.slice(0, belowIndex).filter((l) => l.visible !== false && l.rect && l.rect.w > 0 && l.texture);
     const sig = layers.map((l) => (l.uid || l.id) + ':' + l.opacity + ':' + (l.rect ? `${l.rect.x},${l.rect.y},${l.rect.w},${l.rect.h}` : '') + ':' +
       (l.thumbData && l.thumbData.data ? hash32(l.thumbData.data) : '')).join('|') + '#' + belowIndex;
@@ -5827,6 +5854,15 @@ void main(){
     if (oc) fxUpC(st, rect, oc, rect.w, 0, 0);
     return rect;
   }
+  // 펜이 지나간 자리 (모델 좌표, 프레임마다 비움). 손떨림 보정·간격 때문에 실제 도장은 조금 뒤따라오므로 이전 몇 프레임 것도 함께
+  on(window, 'pointermove', (e) => {
+    if (!FX.raf || e.buttons !== 1) return;
+    const E = getEditor(); if (!E || !E.drawingInProgress) return;
+    const c = getCanvas(); if (!c) return;
+    const rc = c.getBoundingClientRect(), m = s2m(E), t = E.activeTool, sz = Math.max(4, ((t && t.size) || 20) * (E.view && E.view.scale ? 1 : 1)) + 6;
+    const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+    for (const q of (evs.length ? evs : [e])) { const x = q.clientX - rc.left, y = q.clientY - rc.top, X = m[0] * x + m[2] * y + m[4], Y = m[1] * x + m[3] * y + m[5]; FX.penAcc = runion(FX.penAcc, { x: Math.floor(X - sz), y: Math.floor(Y - sz), w: Math.ceil(2 * sz), h: Math.ceil(2 * sz) }); }
+  }, { capture: true, passive: true });
   function fxKick() { if (!FX.raf) FX.raf = requestAnimationFrame(fxFrame); FX.lastXf = ''; }
   function fxStop() {
     cancelAnimationFrame(FX.raf); FX.raf = 0;
@@ -5845,7 +5881,7 @@ void main(){
   }
   function fxStep() {
     const board = boardId();
-    const cfgs = board ? (fxAll()[board] || {}) : {};
+    const cfgs = board ? (fxAllRO()[board] || {}) : {};
     const on = Object.entries(cfgs).filter(([, c]) => c && c.on);
     if (!on.length) { fxStop(); return; }
     const E = getEditor(), canvas = getCanvas();
@@ -5855,7 +5891,7 @@ void main(){
     const W = d.w, H = d.h;
     if (W * H > 36e6) { fxStop(); toast('보드가 너무 커서 레이어 스트로크를 쓸 수 없어요'); return; }
     const org = W + 'x' + H + '@' + dOx(E) + ',' + dOy(E);
-    if (FX.board !== board || FX.org !== org) { FX.board = board; FX.org = org; for (const st of FX.layers.values()) st.ready = false; if (FX.upper) FX.upper.sig = null; }
+    if (FX.board !== board || FX.org !== org) { FX.board = board; FX.org = org; for (const st of FX.layers.values()) st.ready = false; if (FX.upper) FX.upper.sig = null; if (FX.uppers) for (const u of FX.uppers.values()) u.sig = null; }
     const gl = fxEnsureGL(canvas);
     FX.cv.style.display = '';
     const now = performance.now();
@@ -5864,6 +5900,7 @@ void main(){
     let changed = false;
     const surf = E.model.user.surface;
     const drawing = !!(E.drawingInProgress && surf && surf.texture && surf.layer);
+    { const h3 = FX.penHist || (FX.penHist = []); h3.push(FX.penAcc || null); FX.penAcc = null; if (h3.length > 4) h3.shift(); let u = null; for (const q of h3) u = runion(u, q); FX.pen = drawing ? u : null; if (!drawing) h3.length = 0; }
     const targets = [];
     for (const [uid, cfg] of on) {
       const idx = d.layers.findIndex((l) => (l.uid || 'id' + l.id) === uid);
@@ -5883,9 +5920,11 @@ void main(){
         st.key = key; fxBuild(gl, st, { x: 0, y: 0, w: W, h: H }, cfg); changed = true;
       } else if (live) {
         // 긋는 중: 지금까지 그은 범위(surface.rect)를 읽는다. 아주 크면(200만 픽셀 넘음) 두 프레임에 한 번
-        const region = surf.rect;
+        let region = surf.rect;
         st.liveTick = (st.liveTick || 0) + 1;
-        if (region && region.w * region.h > 2e6 && st.liveTick % 2) { targets.push({ L, idx, st, cfg }); continue; }
+        if (FX.pen && FX.pen.w > 0 && region) { region = (() => { const x = Math.max(FX.pen.x, region.x), y = Math.max(FX.pen.y, region.y), w = Math.min(FX.pen.x + FX.pen.w, region.x + region.w) - x, h = Math.min(FX.pen.y + FX.pen.h, region.y + region.h) - y; return w > 0 && h > 0 ? { x, y, w, h } : null; })(); } // 이번 프레임에 펜이 지나간 둘레(손떨림 보정이 늦게 따라오는 것까지 넉넉히)
+        else if (region && region.w * region.h > 2e6 && st.liveTick % 2) { targets.push({ L, idx, st, cfg }); continue; }
+        if (!region) { targets.push({ L, idx, st, cfg }); continue; }
         st.liveRect = runion(st.liveRect, rclip(rshift(surf.rect, -dOx(E), -dOy(E)), W, H));
         const q = fxApplySurface(E, gl, st, L, region);
         if (q) { fxBuild(gl, st, q, cfg); changed = true; }
@@ -5905,7 +5944,7 @@ void main(){
     targets.sort((a, b) => b.idx - a.idx); // 아래 레이어부터
     // 위 레이어 가림 (가장 아래 대상 기준 한 장 — 여러 레이어면 각자 다시 계산)
     const xf = cv.inverseTransform.join(',') + '|' + FX.cv.width + 'x' + FX.cv.height;
-    if (doCheck || changed || xf !== FX.lastXf || targets.length > 1) {
+    if (doCheck || changed || xf !== FX.lastXf) {
       FX.lastXf = xf;
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, FX.cv.width, FX.cv.height);
@@ -6057,7 +6096,7 @@ void main(){
   let fxPass = 0;
   on(window, 'keydown', (e) => {
     if (!e.isTrusted || e.repeat || performance.now() < fxPass) return;
-    const q = e.target; if (q && (q.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(q.tagName))) return;
+    const q = e.target; if (!e.__mwHot && q && (q.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(q.tagName))) return;
     const E = getEditor(), sc = E && E.model.settings && E.model.settings.shortcuts; if (!E || !getCanvas()) return;
     const k = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : String(e.key).toLowerCase(), c = [(e.ctrlKey || e.metaKey) && 'ctrl', e.altKey && 'alt', e.shiftKey && 'shift', k].filter(Boolean).join('+');
     const hit = FX_MERGE.find((m) => ((sc && sc[m]) || (m === 'merge-layer' ? ['ctrl+e'] : ['f'])).includes(c));
@@ -6186,7 +6225,7 @@ void main(){
       const E = getEditor(), b = boardId(), h = guHist();
       if (!E || !b || !h || FXS.busy || FXS.baking) return;
       fxBakeWatch(h);
-      const cfgs = fxAll()[b] || {}, top = guRef(), red = h.redos.length;
+      const cfgs = fxAllRO()[b] || {}, top = guRef(), red = h.redos.length;
       for (const [uid, cfg] of Object.entries(cfgs)) {
         if (!cfg || !cfg.share) continue;
         const L = fxLayerByUid(E, uid); if (!L) continue;
@@ -9176,7 +9215,7 @@ void main(){
   on(window, 'keydown', (e) => {
     if (!e.isTrusted || e.repeat || capturingKey) return;
     const q = e.target;
-    if (q && (q.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(q.tagName))) return;
+    if (!e.__mwHot && q && (q.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(q.tagName))) return;
     const E = getEditor();
     if (!E || !tbxCan()) return;
     const list = (E.model.settings.shortcuts && E.model.settings.shortcuts.transform) || ['shift+t', 'ctrl+t'];
@@ -9655,7 +9694,7 @@ void main(){
   on(window, 'keydown', (e) => {
     if (!S.active || S.tool !== 'qmask' || !e.isTrusted) return;
     const t = e.target;
-    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (!e.__mwHot && t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     const stop = () => { e.preventDefault(); e.stopImmediatePropagation(); };
     if (e.code === 'Enter' || e.code === 'NumpadEnter') { stop(); if (QM.dirty) qmApply(); return; }
     if (e.code === 'Escape') { stop(); qmReset(); qmFromSelection(); status('처음 선택으로 돌렸어요'); return; }
@@ -9807,7 +9846,7 @@ void main(){
   on(window, 'keydown', (e) => {
     if (!e.isTrusted || !(e.ctrlKey || e.metaKey) || e.altKey) return;
     const t = e.target;
-    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (!e.__mwHot && t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (!getCanvas() || document.querySelector('.modal-dialog')) return;
     const redo = (e.code === 'KeyZ' && e.shiftKey) || (e.code === 'KeyY' && !e.shiftKey);
     const undo = e.code === 'KeyZ' && !e.shiftKey;
@@ -9839,12 +9878,13 @@ void main(){
   // (사용자가 할 수 있는 조작 그대로: 사각형 비우기 + 붙여넣기). Ctrl+Z를 연달아 누르면 모아서 한 번에 칠한다.
   // 안전: 되돌릴 자리가 기억한 '그은 뒤' 그림과 다르면(레이어를 옮겼거나 다른 방법으로 바뀜) 아무것도 하지 않는다.
   // 대상: 브러시·지우개·연필·블렌드·올가미 채우기·페인트통·도형. 변형·이동·병합·붙여넣기(고급 브러시)·레이어 삭제를 하면 그 앞의 기록은 비운다.
-  const EU = { steps: [], cx: new WeakSet(), seen: new WeakSet(), ents: new WeakSet(), own: new WeakSet(), pend: [], fresh: [], bytes: 0, busy: false, q: 0, hist: null, since: 0, warned: 0 };
+  const EU = { tk: 0, at: new WeakMap(), lr: new Map(), blank: new WeakMap(), steps: [], cx: new WeakSet(), seen: new WeakSet(), ents: new WeakSet(), own: new WeakSet(), pend: [], fresh: [], bytes: 0, busy: false, q: 0, hist: null, since: 0, warned: 0 };
   const EU_TYPES = new Set(['Brush', 'Eraser', 'Pixel Pencil', 'Blend', 'Liquify', 'Lasso Brush', 'paintbucket', 'Paint Bucket', 'Ellipse', 'Rectangle', 'Shape']);
   const EU_SKIP = /^(selection|Selection|update layer|addLayer|pasteSelectionClear)/; // 그림을 안 바꾸는 칸은 건너뜀
   const EU_MAX = 90, EU_AREA = 5e6, EU_BYTES = (navigator.deviceMemory && navigator.deviceMemory <= 4 ? 60 : 140) * 1048576;
   const euZip = async (u8) => new Response(new Blob([u8]).stream().pipeThrough(new CompressionStream('deflate-raw'))).blob();
   const euUnzip = async (b) => new Uint8ClampedArray(await new Response(b.stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+  function euDropOld() { for (const q of EU.steps) euDropStep(q); EU.steps.length = 0; } // 확장이 기억한 칸만 비움(대기 중인 획은 그대로)
   function euReset() { EU.steps.length = 0; EU.pend.length = 0; EU.fresh.length = 0; EU.bytes = 0; }
   function euMarkAll(h) { // 지금 있는 칸·스냅샷은 모두 '본 것'으로
     for (const a of [...h.undos, ...h.redos]) for (const f of a) EU.seen.add(f);
@@ -9856,7 +9896,8 @@ void main(){
     if (!E || !h || !euOn()) return;
     if (EU.hist !== h) { EU.hist = h; euReset(); euMarkAll(h); return; }
     if (EU.busy || FXS.busy || S.busy || GU.busy || E.undoingOrRedoing) return;
-    for (const sh of (h.undosBuffer && h.undosBuffer.sheets) || []) for (const e of sh.entries) if (!EU.ents.has(e)) { EU.ents.add(e); EU.fresh.push(e); }
+    EU.tk++;
+    for (const sh of (h.undosBuffer && h.undosBuffer.sheets) || []) for (const e of sh.entries) if (!EU.ents.has(e)) { EU.ents.add(e); EU.fresh.push(e); EU.at.set(e, EU.tk); }
     // 새로 생긴 칸
     let news = 0;
     for (const a of h.undos) {
@@ -9864,31 +9905,48 @@ void main(){
       if (!f || EU.seen.has(f)) continue;
       for (const x of a) EU.seen.add(x);
       const t = String(f.type || '');
-      if (EU_TYPES.has(t) && !f.pre && !f.isMove && Number.isFinite(f.layerId) && a.slice(0, -1).every((x) => x.pre && /^finishTransform/.test(String(x.type || '')))) { EU.pend.push(f); if (a.length > 1) EU.cx.add(f); news++; } else if (!a.every((x) => EU_SKIP.test(String(x.type || '')))) { euReset(); EU.fresh.length = 0; }
+      if (EU_TYPES.has(t) && !f.pre && !f.isMove && Number.isFinite(f.layerId) && a.slice(0, -1).every((x) => x.pre && /^finishTransform/.test(String(x.type || '')))) {
+        EU.pend.push(f); EU.at.set(f, EU.tk); if (a.length > 1) EU.cx.add(f); news++;
+        const L = euLayer(E, f.layerId), was = EU.lr.get(f.layerId);
+        if (L && was && !(was.w > 0) && L.rect && L.rect.w > 0) EU.blank.set(f, { x: L.rect.x, y: L.rect.y, w: L.rect.w, h: L.rect.h }); // 빈 레이어에 처음 그은 획: 긋기 전 = 투명
+      } else if (!a.every((x) => EU_SKIP.test(String(x.type || '')))) { euReset(); EU.fresh.length = 0; }
     }
     if (news && !EU.since) EU.since = performance.now();
+    if (!E.drawingInProgress) for (const L of E.drawing.layers) EU.lr.set(L.id, L.rect ? { w: L.rect.w } : { w: 0 }); // 다음 획의 '그 전' 상태
     // 되돌린 상태 맞추기
     if (EU.steps.length) {
       const un = new Set(h.undos.flat()), re = new Set(h.redos.flat());
       for (const q of EU.steps) { if (q.ext) continue; if (re.has(q.key)) q.done = false; else if (un.has(q.key)) q.done = true; }
     }
-    if (EU.pend.length && SYM.down == null && !E.drawingInProgress && !SYM.flushP && !SYM.pump && (performance.now() - SYM.upAt > 350 || EU.pend.length >= 8)) euCapture(E, h); // 그리는 중·바로 이어 그을 때는 미룸(화면 읽기가 획을 끊지 않게). 8칸 쌓이면(15칸 밖으로 밀리기 전) 바로
+    if (EU.pend.length && SYM.down == null && !E.drawingInProgress && !SYM.flushP && !SYM.pump && (performance.now() - SYM.upAt > 250 || EU.pend.length >= 4)) euCapture(E, h); // 그리는 중·바로 이어 그을 때는 미룸(화면 읽기가 획을 끊지 않게). 4칸 쌓이면 바로
     if (!EU.pend.length) EU.fresh.length = 0;
   }
   const euLayer = (E, id) => E.drawing.layers.find((x) => x.id === id);
   function euCapture(E, h) {
-    const P = EU.pend.splice(0), F0 = EU.fresh.splice(0), F = [];
+    let P = EU.pend.splice(0); const F0 = EU.fresh.splice(0); let F = [];
     EU.since = 0;
-    // 칸과 스냅샷 짝짓기(뒤에서부터): 보통 한 칸에 하나. 앞의 붙여넣기를 마무리하며 시작한 칸은 앞쪽에 여분이 있다 → 마지막 것만 씀
-    { let k = F0.length - 1; for (let i = P.length - 1; i >= 0; i--) { F[i] = F0[k--]; if (EU.cx.has(P[i])) k = Math.min(k, i - 1); } if (k !== -1 || F.some((x) => !x)) { euReset(); return; } }
-    if (!P.every((f, i) => { const L = euLayer(E, f.layerId), e = F[i]; return L && L.texture && !L.textData && !L.ref && e.sheet && !e.compressed && e.format === 0 && e.rect.w > 0 && e.rect.h > 0 && e.rect.w * e.rect.h <= EU_AREA; })) { euReset(); return; }
+    // 칸과 스냅샷 짝짓기: 나타난 차례로. 스냅샷은 획보다 먼저(또는 같은 때) 생긴다 → 그 획 이전에 생긴 것 중 아직 안 쓴 첫 번째.
+    // (획 기록의 lastX·lastY는 스냅샷과 다른 좌표라 쓸 수 없다, 실측) 빈 레이어에 처음 그은 획은 스냅샷이 없다(실측) → 긋기 전 = 투명.
+    // 앞의 붙여넣기를 마무리하며 시작한 칸은 여분 스냅샷이 앞에 있다 → 그 획 이전 것 중 마지막.
+    const used = new Set(), tOf = (x) => EU.at.get(x) ?? Infinity;
+    for (let i = 0; i < P.length; i++) {
+      const f = P[i], tf = tOf(f);
+      if (EU.blank.has(f)) { F[i] = { blank: EU.blank.get(f) }; continue; }
+      let k = -1;
+      for (let j = 0; j < F0.length; j++) if (!used.has(j) && F0[j].rect && tOf(F0[j]) <= tf) { k = j; if (!EU.cx.has(f)) break; }
+      if (k >= 0) { for (let j = 0; j <= k; j++) used.add(j); F[i] = F0[k]; } else F[i] = null;
+    }
+    const ok = (f, e) => { const L = euLayer(E, f.layerId); if (!(L && L.texture && !L.textData && !L.ref && e)) return false; const R = e.blank || e.rect; return R && R.w > 0 && R.h > 0 && R.w * R.h <= EU_AREA && (e.blank || (e.sheet && !e.compressed && e.format === 0)); };
+    // 쓸 수 없는 칸이 있으면 그 칸과 그 앞 기록은 버리고(되돌리기 순서가 끊기므로), 그 뒤 획부터 이어서 기억한다
+    let gap = -1; for (let i = 0; i < P.length; i++) if (!ok(P[i], F[i])) gap = i;
+    if (gap >= 0) { euDropOld(); P = P.slice(gap + 1); F = F.slice(gap + 1); if (!P.length) return; }
     try {
       // 뒤에서부터: 지금 그림 = 마지막 획의 '그은 뒤'. 그 획의 '긋기 전'을 덮으면 그 앞 획의 '그은 뒤'
       const views = [];
       for (let i = P.length - 1; i >= 0; i--) {
-        const f = P[i], e = F[i], L = euLayer(E, f.layerId), R = { x: e.rect.x, y: e.rect.y, w: e.rect.w, h: e.rect.h };
-        const post = new Uint32Array(euRead(E, L, R).buffer), pre = euSnap(E, e);
-        if (!pre) { euReset(); return; }
+        const f = P[i], e = F[i], L = euLayer(E, f.layerId), R0 = e.blank || e.rect, R = { x: R0.x, y: R0.y, w: R0.w, h: R0.h };
+        const post = new Uint32Array(euRead(E, L, R).buffer), pre = e.blank ? new Uint32Array(R.w * R.h) : euSnap(E, e);
+        if (!pre) { euDropOld(); return; }
         for (const v of views) if (v.id === f.layerId) euBlit(post, R, v.pre, v.R); // 나중 획이 겹친 곳은 그 획 긋기 전으로
         views.push({ id: f.layerId, pre, R });
         // 순서: 먼저 겹친 것부터 덮어야 하므로 뒤 획 → 앞 획 차례로 views에 쌓인다
@@ -9902,7 +9960,7 @@ void main(){
       const op = o && (o.post || (o.raw && o.raw.post));
       if (!op || o.layerId !== q.layerId) continue;
       const t = new Uint32Array(q.pre); euBlit(t, q.R, op, o.R);
-      if (!euSame(t, q.pre)) { euReset(); EU.steps.length = 0; } // 기록을 믿을 수 없음 → 버림
+      if (!euSame(t, q.pre)) { euDropOld(); P.splice(0, i); i = 0; } // 이어지지 않음 → 그 앞 기록은 버리고 여기부터
     }
     for (const q of P) {
       const pre = q.pre, post = q.post;
@@ -10039,7 +10097,7 @@ void main(){
   on(window, 'keydown', (e) => {
     if (!e.isTrusted || !(e.ctrlKey || e.metaKey) || e.altKey || e.defaultPrevented) return;
     const t = e.target;
-    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (!e.__mwHot && t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (!getCanvas() || document.querySelector('.modal-dialog')) return;
     const redo = (e.code === 'KeyZ' && e.shiftKey) || (e.code === 'KeyY' && !e.shiftKey), undo = e.code === 'KeyZ' && !e.shiftKey;
     if (!undo && !redo) return;
@@ -10902,7 +10960,7 @@ void main(){
   on(window, 'keydown', (e) => {
     if (capturingKey || e.repeat || !e.isTrusted) return;
     const t = e.target;
-    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (!e.__mwHot && t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (!getCanvas() || document.querySelector('.modal-dialog')) return;
     const c = comboOf(e);
     if (!c || !(S.akeys || []).includes(c)) return;
@@ -10978,7 +11036,7 @@ void main(){
     if (!e.isTrusted || e.repeat || capturingKey) return;
     if (!(e.code === 'Delete' || e.code === 'Backspace') || !e.altKey || e.ctrlKey || e.shiftKey || e.metaKey) return;
     const t = e.target;
-    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (!e.__mwHot && t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (!getCanvas() || document.querySelector('.modal-dialog')) return;
     e.preventDefault(); e.stopImmediatePropagation();
     fillSelection();
@@ -11039,12 +11097,107 @@ void main(){
       sliders.appendChild(LP.panel);
     } else if (LP.panel.__name && L) LP.panel.__name.textContent = L.name || '';
   }
+  // ---------- 네비게이터 (클립 스튜디오처럼) ----------
+  // 보드 전체를 작게 보여 주고, 지금 화면에 보이는 곳을 빨간 사각형으로(화면 회전도 같이). 붙어 있는 창이 가린 가장자리는 빼고(떠 있는 창은 무시).
+  // 누르거나 끌면 그 자리가 화면 가운데로 온다 — 이동은 사용자가 하는 것과 같은 휠(가로·세로) 이벤트로(한 번에 최대 50px, 실측).
+  // 가볍게: 창이 보일 때만 돌고, 빨간 사각형은 화면이 바뀔 때만, 그림은 그리기를 멈췄을 때 1초에 한 번까지만 Magma의 축소 그림 함수로(읽기 전용).
+  const NAV = { el: null, cv: null, img: null, imgSig: '', imgAt: 0, busy: false, sig: '', raf: 0, fit: null, drag: null };
+  function navEl() {
+    if (NAV.el) return NAV.el;
+    const el = document.createElement('div'); el.className = 'mw-nav mw-el';
+    const cv = document.createElement('canvas'); el.appendChild(cv);
+    NAV.el = el; NAV.cv = cv;
+    cv.addEventListener('pointerdown', (e) => { if (e.button !== 0) return; e.preventDefault(); cv.setPointerCapture(e.pointerId); NAV.drag = { x: e.clientX, y: e.clientY }; navGo(); });
+    cv.addEventListener('pointermove', (e) => { if (NAV.drag) { NAV.drag.x = e.clientX; NAV.drag.y = e.clientY; navGo(); } });
+    const end = () => { NAV.drag = null; };
+    cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+    navLoop();
+    return el;
+  }
+  // 그림판에서 실제로 보이는 사각형(화면 좌표): 그림판에서 붙어 있는 창(도구·색상환·레이어 등)이 가장자리를 통째로 가린 만큼 뺀다
+  function navVisible(c) {
+    const R = c.getBoundingClientRect(); let L = R.left, T = R.top, Rr = R.right, B = R.bottom;
+    const panes = DK.on ? [...document.querySelectorAll('.mx-frame:not(.mx-float)')] : [...document.querySelectorAll('.editor-left, .editor-right, .editor-top')];
+    for (const p of panes) {
+      const q = p.getBoundingClientRect(); if (!(q.width > 0 && q.height > 0) || getComputedStyle(p).display === 'none') continue;
+      const vSpan = q.top <= T + 2 && q.bottom >= B - 2, hSpan = q.left <= L + 2 && q.right >= Rr - 2;
+      if (vSpan && q.left <= L + 2 && q.right > L) L = Math.max(L, q.right);
+      else if (vSpan && q.right >= Rr - 2 && q.left < Rr) Rr = Math.min(Rr, q.left);
+      else if (hSpan && q.top <= T + 2 && q.bottom > T) T = Math.max(T, q.bottom);
+      else if (hSpan && q.bottom >= B - 2 && q.top < B) B = Math.min(B, q.top);
+    }
+    return { R, L, T, Rr: Math.max(L + 1, Rr), B: Math.max(T + 1, B) };
+  }
+  function navFit(W, H) {
+    const cv = NAV.cv, w = cv.width, h = cv.height, k = Math.min(w / W, h / H) * 0.94;
+    return { k, ox: (w - W * k) / 2, oy: (h - H * k) / 2 };
+  }
+  function navLoop() {
+    cancelAnimationFrame(NAV.raf);
+    const step = () => {
+      NAV.raf = 0;
+      if (destroyed || !NAV.el || !NAV.el.isConnected) return; // 창이 닫히면 멈춤 (다시 붙으면 dkAdopt가 navEl → 아래 감시로 다시 시작)
+      try { navDraw(); } catch (e) { if (!NAV.warned) { NAV.warned = true; console.warn('[MagmaWand] 네비게이터', e); } }
+      NAV.raf = requestAnimationFrame(step);
+    };
+    NAV.raf = requestAnimationFrame(step);
+  }
+  function navDraw() {
+    const E = getEditor(), c = getCanvas(), cv = NAV.cv;
+    if (!E || !c || !cv || !E.drawing || !(E.drawing.w > 0)) return;
+    const dpr = window.devicePixelRatio || 1, bw = Math.max(1, Math.round(cv.clientWidth * dpr)), bh = Math.max(1, Math.round(cv.clientHeight * dpr));
+    if (!cv.clientWidth) return;
+    if (cv.width !== bw || cv.height !== bh) { cv.width = bw; cv.height = bh; NAV.sig = ''; }
+    const W = E.drawing.w, H = E.drawing.h;
+    // 그림 다시 받기: 되돌리기 기록 맨 위가 바뀌었고, 그리는 중이 아니고, 1초가 지났을 때
+    const h = guHist(), top = h && guTop(h.undos), isig = W + 'x' + H + '|' + fxId(top && top[top.length - 1]) + '|' + (h ? h.undos.length : 0) + '|' + E.drawing.layers.length;
+    const now = performance.now();
+    if (isig !== NAV.imgSig && !NAV.busy && !E.drawingInProgress && SYM.down == null && now - NAV.imgAt > 1000 && typeof E.renderer.getDrawingSnapshotScaledBlob === 'function') {
+      NAV.busy = true; NAV.imgAt = now; const want = isig;
+      Promise.resolve(E.renderer.getDrawingSnapshotScaledBlob(E.drawing, { x: dOx(E), y: dOy(E), w: W, h: H }, Math.min(1024, Math.max(128, Math.max(bw, bh))), 'image/png'))
+        .then((b) => (b ? createImageBitmap(b) : null)).then((bmp) => { if (bmp) { NAV.img?.close?.(); NAV.img = bmp; NAV.imgSig = want; NAV.sig = ''; } })
+        .catch(() => { NAV.imgSig = want; }).finally(() => { NAV.busy = false; });
+    }
+    const m = E.computedView.inverseTransform, V = navVisible(c), rc = V.R;
+    const sig = bw + 'x' + bh + '|' + m.join(',') + '|' + [V.L, V.T, V.Rr, V.B].map(Math.round).join(',') + '|' + NAV.imgSig;
+    if (sig === NAV.sig) return;
+    NAV.sig = sig;
+    const g = cv.getContext('2d'), F = NAV.fit = navFit(W, H);
+    g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = '#7b7b7b'; g.fillRect(0, 0, bw, bh);
+    if (NAV.img) { g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'medium'; g.drawImage(NAV.img, F.ox, F.oy, W * F.k, H * F.k); }
+    // 보이는 곳 (화면 → 보드 안 좌표 → 네비게이터)
+    const pt = (x, y) => { const X = x - rc.left, Y = y - rc.top, bx = m[0] * X + m[2] * Y + m[4], by = m[1] * X + m[3] * Y + m[5]; return [F.ox + bx * F.k, F.oy + by * F.k]; };
+    const P4 = [pt(V.L, V.T), pt(V.Rr, V.T), pt(V.Rr, V.B), pt(V.L, V.B)];
+    g.strokeStyle = '#ff2020'; g.lineWidth = Math.max(1, Math.round(dpr)); g.beginPath();
+    P4.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y))); g.closePath(); g.stroke();
+  }
+  // 누른 자리를 화면(보이는 곳) 가운데로: 휠(가로+세로)로 옮긴다. Magma는 휠 한 번에 delta×2.5px, 최대 50px 옮긴다(실측)
+  function navGo() {
+    const E = getEditor(), c = getCanvas(), F = NAV.fit;
+    if (!E || !c || !F || !NAV.drag || NAV.going) return;
+    const r = NAV.cv.getBoundingClientRect(), dpr = NAV.cv.width / (r.width || 1);
+    const bx = ((NAV.drag.x - r.left) * dpr - F.ox) / F.k, by = ((NAV.drag.y - r.top) * dpr - F.oy) / F.k; // 보드 안 좌표
+    const V = navVisible(c), rc = V.R, t = E.computedView.transform;
+    const sx = rc.left + t[0] * bx + t[2] * by + t[4], sy = rc.top + t[1] * bx + t[3] * by + t[5]; // 그 점의 지금 화면 위치
+    let dx = (V.L + V.Rr) / 2 - sx, dy = (V.T + V.B) / 2 - sy; // 옮길 거리(화면 px)
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    NAV.going = true;
+    try {
+      for (let n = 0; n < 200 && (Math.abs(dx) >= 0.5 || Math.abs(dy) >= 0.5); n++) {
+        const mx = Math.max(-50, Math.min(50, dx)), my = Math.max(-50, Math.min(50, dy));
+        // 세로만 움직일 때도 가로 값을 아주 조금 넣어야 확대가 아니라 이동으로 받는다(실측)
+        c.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, clientX: (V.L + V.Rr) / 2, clientY: (V.T + V.B) / 2, deltaX: -mx / 2.5 || 0.0004, deltaY: -my / 2.5 || 0.0004, deltaMode: 0 }));
+        dx -= mx; dy -= my;
+      }
+    } finally { NAV.going = false; }
+  }
+  cleanups.push(() => { cancelAnimationFrame(NAV.raf); NAV.img?.close?.(); NAV.el?.remove(); NAV.el = null; });
   // 따로 된 창(패널)에 넣는 레이어 속성: 고른 레이어가 바뀌면 다시 만든다
   const LPD = { el: null, uid: undefined };
   function lpDockEl() {
     if (!LPD.el) {
       LPD.el = document.createElement('div'); LPD.el.className = 'mw-lpd thin-dark-scrollbar mw-el';
-      for (const t of ['keydown', 'keyup']) LPD.el.addEventListener(t, (e) => e.stopPropagation());
+      for (const t of ['keydown', 'keyup']) LPD.el.addEventListener(t, (e) => { if (!e.__mwHot) e.stopPropagation(); });
       LPD.uid = undefined; lpDockSync();
     }
     return LPD.el;
@@ -11117,7 +11270,7 @@ void main(){
   function lpBuild(L, uid, docked) {
     const p = document.createElement('div');
     p.className = 'mw-lp-panel mw-el' + (docked ? ' mw-lp-docked' : '');
-    for (const t of ['keydown', 'keyup']) p.addEventListener(t, (e) => e.stopPropagation());
+    for (const t of ['keydown', 'keyup']) p.addEventListener(t, (e) => { if (!e.__mwHot) e.stopPropagation(); });
     const cap = (t) => { const d = document.createElement('div'); d.className = 'mw-lp-cap'; const sp = document.createElement('span'); sp.textContent = t; d.appendChild(sp); return d; };
     if (!docked) { // 브러시 설정 자리에 띄울 때만 제목 줄
       const head = document.createElement('div'); head.className = 'mw-lp-head';
@@ -11325,6 +11478,8 @@ void main(){
     html.mw-lp editor-sliders > :not(.mw-lp-panel) { display: none !important; }
     .mw-lp-panel { padding: 4px 6px 6px; box-sizing: border-box; width: 100%; font-size: 12px; }
     .mw-lpd { position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden; }
+    .mw-nav { position: absolute; inset: 0; background: #7b7b7b; overflow: hidden; }
+    .mw-nav canvas { width: 100%; height: 100%; display: block; cursor: pointer; touch-action: none; }
     .mw-lp-cap { display: flex; align-items: center; gap: 6px; margin: 4px 0 5px; font-size: 11px; color: #a3a5ad; }
     .mw-lp-cap::after { content: ''; flex: 1; height: 1px; background: rgba(255,255,255,.14); }
     .mw-lp-fxbox { display: flex; justify-content: flex-end; gap: 2px; padding: 3px; margin: 0 0 6px; border: 1px solid rgba(255,255,255,.12); border-radius: 3px; background: rgba(0,0,0,.18); }
@@ -11711,7 +11866,7 @@ void main(){
     }
     rowsEl.__mwSync = () => syncers.forEach((f) => f());
     // 설정 칸 안의 키 입력·휠이 Magma 단축키로 새지 않도록
-    for (const t of ['keydown', 'keyup']) rowsEl.addEventListener(t, (e) => e.stopPropagation());
+    for (const t of ['keydown', 'keyup']) rowsEl.addEventListener(t, (e) => { if (!e.__mwHot) e.stopPropagation(); });
     return true;
   }
 
@@ -11880,7 +12035,8 @@ void main(){
     { id: 'brush', title: '브러시', en: 'Brush', sel: ['.editor-right editor-slots', '.editor-right editor-sliders'], kind: 'flow', origin: '.container2' },
     { id: 'presets', title: '브러시 목록', en: 'Brush list', sel: ['.editor-right editor-properties-presets-list'], kind: 'fill', origin: '.container2b' },
     { id: 'bsize', title: '브러시 크기', en: 'Brush Size', sel: [], kind: 'fill', make: () => bszPanelEl() }, // 확장이 만든 패널 (Magma 요소 없음)
-    { id: 'lprops', title: '레이어 속성', en: 'Layer Properties', sel: [], kind: 'fill', make: () => lpDockEl() }, // 클립 스튜디오처럼 따로 된 창 (처음엔 레이어 창 바로 위)
+    { id: 'lprops', title: '레이어 속성', en: 'Layer Properties', sel: [], kind: 'fill', make: () => lpDockEl() },
+    { id: 'navi', title: '네비게이터', en: 'Navigator', sel: [], kind: 'fill', make: () => navEl() }, // 클립 스튜디오 네비게이터 (처음엔 숨김) // 클립 스튜디오처럼 따로 된 창 (처음엔 레이어 창 바로 위)
     { id: 'layers', title: '레이어', en: 'Layers', sel: ['.editor-right editor-layers'], kind: 'fill', origin: '.container3' },
   ];
   const dkTitle = (p) => (p ? (LANG_EN() ? p.en || p.title : p.title) : '');
@@ -11930,7 +12086,7 @@ void main(){
   function dkAdopt() {
     for (const p of DOCK_PANELS) {
       const body = dkPBody(p);
-      if (p.make) { const el = p.make(); if (el.parentNode !== body) body.appendChild(el); continue; }
+      if (p.make) { const el = p.make(); if (el.parentNode !== body) body.appendChild(el); if (p.id === 'navi' && !NAV.raf && el.isConnected) navLoop(); continue; }
       for (const s of p.sel) {
         for (const el of document.querySelectorAll(s)) {
           if (body.contains(el)) continue;
@@ -12045,7 +12201,7 @@ void main(){
   function dkEnsureAll() {
     const have = new Set([...dkAllGroups().flatMap((g) => g.t), ...(DK.lay.h || [])]);
     let k = 0;
-    if (!have.has('lprops')) { DK.lay.h = DK.lay.h || []; DK.lay.h.push('lprops'); have.add('lprops'); } // 레이어 속성 창은 처음엔 숨김 (열면 레이어 창 위에)
+    for (const id of ['lprops', 'navi']) if (!have.has(id)) { DK.lay.h = DK.lay.h || []; DK.lay.h.push(id); have.add(id); } // 레이어 속성 창은 처음엔 숨김 (열면 레이어 창 위에)
     for (const p of DOCK_PANELS) if (!have.has(p.id) && dkHasContent(p.id)) { DK.lay.fl.push({ g: { k: 'g', id: dkUid(), t: [p.id], a: p.id }, x: 120 + 30 * k, y: 80 + 30 * k, w: 260, h: 260 }); k++; }
   }
   // ---- 그리기 ----
@@ -12690,6 +12846,9 @@ void main(){
   // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
   // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
   const NEWS = [
+    { v: '0.44.0',
+      ko: ['네비게이터 창을 만들었어요 (Window 메뉴에서 열기): 보드 전체가 작게 보이고, 빨간 사각형이 지금 보는 곳이에요(옆 창에 가린 부분은 빼고, 화면 회전도 따라가요). 누르거나 끌면 그 자리로 이동해요', '15칸 넘는 되돌리기가 자주 안 되던 문제를 고쳤어요 (빈 레이어에 처음 그은 획 등이 섞이면 기억해 둔 기록을 통째로 버리던 문제)', '체크 칸·드롭다운·숫자 칸·단추를 누른 뒤에도 도구 단축키가 바로 먹어요 (글자를 쓰는 칸만 예외)', '경계 효과가 켜진 레이어에 그릴 때 덜 무거워졌어요 (펜이 지나간 곳만 다시 계산)'],
+      en: ['New Navigator window (open it from the Window menu): shows the whole board, and the red rectangle is what you are looking at (minus edges covered by docked windows, and it follows canvas rotation). Click or drag to move there', 'Fixed undo beyond 15 steps often not working (the saved history was thrown away when, for example, the first stroke on an empty layer was mixed in)', 'Tool shortcuts now work right after clicking a checkbox, dropdown, number box or button (only text boxes are excluded)', 'Drawing on a layer with the border effect is lighter (only the area the pen passed is recalculated)'] },
     { v: '0.43.0',
       ko: ['고급 브러시 설정 창을 클립 스튜디오 ‘보조 도구 상세’처럼 바꿨어요: 위쪽 획 미리보기, 왼쪽 분류(브러시 크기·잉크·색 흔들기·안티에일리어싱·브러시 끝·스프레이·획·텍스처·수채 경계·보정·시작과 끝 등), 설명 띠, 항목 도움말, 기본값 되돌리기·저장', '슬라이더 오른쪽의 동적 효과 단추로 필압·속도·무작위와 최솟값을 정해요', '그리기도 클립 스튜디오에 가깝게: 안티에일리어싱 4단계, 필압 불투명도가 겹쳐도 지나치게 진해지지 않음, 텍스처 회전·텍스처 농도 필압, 고정 간격·간격에 맞춰 농도 조절', '레이어 속성 창은 처음엔 숨겨 두었어요 (브러시 칸 끝 레이어 단추나 Window 메뉴로 열기)'],
       en: ['The advanced brush settings window now looks like Clip Studio’s Sub Tool Detail: stroke preview on top, categories on the left (Brush Size, Ink, Color Jitter, Anti-aliasing, Brush tip, Spraying, Stroke, Texture, Watercolor edge, Correction, Starting and ending…), a description banner, item help, and reset/save default', 'Use the Dynamics button right of each slider for pen pressure, velocity, random and the minimum value', 'Strokes are closer to Clip Studio: 4 anti-aliasing levels, pressure opacity no longer builds up too dark, texture rotation and texture-density pressure, fixed gap and density adjusted by gap', 'The Layer Properties window is now hidden by default (open it with the layer button at the end of the brush slots or the Window menu)'] },
@@ -12839,7 +12998,7 @@ void main(){
     histCheck, histPoints, histCopyLayer, openHistoryDialog, histUsage, getBrushSize, sizeRow,
     openStrokeDialog, fxSet, fxGet, fxKick, fxState: () => FX,
     advImportSut, advSelect, advListBrushes, advDeleteBrush, advState: () => ADV, dockState: () => DK, parseSut, sqliteTables, parseEffector, getAA, setAA, docToBuffer, selectionExists,
-    fxBake, fxShareSet, fxShareSync, fxReadF, fxBox, fxsState: () => FXS, euState: () => EU, euTarget, euRun, livStart, livFeed, livDrop, livMove, livStab, symStateX: () => SYM, aaHard, aaHard0, aaEdgeW, aaDepth, aaFit, aaBase, aaGain, aaTexOurs, aaCurD, newsShow, newsTick, setAlpha, advEraseCommit, fillSelection, chatShowToast, chatIncoming, chatWidget, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt,
+    dkTogglePanel, dkShowPanel, navState: () => NAV, fxBake, fxShareSet, fxShareSync, fxReadF, fxBox, fxsState: () => FXS, euState: () => EU, euTarget, euRun, livStart, livFeed, livDrop, livMove, livStab, symStateX: () => SYM, aaHard, aaHard0, aaEdgeW, aaDepth, aaFit, aaBase, aaGain, aaTexOurs, aaCurD, newsShow, newsTick, setAlpha, advEraseCommit, fillSelection, chatShowToast, chatIncoming, chatWidget, pickLayerAt, pickLayer, lpShow, ensureLayerProps, eyeColorAt,
     ensureGroups, activateMember, selectLayerContent, advNewBrush, setMagmaFont, currentFontName, systemFonts, openTextImageDialog,
     blurDab, blurState: () => BLR, msState: () => MS, guState: () => GU, guRef, clipToggle, clipHitAt, advPutImage, builtinBlob, advSaveBrush, advPrepare, openBrushSettings, openPresetPicker, advNewFromPreset, ADV_PRESETS, advMixColor, setPrimaryHex, advState2: () => ADV, fgConfig, growMaskBy, ensureFillRow, rowLayer, msPick, msReplay, msDecompose, gapBridgeFill, qmState: () => QM, qmApply, msPropsApply, readLayerEff, replaceLayerRegion, BUILTIN_TIPS, BUILTIN_TEX, trfModeButtons, smpRequest, smpState: () => SMP, smpRender, smpRes, smpCanvas, hexRgb, presetBrushObj, advCatOf, ADV_CATS };
   window.__magmaWand.ready = true; // 끝까지 시작됨 (실행기는 이 표시가 없으면 다시 넣는다)
