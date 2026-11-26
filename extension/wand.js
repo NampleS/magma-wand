@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (function mwBoot() {
   'use strict';
-  const VERSION = '0.45.1';
+  const VERSION = '0.45.2';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -3622,8 +3622,9 @@ void main(){
     const byId = new Map(brushes.map((b) => [b.id, b]));
     const G = tgSync(brushes), cur = G.find((g) => g.id === S.advGroupCur) || G[0];
     for (const id of [...TG.sel]) if (!byId.has(id)) TG.sel.delete(id);
-    // 그룹 단추
+    // 그룹 단추 (3개 이하면 그 수만큼 칸을 나눠 폭을 꽉 채움)
     const gw = el.querySelector('.mw-tg-groups'); gw.textContent = '';
+    gw.style.gridTemplateColumns = `repeat(${Math.max(1, Math.min(4, G.length))}, minmax(0, 1fr))`;
     for (const g of G) {
       const b = document.createElement('div'); b.className = 'mw-tg-g' + (g === cur ? ' on' : ''); b.dataset.id = g.id; b.title = g.name + ` (${g.ids.length})`;
       b.innerHTML = TG_SVG.pen + '<span></span>'; b.lastChild.textContent = g.name;
@@ -3639,7 +3640,7 @@ void main(){
       row.className = 'mw-tg-row' + (ADV.brush && ADV.brush.id === id ? ' on' : '') + (TG.sel.has(id) ? ' sel' : ''); row.dataset.id = id; row.title = b.name;
       const cv = document.createElement('canvas'); cv.width = SMP_W; cv.height = SMP_H;
       const nm = document.createElement('span'); nm.textContent = b.name + (b.tips.some((t) => t.needPng) || (b.texture && b.texture.needPng) ? ' ⚠' : '');
-      row.append(cv, nm); smpRequest('b', b, cv);
+      row.append(cv, nm); smpRequest('b', b, cv, true);
       row.addEventListener('click', async (e) => {
         if (TG.justDragged) { TG.justDragged = false; return; }
         if (e.ctrlKey || e.metaKey) { if (TG.sel.has(id)) TG.sel.delete(id); else TG.sel.add(id); if (ADV.brush && !TG.sel.size) TG.sel.add(ADV.brush.id); TG.anchor = id; tgRender(); return; }
@@ -4401,8 +4402,17 @@ void main(){
   // kind 'p' = 프리셋, 'b' = 저장된 브러시. cv(캔버스)에 그려 준다 (없으면 순서대로 만들어 둠)
   function smpKey(kind, obj) { return kind + ':' + BUILTIN_VER + ':' + (kind === 'p' ? obj.name : obj.id + ':' + smpHash(JSON.stringify(obj))); }
   function smpDraw(cv, src) { if (!cv || !src) return; const g = cv.getContext('2d'); g.clearRect(0, 0, cv.width, cv.height); g.drawImage(src, 0, 0, cv.width, cv.height); }
-  function smpRequest(kind, obj, cv) {
-    const key = smpKey(kind, obj);
+  // mask = 획 모양만(흰색 + 투명) — 브러시 목록 창은 단색 바탕에 이것을 얹는다(클립 스튜디오처럼)
+  function smpMask(px, o) {
+    const W = o.W || SMP_W, H = o.H || SMP_H, c = document.createElement('canvas'); c.width = W; c.height = H;
+    if (!px) return c;
+    const d = new Uint8ClampedArray(W * H * 4);
+    for (let i = 0; i < d.length; i += 4) { const a = px[i + 3]; if (a) { d[i] = d[i + 1] = d[i + 2] = 255; d[i + 3] = a; } }
+    c.getContext('2d').putImageData(new ImageData(d, W, H), 0, 0);
+    return c;
+  }
+  function smpRequest(kind, obj, cv, mask) {
+    const key = smpKey(kind, obj) + (mask ? ':m' : '');
     if (SMP.cache.has(key)) { smpDraw(cv, SMP.cache.get(key)); return; }
     SMP.q.push({ kind, obj, key, cv });
     setTimeout(smpPump, 0); // 카드가 화면에 붙은 뒤에 시작
@@ -4427,7 +4437,8 @@ void main(){
             const pr = it.kind === 'p' ? it.obj : ADV_PRESETS.find((p) => p.name === brush.preset);
             const mixy = brush.mix && brush.mix.mode !== 'none';
             const o = { color: hexRgb(pr && pr.pv), bg: mixy ? smpMixBg() : null, multiply: brush.blend === 'multiply' || brush.blend === 'glaze' };
-            SMP.cache.set(it.key, smpCanvas(smpRender(brush, res, o), o));
+            const px = smpRender(brush, res, o), base = it.key.replace(/:m$/, '');
+            SMP.cache.set(base, smpCanvas(px, o)); SMP.cache.set(base + ':m', smpMask(px, o));
           } catch (e) { if (!SMP.warned) { SMP.warned = true; console.warn('[MagmaWand] 획 미리보기', e); } SMP.cache.set(it.key, null); }
         }
         smpDraw(it.cv, SMP.cache.get(it.key));
@@ -6737,20 +6748,25 @@ void main(){
     try { snap = E.renderer.getDrawingSnapshotAsBinary(E.drawing); } catch { }
     if (!canvas || !snap || !box) return { remove() { } };
     const W = E.drawing.w, c = document.createElement('canvas');
-    c.width = box.w; c.height = box.h; c.className = 'mw-cover mw-el';
+    c.width = box.w; c.height = box.h; c.className = 'mw-cover'; // mw-el을 붙이면 나타나는 효과(0.22초 미끄러짐·투명→불투명)가 걸려 덮개가 엉뚱한 자리에 반투명하게 뜬다(실측)
     const im = new ImageData(box.w, box.h);
     { const bx = box.x - dOx(E), by = box.y - dOy(E), Hh = E.drawing.h; // 보드 그림은 보드 안 좌표
       for (let y = 0; y < box.h; y++) { const yy = by + y; if (yy < 0 || yy >= Hh || bx < 0 || bx + box.w > W) continue; im.data.set(snap.subarray((yy * W + bx) * 4, (yy * W + bx + box.w) * 4), y * box.w * 4); } }
     c.getContext('2d').putImageData(im, 0, 0);
-    Object.assign(c.style, { position: 'absolute', left: canvas.offsetLeft + 'px', top: canvas.offsetTop + 'px', pointerEvents: 'none', transformOrigin: '0 0',
+    // 그림판 캔버스 바로 옆에 캔버스를 두면 Magma 화면 규칙이 위치·변환을 무시한다(실측: 덮개가 그림판 왼쪽 위에 원래 크기로 붙음 →
+    // 지우기 사각형이 그대로 보였다) → 그림판 크기의 상자 안에 넣는다
+    const wrap = document.createElement('div'); wrap.className = 'mw-coverwrap';
+    Object.assign(wrap.style, { position: 'absolute', left: canvas.offsetLeft + 'px', top: canvas.offsetTop + 'px', width: canvas.offsetWidth + 'px', height: canvas.offsetHeight + 'px', overflow: 'hidden', pointerEvents: 'none' });
+    Object.assign(c.style, { position: 'absolute', left: '0', top: '0', pointerEvents: 'none', transformOrigin: '0 0',
       imageRendering: viewSharp(E) ? 'pixelated' : 'auto' });
+    wrap.appendChild(c);
     const place = () => { const m = m2s(E); c.style.imageRendering = viewSharp(E) ? 'pixelated' : 'auto';
       c.style.transform = `matrix(${m[0]},${m[1]},${m[2]},${m[3]},${m[4] + m[0] * box.x + m[2] * box.y},${m[5] + m[1] * box.x + m[3] * box.y})`; };
     place();
-    canvas.after(c);
-    let raf = 0; const loop = () => { if (!c.isConnected) return; try { place(); } catch { /* 무시 */ } raf = requestAnimationFrame(loop); };
+    canvas.after(wrap);
+    let raf = 0; const loop = () => { if (!c.isConnected) return; try { place(); Object.assign(wrap.style, { left: canvas.offsetLeft + 'px', top: canvas.offsetTop + 'px', width: canvas.offsetWidth + 'px', height: canvas.offsetHeight + 'px' }); } catch { /* 무시 */ } raf = requestAnimationFrame(loop); };
     raf = requestAnimationFrame(loop);
-    return { remove() { cancelAnimationFrame(raf); c.remove(); } };
+    return { remove() { cancelAnimationFrame(raf); wrap.remove(); } };
   }
   // Magma 화면 확대 방식: 'Sharp zoom'이 켜져 있고 3배(돌려 놓았으면 6배) 이상이면 픽셀을 또렷하게, 아니면 부드럽게 (Magma 소스와 같은 규칙).
   // 덮개·미리보기가 이와 다르면 바뀌는 순간 사각형이 흐려졌다 또렷해지는 깜빡임으로 보인다(실측: 4배 확대)
@@ -11577,6 +11593,7 @@ void main(){
       height: 0 !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important;
       overflow: hidden !important; opacity: 0 !important; pointer-events: none !important; }
     .mw-el { animation: mwSlide .22s ease-out; }
+    .mw-coverwrap, .mw-cover, canvas.mw-adv, canvas.mw-fx, .mw-coverwrap * { animation: none !important; }
     @keyframes mwSlide { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
     .mw-seg btn-group button { width: auto !important; min-width: 0 !important; padding: 0 9px !important; white-space: nowrap; }
     .mw-seg { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
@@ -11689,11 +11706,11 @@ void main(){
     .mw-tg-g svg { flex: 0 0 13px; width: 13px; height: 13px; } .mw-tg-g span { overflow: hidden; text-overflow: ellipsis; }
     .mw-tg-g:hover { background: #555; } .mw-tg-g.on { background: #5b7cc4; border-color: #7d9ae0; color: #fff; } .mw-tg-g.drop { outline: 2px solid #ffd24d; outline-offset: -2px; }
     .mw-tg-list { flex: 1; min-height: 0; overflow-y: auto; padding: 2px; }
-    .mw-tg-row { position: relative; height: 34px; margin: 0 0 1px; background: #262626; cursor: pointer; overflow: hidden; user-select: none; }
-    .mw-tg-row canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; filter: invert(1) grayscale(1) brightness(1.15); pointer-events: none; }
+    .mw-tg-row { position: relative; height: 34px; margin: 0 0 1px; background: transparent; cursor: pointer; overflow: hidden; user-select: none; }
+    .mw-tg-row canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; opacity: .92; pointer-events: none; }
     .mw-tg-row span { position: absolute; right: 6px; bottom: 3px; color: #fff; text-shadow: 0 0 3px #000, 0 0 2px #000; max-width: 85%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
     .mw-tg-row:hover { outline: 1px solid #777; outline-offset: -1px; }
-    .mw-tg-row.on { background: #c9d3e6; } .mw-tg-row.on canvas { filter: none; mix-blend-mode: multiply; } .mw-tg-row.on span { color: #1d2433; text-shadow: none; }
+    .mw-tg-row.on { background: #c9d3e6; } .mw-tg-row.on canvas { filter: brightness(0); opacity: .85; } .mw-tg-row.on span { color: #1d2433; text-shadow: none; }
     .mw-tg-row.sel { outline: 2px solid #6f8fd6; outline-offset: -2px; }
     .mw-tg-row.ins-top { box-shadow: inset 0 3px 0 #ffd24d; } .mw-tg-row.ins-bot { box-shadow: inset 0 -3px 0 #ffd24d; }
     .mw-tg-info { font-size: 11px; color: #bbb; padding: 0 5px; }
@@ -13076,6 +13093,9 @@ void main(){
   // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
   // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
   const NEWS = [
+    { v: '0.45.2',
+      ko: ['고급 브러시 투명색(지우개)·블러 등으로 지울 때 사각형이 잠깐 깨져 보이던 문제를 고쳤어요 (지우는 동안 가려 주는 덮개가 엉뚱한 자리에 반투명하게 떠 있었어요)', '브러시 목록 미리보기를 클립 스튜디오처럼 단색 바탕에 획 모양만 보이게 바꿨어요', '브러시 그룹이 3개 이하면 그룹 단추가 폭을 꽉 채워요'],
+      en: ['Fixed the brief rectangular glitch when erasing with the advanced brush in transparent color, blur and similar (the cover hiding the erase was drawn in the wrong place, half-transparent)', 'Brush list previews now show just the stroke on a plain background, like Clip Studio', 'With three or fewer brush groups, the group buttons fill the full width'] },
     { v: '0.45.1',
       ko: ['네비게이터에서 끌 때 화면이 마구 흔들리던 문제를 고쳤어요', '네비게이터의 캔버스 바깥 색을 그림판 바깥과 같은 어두운 회색으로 맞췄어요'],
       en: ['Fixed the view shaking wildly while dragging in the Navigator', 'The Navigator background outside the canvas now matches the dark gray around the canvas'] },
@@ -13213,7 +13233,7 @@ void main(){
     removeSettings();
     cancelAnimationFrame(ADV.raf); ADV.raf = 0; ADV.cv = null;
     // 덧그림 캔버스·떠 있는 창도 모두 치운다 (예전 버전이 남긴 것까지)
-    document.querySelectorAll('.mw-menu, .mw-toast, .mw-dialog-wrap, .mw-shortcut, .mw-flyout, .mw-overlay, .mw-brush, .mw-alpha, .mw-eye, canvas.mw-adv, canvas.mw-liv, .mw-livwrap, canvas.mw-fx, canvas.mw-cover, .mw-blurwrap, .mw-mswrap, .mw-msguard, .mw-bset, .mw-clipline, .mw-flashbox, .mw-size-ring, .mw-size-label').forEach((e) => e.remove());
+    document.querySelectorAll('.mw-menu, .mw-toast, .mw-dialog-wrap, .mw-shortcut, .mw-flyout, .mw-overlay, .mw-brush, .mw-alpha, .mw-eye, canvas.mw-adv, canvas.mw-liv, .mw-livwrap, canvas.mw-fx, canvas.mw-cover, .mw-coverwrap, .mw-blurwrap, .mw-mswrap, .mw-msguard, .mw-bset, .mw-clipline, .mw-flashbox, .mw-size-ring, .mw-size-label').forEach((e) => e.remove());
     document.documentElement.classList.remove('mw-quick', 'mw-alpha-on', 'mw-lp');
     styleEl?.remove();
     toolBtn = null; styleEl = null;
