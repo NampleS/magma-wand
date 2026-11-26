@@ -82,6 +82,7 @@ def run(loc):
                 ev("localStorage.setItem('magmaWand.seen','0.35.0')"); time.sleep(1.2); a = ev("document.querySelectorAll('.mw-news').length+'/'+document.querySelectorAll('.mw-news-v').length")
                 check('쌓인 소식 한 창에', a.startswith('1/') and int(a[2:]) >= 4, a); ev("localStorage.setItem('magmaWand.seen','%s')" % ver); time.sleep(1.2); check('다른 창에서 닫으면 같이 닫힘', not ev("!!document.querySelector('.mw-news')"))
             # 켜기·끄기 단추, 레이어 우클릭 래스터화
+            check('레이어 속성 창', ev("!!document.querySelector('.mx-pbody[data-p=lprops] .mw-lpd') || !document.querySelector('.mx-pbody')"))
             check('전원 단추', ev("!!document.querySelector('editor-menu .mx-power')"))
             ev("(()=>{const I=window.__magmaWand.internals,L=I.getEditor().drawing.layers[0];I.fxSet('UJfZeagVT3',L.uid,{on:true,color:'#ff0000',width:3,aa:true,blur:0})})()"); time.sleep(.5)
             pg.locator('editor-layers .layer').first.click(button='right'); time.sleep(1.3); a = ev("[...document.querySelectorAll('.context-menu button.mw-fxm')].map(b=>{const r=b.getBoundingClientRect();return b.textContent+'|'+(r.height>5&&r.bottom<=innerHeight&&r.top>0)}).join()")
