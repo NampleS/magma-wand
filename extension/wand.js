@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (function mwBoot() {
   'use strict';
-  const VERSION = '0.45.2';
+  const VERSION = '0.45.3';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -3016,8 +3016,9 @@ void main(){
     const done = () => requestAnimationFrame(clearNow);
     item.timer = setTimeout(clearNow, 8000); // 혹시 확인이 안 되면
     if (!any) { done(); return; }
-    if (s.erase) { // 투명색: 그 질감 그대로 지우기
-      ADV.commitQ = ADV.commitQ.then(() => advEraseCommit(px, boxM, clearNow)).catch((e) => { console.warn('[MagmaWand] 지우기 실패', e); toast('지우지 못했어요: ' + (e && e.message || e)); }).finally(done);
+    if (s.erase) { // 투명색: 그 질감 그대로 지우기. 앞의 지우기가 아직 진행 중이면 기다리는 획들을 모아 한 번에 지운다
+      (ADV.eq || (ADV.eq = [])).push({ px, box: boxM, clearNow, done });
+      if (!ADV.eqPend) { ADV.eqPend = true; ADV.commitQ = ADV.commitQ.then(advEraseFlush); }
       return;
     }
     ADV.commitQ = ADV.commitQ.then(async () => {
@@ -6742,16 +6743,17 @@ void main(){
     return true;
   }
   // 그 자리를 '지금 보이는 화면'으로 덮는 그림 (Magma 그림판 바로 위, 마법봉 미리보기 아래)
-  function showCover(E, box) {
+  function showCover(E, box0) {
     const canvas = getCanvas();
+    // 지울 사각형보다 2px 넓게: 덮개를 화면에 확대해 그리면 가장자리가 반쯤 비쳐, 지운 사각형의 테두리가 1~2프레임 줄로 보였다(사용자 보고)
+    const box = box0 && dclip(rgrow(box0, 2), E);
     let snap = null;
-    try { snap = E.renderer.getDrawingSnapshotAsBinary(E.drawing); } catch { }
-    if (!canvas || !snap || !box) return { remove() { } };
-    const W = E.drawing.w, c = document.createElement('canvas');
+    try { snap = box && E.renderer.getDrawingSnapshotAsBinary(E.drawing, { bounds: { x: box.x, y: box.y, w: box.w, h: box.h } }); } catch { } // 그 둘레만 (모델 좌표, 읽기 전용)
+    if (!canvas || !snap || !box || snap.length !== box.w * box.h * 4) return { remove() { } };
+    const c = document.createElement('canvas');
     c.width = box.w; c.height = box.h; c.className = 'mw-cover'; // mw-el을 붙이면 나타나는 효과(0.22초 미끄러짐·투명→불투명)가 걸려 덮개가 엉뚱한 자리에 반투명하게 뜬다(실측)
     const im = new ImageData(box.w, box.h);
-    { const bx = box.x - dOx(E), by = box.y - dOy(E), Hh = E.drawing.h; // 보드 그림은 보드 안 좌표
-      for (let y = 0; y < box.h; y++) { const yy = by + y; if (yy < 0 || yy >= Hh || bx < 0 || bx + box.w > W) continue; im.data.set(snap.subarray((yy * W + bx) * 4, (yy * W + bx + box.w) * 4), y * box.w * 4); } }
+    im.data.set(snap);
     c.getContext('2d').putImageData(im, 0, 0);
     // 그림판 캔버스 바로 옆에 캔버스를 두면 Magma 화면 규칙이 위치·변환을 무시한다(실측: 덮개가 그림판 왼쪽 위에 원래 크기로 붙음 →
     // 지우기 사각형이 그대로 보였다) → 그림판 크기의 상자 안에 넣는다
@@ -6801,7 +6803,18 @@ void main(){
   }
 
   // 투명색 고급 브러시 확정: maskPx = 획 알파(box 크기 RGBA), 결과 = 원래 그림 × (1 − 획 알파)
+  async function advEraseFlush() {
+    ADV.eqPend = false;
+    const items = (ADV.eq || []).splice(0);
+    if (!items.length) return;
+    try { await advEraseCommit(items.map((q) => ({ px: q.px, box: q.box })), null, () => { for (const q of items) q.clearNow(); }); }
+    catch (e) { console.warn('[MagmaWand] 지우기 실패', e); toast(L('지우지 못했어요: ', 'Could not erase: ') + (e && e.message || e)); }
+    finally { for (const q of items) q.done(); }
+  }
+  // maskPx가 배열이면 여러 지우개 획 [{px, box}]을 한 번에 (지워지는 양은 곱해서)
   async function advEraseCommit(maskPx, box, onLanded) {
+    const masks = Array.isArray(maskPx) ? maskPx : [{ px: maskPx, box }];
+    box = masks.reduce((u, q) => runion(u, q.box), null);
     const E = getEditor();
     const L = E && E.model.user.activeLayers && E.model.user.activeLayers[0];
     if (!E || !getCanvas() || !L) return;
@@ -6815,9 +6828,9 @@ void main(){
     for (let y = 0; y < ir.h; y++) for (let x = 0; x < ir.w; x++) {
       const i = (y * ir.w + x) * 4;
       if (!after[i + 3]) continue;
-      const bx = ir.x - box.x + x, by = ir.y - box.y + y;
-      const m = bx >= 0 && by >= 0 && bx < box.w && by < box.h ? maskPx[(by * box.w + bx) * 4 + 3] / 255 : 0;
-      if (m > 0.002) after[i + 3] = Math.round(after[i + 3] * (1 - m));
+      let keep = 1;
+      for (const q of masks) { const b = q.box, bx = ir.x - b.x + x, by = ir.y - b.y + y; if (bx >= 0 && by >= 0 && bx < b.w && by < b.h) keep *= 1 - q.px[(by * b.w + bx) * 4 + 3] / 255; }
+      if (keep < 0.998) after[i + 3] = Math.round(after[i + 3] * keep);
     }
     await replaceLayerRegion(E, L, ir, before, after, '지우지', onLanded);
   }
@@ -11587,6 +11600,7 @@ void main(){
     .mw-news-b { max-height: min(40vh, 320px); overflow: auto; padding: 0 12px 10px; }
     .mw-news-v { color: #9cc3ff; font-weight: 600; margin-top: 4px; }
     .mw-news ul { margin: 2px 0 6px; padding-left: 16px; list-style: disc; } .mw-news li { margin: 1px 0; }
+    .mw-news li.mw-news-hi { color: #ffd479; } .mw-news li.mw-news-hi::marker { color: #ffd479; }
     html.mw-on.mw-symtool .editor-view, html.mw-on.mw-symtool .editor-view * { cursor: default !important; }
     html.mw-on .editor-view, html.mw-on .editor-view * { cursor: crosshair !important; }
     .mw-hide, html.mw-on editor-sliders .tool-sliders:not(.layers-options) > :not(.mw-el):not(.selection-tool) {
@@ -13093,6 +13107,9 @@ void main(){
   // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
   // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
   const NEWS = [
+    { v: '0.45.3',
+      ko: ['고급 브러시 투명색(지우개)으로 지울 때 1~2프레임 보이던 사각형 테두리를 없앴어요', '투명색 지우기가 훨씬 가벼워졌어요: 지울 때마다 보드 전체를 읽던 것을 그 둘레만 (약 20배 빠름), 빠르게 연달아 지우면 한 번에 모아 처리', '업데이트 소식에서 새 기능처럼 눈여겨볼 소식은 색으로 강조해요'],
+      en: ['Removed the rectangle outline that flashed for 1–2 frames when erasing with the advanced brush in transparent color', 'Transparent-color erasing is much lighter: it reads only the area around the stroke instead of the whole board (about 20× faster), and quick successive erases are processed together', 'Notable news such as new features is now highlighted in color'] },
     { v: '0.45.2',
       ko: ['고급 브러시 투명색(지우개)·블러 등으로 지울 때 사각형이 잠깐 깨져 보이던 문제를 고쳤어요 (지우는 동안 가려 주는 덮개가 엉뚱한 자리에 반투명하게 떠 있었어요)', '브러시 목록 미리보기를 클립 스튜디오처럼 단색 바탕에 획 모양만 보이게 바꿨어요', '브러시 그룹이 3개 이하면 그룹 단추가 폭을 꽉 채워요'],
       en: ['Fixed the brief rectangular glitch when erasing with the advanced brush in transparent color, blur and similar (the cover hiding the erase was drawn in the wrong place, half-transparent)', 'Brush list previews now show just the stroke on a plain background, like Clip Studio', 'With three or fewer brush groups, the group buttons fill the full width'] },
@@ -13100,26 +13117,26 @@ void main(){
       ko: ['네비게이터에서 끌 때 화면이 마구 흔들리던 문제를 고쳤어요', '네비게이터의 캔버스 바깥 색을 그림판 바깥과 같은 어두운 회색으로 맞췄어요'],
       en: ['Fixed the view shaking wildly while dragging in the Navigator', 'The Navigator background outside the canvas now matches the dark gray around the canvas'] },
     { v: '0.45.0',
-      ko: ['고급 브러시가 획을 뗀 뒤 멈추던 문제를 고쳤어요: 왼쪽·위로 넓힌 보드에서 획마다 보드 전체 크기 그림을 붙이던 것을 작은 그림으로 (보드에 들어가기까지 약 0.03초)', '고급 브러시 목록이 ‘브러시 목록’ 창으로 옮겨졌어요 (클립 스튜디오 보조 도구 그룹처럼): 위쪽 그룹 단추(우클릭 = 추가·이름 바꾸기·지우기), 획 미리보기 목록, 아래 설정·새 브러시·가져오기·복제·지우기', 'Ctrl·Shift로 여러 브러시를 고르고 설정을 한 번에 바꾸거나 지울 수 있어요. 끌어서 순서를 바꾸고, 그룹 단추로 끌면 그 그룹으로 옮겨요', '고급 브러시·블러 등을 쓰는 동안 Space를 누르면 손바닥 커서로 바뀌어요'],
-      en: ['Fixed the pause after lifting the pen with the advanced brush: on boards extended left/top it pasted a board-sized image for every stroke, now a small one (about 0.03 s to land)', 'The advanced brush list moved into the Brush list window (like Clip Studio’s sub tool group): group buttons on top (right-click = add, rename, remove), stroke-preview list, and settings/new/import/duplicate/delete at the bottom', 'Select several brushes with Ctrl/Shift to change their settings together or delete them. Drag to reorder, or drop on a group button to move them there', 'Holding Space while using the advanced brush, blur and similar tools now shows the hand cursor'] },
+      ko: ['고급 브러시가 획을 뗀 뒤 멈추던 문제를 고쳤어요: 왼쪽·위로 넓힌 보드에서 획마다 보드 전체 크기 그림을 붙이던 것을 작은 그림으로 (보드에 들어가기까지 약 0.03초)', '★고급 브러시 목록이 ‘브러시 목록’ 창으로 옮겨졌어요 (클립 스튜디오 보조 도구 그룹처럼): 위쪽 그룹 단추(우클릭 = 추가·이름 바꾸기·지우기), 획 미리보기 목록, 아래 설정·새 브러시·가져오기·복제·지우기', '★Ctrl·Shift로 여러 브러시를 고르고 설정을 한 번에 바꾸거나 지울 수 있어요. 끌어서 순서를 바꾸고, 그룹 단추로 끌면 그 그룹으로 옮겨요', '고급 브러시·블러 등을 쓰는 동안 Space를 누르면 손바닥 커서로 바뀌어요'],
+      en: ['Fixed the pause after lifting the pen with the advanced brush: on boards extended left/top it pasted a board-sized image for every stroke, now a small one (about 0.03 s to land)', '★The advanced brush list moved into the Brush list window (like Clip Studio’s sub tool group): group buttons on top (right-click = add, rename, remove), stroke-preview list, and settings/new/import/duplicate/delete at the bottom', '★Select several brushes with Ctrl/Shift to change their settings together or delete them. Drag to reorder, or drop on a group button to move them there', 'Holding Space while using the advanced brush, blur and similar tools now shows the hand cursor'] },
     { v: '0.44.0',
-      ko: ['네비게이터 창을 만들었어요 (Window 메뉴에서 열기): 보드 전체가 작게 보이고, 빨간 사각형이 지금 보는 곳이에요(옆 창에 가린 부분은 빼고, 화면 회전도 따라가요). 누르거나 끌면 그 자리로 이동해요', '15칸 넘는 되돌리기가 자주 안 되던 문제를 고쳤어요 (빈 레이어에 처음 그은 획 등이 섞이면 기억해 둔 기록을 통째로 버리던 문제)', '체크 칸·드롭다운·숫자 칸·단추를 누른 뒤에도 도구 단축키가 바로 먹어요 (글자를 쓰는 칸만 예외)', '경계 효과가 켜진 레이어에 그릴 때 덜 무거워졌어요 (펜이 지나간 곳만 다시 계산)'],
-      en: ['New Navigator window (open it from the Window menu): shows the whole board, and the red rectangle is what you are looking at (minus edges covered by docked windows, and it follows canvas rotation). Click or drag to move there', 'Fixed undo beyond 15 steps often not working (the saved history was thrown away when, for example, the first stroke on an empty layer was mixed in)', 'Tool shortcuts now work right after clicking a checkbox, dropdown, number box or button (only text boxes are excluded)', 'Drawing on a layer with the border effect is lighter (only the area the pen passed is recalculated)'] },
+      ko: ['★네비게이터 창을 만들었어요 (Window 메뉴에서 열기): 보드 전체가 작게 보이고, 빨간 사각형이 지금 보는 곳이에요(옆 창에 가린 부분은 빼고, 화면 회전도 따라가요). 누르거나 끌면 그 자리로 이동해요', '15칸 넘는 되돌리기가 자주 안 되던 문제를 고쳤어요 (빈 레이어에 처음 그은 획 등이 섞이면 기억해 둔 기록을 통째로 버리던 문제)', '★체크 칸·드롭다운·숫자 칸·단추를 누른 뒤에도 도구 단축키가 바로 먹어요 (글자를 쓰는 칸만 예외)', '경계 효과가 켜진 레이어에 그릴 때 덜 무거워졌어요 (펜이 지나간 곳만 다시 계산)'],
+      en: ['★New Navigator window (open it from the Window menu): shows the whole board, and the red rectangle is what you are looking at (minus edges covered by docked windows, and it follows canvas rotation). Click or drag to move there', 'Fixed undo beyond 15 steps often not working (the saved history was thrown away when, for example, the first stroke on an empty layer was mixed in)', '★Tool shortcuts now work right after clicking a checkbox, dropdown, number box or button (only text boxes are excluded)', 'Drawing on a layer with the border effect is lighter (only the area the pen passed is recalculated)'] },
     { v: '0.43.0',
-      ko: ['고급 브러시 설정 창을 클립 스튜디오 ‘보조 도구 상세’처럼 바꿨어요: 위쪽 획 미리보기, 왼쪽 분류(브러시 크기·잉크·색 흔들기·안티에일리어싱·브러시 끝·스프레이·획·텍스처·수채 경계·보정·시작과 끝 등), 설명 띠, 항목 도움말, 기본값 되돌리기·저장', '슬라이더 오른쪽의 동적 효과 단추로 필압·속도·무작위와 최솟값을 정해요', '그리기도 클립 스튜디오에 가깝게: 안티에일리어싱 4단계, 필압 불투명도가 겹쳐도 지나치게 진해지지 않음, 텍스처 회전·텍스처 농도 필압, 고정 간격·간격에 맞춰 농도 조절', '레이어 속성 창은 처음엔 숨겨 두었어요 (브러시 칸 끝 레이어 단추나 Window 메뉴로 열기)'],
-      en: ['The advanced brush settings window now looks like Clip Studio’s Sub Tool Detail: stroke preview on top, categories on the left (Brush Size, Ink, Color Jitter, Anti-aliasing, Brush tip, Spraying, Stroke, Texture, Watercolor edge, Correction, Starting and ending…), a description banner, item help, and reset/save default', 'Use the Dynamics button right of each slider for pen pressure, velocity, random and the minimum value', 'Strokes are closer to Clip Studio: 4 anti-aliasing levels, pressure opacity no longer builds up too dark, texture rotation and texture-density pressure, fixed gap and density adjusted by gap', 'The Layer Properties window is now hidden by default (open it with the layer button at the end of the brush slots or the Window menu)'] },
+      ko: ['★고급 브러시 설정 창을 클립 스튜디오 ‘보조 도구 상세’처럼 바꿨어요: 위쪽 획 미리보기, 왼쪽 분류(브러시 크기·잉크·색 흔들기·안티에일리어싱·브러시 끝·스프레이·획·텍스처·수채 경계·보정·시작과 끝 등), 설명 띠, 항목 도움말, 기본값 되돌리기·저장', '★슬라이더 오른쪽의 동적 효과 단추로 필압·속도·무작위와 최솟값을 정해요', '그리기도 클립 스튜디오에 가깝게: 안티에일리어싱 4단계, 필압 불투명도가 겹쳐도 지나치게 진해지지 않음, 텍스처 회전·텍스처 농도 필압, 고정 간격·간격에 맞춰 농도 조절', '레이어 속성 창은 처음엔 숨겨 두었어요 (브러시 칸 끝 레이어 단추나 Window 메뉴로 열기)'],
+      en: ['★The advanced brush settings window now looks like Clip Studio’s Sub Tool Detail: stroke preview on top, categories on the left (Brush Size, Ink, Color Jitter, Anti-aliasing, Brush tip, Spraying, Stroke, Texture, Watercolor edge, Correction, Starting and ending…), a description banner, item help, and reset/save default', '★Use the Dynamics button right of each slider for pen pressure, velocity, random and the minimum value', 'Strokes are closer to Clip Studio: 4 anti-aliasing levels, pressure opacity no longer builds up too dark, texture rotation and texture-density pressure, fixed gap and density adjusted by gap', 'The Layer Properties window is now hidden by default (open it with the layer button at the end of the brush slots or the Window menu)'] },
     { v: '0.42.0',
-      ko: ['레이어 속성이 클립 스튜디오처럼 따로 된 창이 됐어요 (처음엔 레이어 창 바로 위). ‘효과’ 칸의 단추로 경계 효과를 켜면 그 설정이 아래에 나와요', '브러시 칸 끝의 레이어 단추는 이제 그 창을 열고 닫아요', '창 이름표 글자를 눈에 덜 띄는 회색으로 바꿨어요', '브러시 목록이 비어 보이던 문제: Magma 설정의 ‘Brush list’가 꺼져 있으면 브러시 목록 탭을 열 때 저절로 켜요'],
-      en: ['Layer Properties is now its own window like Clip Studio (first placed right above Layers). Turn on the border effect with the button under “Effect” and its settings appear below', 'The layer button at the end of the brush slots now opens and closes that window', 'Window title text is now a dimmer gray', 'Empty brush list fixed: if Magma’s “Brush list” layout option is off, it is turned on when you open the Brush list tab'] },
+      ko: ['★레이어 속성이 클립 스튜디오처럼 따로 된 창이 됐어요 (처음엔 레이어 창 바로 위). ‘효과’ 칸의 단추로 경계 효과를 켜면 그 설정이 아래에 나와요', '브러시 칸 끝의 레이어 단추는 이제 그 창을 열고 닫아요', '창 이름표 글자를 눈에 덜 띄는 회색으로 바꿨어요', '브러시 목록이 비어 보이던 문제: Magma 설정의 ‘Brush list’가 꺼져 있으면 브러시 목록 탭을 열 때 저절로 켜요'],
+      en: ['★Layer Properties is now its own window like Clip Studio (first placed right above Layers). Turn on the border effect with the button under “Effect” and its settings appear below', 'The layer button at the end of the brush slots now opens and closes that window', 'Window title text is now a dimmer gray', 'Empty brush list fixed: if Magma’s “Brush list” layout option is off, it is turned on when you open the Brush list tab'] },
     { v: '0.41.0',
       ko: ['보드를 왼쪽·위로 넓힌 보드에서 경계 효과가 안 보이던 문제, 15칸 넘는 되돌리기·마법봉·블러·고급 브러시·스포이트 등이 엉뚱한 자리에 되던 문제를 고쳤어요', '거울 자로 그리는 중 바로 이어 그은 획이 각지거나 필압이 마디져 보이던 문제를 고쳤어요 (점을 솎지 않고 모두 넘김)', '그리는 동안 확장의 무거운 작업(되돌리기 저장·작업 기록·화면 정리)을 미뤄 덜 버벅여요', '안티에일리어싱 ‘보통’은 더 부드럽게, ‘강하게’는 조금 덜 흐리게. 붓 보정(텍스처)이 저절로 꺼지면 다시 켜요', '레이어 속성 슬라이더의 동그란 손잡이가 값을 따라 움직여요', '확장 단추를 누른 뒤 스페이스를 눌러도 단추가 다시 눌리지 않아요 (손 도구로 이동)'],
       en: ['Fixed boards extended to the left/top: the border effect was invisible, and undo beyond 15 steps, magic wand, blur, advanced brushes and eyedropper worked in the wrong place', 'Symmetry ruler: strokes drawn right after another no longer look angular or have stepped pressure (all points are passed on)', 'Heavy extension work (undo saving, history, UI upkeep) waits until you stop drawing, so less lag', 'Anti-aliasing “Medium” is softer and “Strong” a little less blurry; the brush texture correction is turned back on if it gets switched off', 'Layer property sliders: the round handle now follows the value', 'Space after clicking an extension button no longer presses it again (hand tool works)'] },
     { v: '0.40.0',
-      ko: ['펜을 대는 순간 선이 엉뚱한 곳으로 튀고 끊기던 버그를 고쳤어요', '위쪽 막대의 전원 단추로 확장을 바로 켜고 끌 수 있어요 (웹·앱 모두)', '안티에일리어싱: 필압으로 가늘어져도 흐림이 풀리지 않게 고쳤어요 (다른 곳에서 경도가 바뀌면 풀리던 문제)', '경계 효과를 캔버스 픽셀에 맞춰 새로 그려요 — 안티에일리어싱·흐리기가 자연스럽고, 선 사이의 투명한 막이 없고, 10% 이상 반투명한 곳에도 그려지고, 되돌려도 흔적이 남지 않아요', '경계 효과 ‘상대에게도 보이기’: 확장이 없는 사람에게도 보여요 (레이어 속성에서 켜기)', '경계 효과 래스터화: 레이어 우클릭 메뉴, 아래로 병합할 때는 자동'],
-      en: ['Fixed strokes jumping to a wrong place and breaking right when the pen touches', 'Turn the extension on/off with the power button in the top bar (web and app)', 'Anti-aliasing: softness no longer gets lost on thin, light-pressure lines (it was dropped when hardness changed elsewhere)', 'Border effect redrawn on canvas pixels: natural anti-aliasing and blur, no thin gap between lines, works on areas 10% opaque and up, no leftovers after undo', 'Border effect “Show to others”: people without the extension can see it (turn on in layer properties)', 'Rasterize border effect: in the layer right-click menu, and automatic when merging down'] },
+      ko: ['펜을 대는 순간 선이 엉뚱한 곳으로 튀고 끊기던 버그를 고쳤어요', '★위쪽 막대의 전원 단추로 확장을 바로 켜고 끌 수 있어요 (웹·앱 모두)', '안티에일리어싱: 필압으로 가늘어져도 흐림이 풀리지 않게 고쳤어요 (다른 곳에서 경도가 바뀌면 풀리던 문제)', '경계 효과를 캔버스 픽셀에 맞춰 새로 그려요 — 안티에일리어싱·흐리기가 자연스럽고, 선 사이의 투명한 막이 없고, 10% 이상 반투명한 곳에도 그려지고, 되돌려도 흔적이 남지 않아요', '★경계 효과 ‘상대에게도 보이기’: 확장이 없는 사람에게도 보여요 (레이어 속성에서 켜기)', '★경계 효과 래스터화: 레이어 우클릭 메뉴, 아래로 병합할 때는 자동'],
+      en: ['Fixed strokes jumping to a wrong place and breaking right when the pen touches', '★Turn the extension on/off with the power button in the top bar (web and app)', 'Anti-aliasing: softness no longer gets lost on thin, light-pressure lines (it was dropped when hardness changed elsewhere)', 'Border effect redrawn on canvas pixels: natural anti-aliasing and blur, no thin gap between lines, works on areas 10% opaque and up, no leftovers after undo', '★Border effect “Show to others”: people without the extension can see it (turn on in layer properties)', '★Rasterize border effect: in the layer right-click menu, and automatic when merging down'] },
     { v: '0.39.0',
-      ko: ['되돌리기를 15칸보다 훨씬 많이 할 수 있어요 — 획을 내 컴퓨터에 기억해 최대 90칸 (Ctrl+Z, 다시 하기도 됨. 설정에서 끌 수 있음)', '거울 자: 반대편 획이 원본과 똑같은 브러시 모양으로 실시간으로 그려져요', '도구 막대가 사라지던 문제: 잘못 눌리던 접기·닫기 단추를 없애고, 사라지면 스스로 되살려요', '블러·투명색 지우기가 올가미 설정에 따라 덜 지워질 수 있던 문제를 고쳤어요'],
-      en: ['Undo far beyond 15 steps: strokes are remembered on your computer, up to 90 (Ctrl+Z, redo too; can be turned off in settings)', 'Symmetry ruler: the mirrored stroke is drawn live with exactly the same brush look', 'Toolbar disappearing: removed the easily mis-clicked minimize/close buttons, and it now recovers by itself', 'Fixed blur and transparent erasing sometimes not erasing fully, depending on lasso settings'] },
+      ko: ['★되돌리기를 15칸보다 훨씬 많이 할 수 있어요 — 획을 내 컴퓨터에 기억해 최대 90칸 (Ctrl+Z, 다시 하기도 됨. 설정에서 끌 수 있음)', '★거울 자: 반대편 획이 원본과 똑같은 브러시 모양으로 실시간으로 그려져요', '도구 막대가 사라지던 문제: 잘못 눌리던 접기·닫기 단추를 없애고, 사라지면 스스로 되살려요', '블러·투명색 지우기가 올가미 설정에 따라 덜 지워질 수 있던 문제를 고쳤어요'],
+      en: ['★Undo far beyond 15 steps: strokes are remembered on your computer, up to 90 (Ctrl+Z, redo too; can be turned off in settings)', '★Symmetry ruler: the mirrored stroke is drawn live with exactly the same brush look', 'Toolbar disappearing: removed the easily mis-clicked minimize/close buttons, and it now recovers by itself', 'Fixed blur and transparent erasing sometimes not erasing fully, depending on lasso settings'] },
     { v: '0.38.0',
       ko: ['안티에일리어싱 ‘보통·강하게’ 브러시: 약하게 눌러 가늘어진 곳도 흐림이 남아 사선의 계단이 줄었어요', '브러시 크기가 달라져도 흐림 폭이 거의 같아요 (큰 붓에서 흐림이 꺼지던 문제도 고침)'],
       en: ['Anti-aliasing “Medium/Strong” for the Brush: thin, light-pressure parts stay soft, so slanted lines look less jagged', 'The softness also stays nearly the same at every brush size (large brushes no longer lose it)'] },
@@ -13130,8 +13147,8 @@ void main(){
       ko: ['안티에일리어싱 ‘보통·강하게’: 필압으로 가늘어져도 번지는 폭이 같게 유지돼요 (브러시, 속도에 영향 없음)', '대칭 자: 빠르게 이어 그어도 멈추지 않고 획을 잃지 않아요', 'Ctrl+T 상자가 지운 자리까지 잡던 문제를 고쳤어요', '그리는 동안 확장이 하던 작업을 뒤로 미뤄 더 가벼워졌어요'],
       en: ['Anti-aliasing “Medium/Strong”: the spread stays the same even where pressure makes the brush thinner (Brush; no speed cost)', 'Symmetry ruler: draw as fast as you like, with no pause and no lost strokes', 'Fixed the Ctrl+T box including areas you had erased', 'Background work now waits while you draw, so strokes are lighter'] },
     { v: '0.36.0',
-      ko: ['안티에일리어싱 ‘보통·강하게’가 브러시 크기와 상관없이 같은 폭으로 번져요', 'Help 메뉴 맨 아래에 확장 버전이 보여요 (누르면 업데이트 소식)', '업데이트되면 바뀐 점을 이 창으로 한 번 알려 드려요'],
-      en: ['Anti-aliasing “Medium/Strong” now spreads the same distance at every brush size', 'The extension version is shown at the bottom of the Help menu (click it to see what’s new)', 'After an update, this window tells you once what changed'] },
+      ko: ['안티에일리어싱 ‘보통·강하게’가 브러시 크기와 상관없이 같은 폭으로 번져요', '★Help 메뉴 맨 아래에 확장 버전이 보여요 (누르면 업데이트 소식)', '업데이트되면 바뀐 점을 이 창으로 한 번 알려 드려요'],
+      en: ['Anti-aliasing “Medium/Strong” now spreads the same distance at every brush size', '★The extension version is shown at the bottom of the Help menu (click it to see what’s new)', 'After an update, this window tells you once what changed'] },
     { v: '0.35.3',
       ko: ['선을 긋고 멈추는 도형 보정: 데스크톱 앱에서 가끔 끝과 끝이 곧은 선으로 이어지던 문제를 고쳤어요'],
       en: ['QuickShape (hold at the end of a stroke): fixed strokes sometimes turning into a straight line between the ends in the desktop app'] },
@@ -13178,7 +13195,7 @@ void main(){
       for (const n of list) {
         const v = document.createElement('div'); v.className = 'mw-news-v'; v.textContent = 'v' + n.v;
         const ul = document.createElement('ul');
-        for (const line of L(n.ko, n.en)) { const li = document.createElement('li'); li.textContent = line; ul.appendChild(li); }
+        for (const line of L(n.ko, n.en)) { const li = document.createElement('li'), hi = line.startsWith('★'); li.textContent = hi ? line.replace(/^★\s*/, '') : line; if (hi) li.className = 'mw-news-hi'; ul.appendChild(li); } // ★ = 새 기능 등 눈여겨볼 소식 (색으로 강조)
         body.append(v, ul);
       }
       el.append(h, body);
