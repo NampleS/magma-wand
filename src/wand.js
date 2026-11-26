@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (function mwBoot() {
   'use strict';
-  const VERSION = '0.42.0';
+  const VERSION = '0.43.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -2140,9 +2140,9 @@
   const ADV = { gl: null, cv: null, P: {}, vao: null, ibuf: null, fb: null, W: 0, H: 0, S: null, C: null, cTimer: 0,
     pend: [], tips: new Map(), tex: null, brush: null, tipTex: [], texInfo: null, stroke: null, batch: [], dbatch: [], raf: 0, lost: false, commitQ: Promise.resolve() };
   const ADV_VS = `#version 300 es
-in vec2 aPos; in float aSize; in float aAngle; in vec2 aSq; in float aAlpha; in vec3 aColor; in vec2 aFlip; in vec2 aV; in vec2 aX;
+in vec2 aPos; in float aSize; in float aAngle; in vec2 aSq; in float aAlpha; in vec3 aColor; in vec2 aFlip; in vec2 aV; in vec2 aX; in float aTD;
 uniform vec2 uDoc; uniform float uRibbon; uniform vec2 uOrg;
-out vec2 vUV; out float vA; out vec3 vC; out vec2 vDoc; out vec2 vVSpan; out vec2 vX;
+out vec2 vUV; out float vA; out vec3 vC; out vec2 vDoc; out vec2 vVSpan; out vec2 vX; out float vTD;
 void main(){
   int k = gl_VertexID; vec2 c = vec2((k == 1 || k == 2 || k == 4) ? 1.0 : -1.0, (k == 2 || k == 4 || k == 5) ? 1.0 : -1.0);
   vUV = c * 0.5 + 0.5; if (aFlip.x < 0.0) vUV.x = 1.0 - vUV.x; if (aFlip.y < 0.0) vUV.y = 1.0 - vUV.y;
@@ -2150,12 +2150,13 @@ void main(){
   if (uRibbon > 0.5) hs = vec2(aSize * 0.5 * aSq.x, aSq.y * 0.5);
   vec2 l = c * hs; float cs = cos(aAngle), sn = sin(aAngle);
   vec2 p = aPos + vec2(l.x * cs - l.y * sn, l.x * sn + l.y * cs) - uOrg; // 보드 안 좌표
-  vDoc = p; vA = aAlpha; vC = aColor; vVSpan = aV; vX = aX;
+  vDoc = p; vA = aAlpha; vC = aColor; vVSpan = aV; vX = aX; vTD = aTD;
   gl_Position = vec4(p / uDoc * 2.0 - 1.0, 0.0, 1.0);
 }`;
   const ADV_FS = `#version 300 es
 precision highp float;
-in vec2 vUV; in float vA; in vec3 vC; in vec2 vDoc; in vec2 vVSpan; in vec2 vX;
+in vec2 vUV; in float vA; in vec3 vC; in vec2 vDoc; in vec2 vVSpan; in vec2 vX; in float vTD;
+uniform vec2 uTexR;
 uniform sampler2D uTip; uniform sampler2D uTex; uniform float uRound; uniform float uHard; uniform float uAA;
 uniform float uUseTex; uniform float uTexDen; uniform vec2 uTexScale; uniform float uTexInv; uniform float uRibbon; uniform float uTexCon;
 uniform float uBN; uniform float uBStr; uniform float uBShape; uniform float uBVar; uniform float uBSeed; uniform float uPass; uniform float uRidge;
@@ -2194,14 +2195,15 @@ void main(){
   } else if (uRound > 0.5) {
     float r = length(vUV * 2.0 - 1.0);
     float edge = max(fwidth(r), 0.0001);
-    m = uHard >= 0.999 ? 1.0 - smoothstep(1.0 - edge, 1.0, r) : 1.0 - smoothstep(uHard, 1.0, r);
+    float ek = uAA < 1.5 ? 1.0 : uAA < 2.5 ? 1.8 : 2.8; // 안티에일리어싱 약하게·보통·강하게
+    m = uHard >= 0.999 ? 1.0 - smoothstep(1.0 - edge * ek, 1.0, r) : 1.0 - smoothstep(min(uHard, 1.0 - edge * ek), 1.0, r);
   } else {
     vec2 uv = vUV;
     if (uRibbon > 0.5) uv = vec2(vUV.x, fract(vVSpan.x + vUV.y * vVSpan.y));
     m = texture(uTip, uv).r;
   }
   if (uAA < 0.5) m = m >= 0.5 ? 1.0 : 0.0;
-  if (uUseTex > 0.5) { float t = texture(uTex, vDoc / uTexScale).r; if (uTexInv > 0.5) t = 1.0 - t; t = clamp((t - 0.5) * (1.0 + uTexCon * 4.0) + 0.5, 0.0, 1.0); m *= mix(1.0, t, uTexDen); }
+  if (uUseTex > 0.5) { vec2 tq = vec2(uTexR.x * vDoc.x - uTexR.y * vDoc.y, uTexR.y * vDoc.x + uTexR.x * vDoc.y); float t = texture(uTex, tq / uTexScale).r; if (uTexInv > 0.5) t = 1.0 - t; t = clamp((t - 0.5) * (1.0 + uTexCon * 4.0) + 0.5, 0.0, 1.0); m *= mix(1.0, t, clamp(uTexDen * vTD, 0.0, 1.0)); }
   if (uPass > 0.5) { // 두께(높이) 버퍼: 맨 위 물감 면의 높낮이. 묽은 물감일수록 얇게 덮는다
     float h = hgt >= 0.0 ? hgt : m;
     float ah = clamp(m * min(1.0, vA * 2.5), 0.0, 1.0) * 0.55;
@@ -2218,7 +2220,7 @@ void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2)); gl_
   const ADV_SHOW_FS = `#version 300 es
 precision highp float;
 uniform sampler2D uS; uniform sampler2D uTex; uniform vec3 uInv0; uniform vec3 uInv1; uniform float uH; uniform vec2 uDoc;
-uniform float uOp; uniform float uUseTex; uniform float uTexDen; uniform vec2 uTexScale; uniform float uTexInv; uniform float uMode; uniform vec2 uOff;
+uniform float uOp; uniform float uUseTex; uniform float uTexDen; uniform vec2 uTexScale; uniform float uTexInv; uniform float uMode; uniform vec2 uOff; uniform vec2 uTexR;
 uniform sampler2D uD; uniform float uUseD; uniform float uTexCon;
 uniform float uTexMode; uniform float uTexFloor;
 uniform float uCtx; uniform sampler2D uK; uniform float uUseK; uniform sampler2D uA; uniform float uUseA;
@@ -2265,7 +2267,7 @@ void main(){
       // 안료 알갱이: 종이 결 + 아주 잔 노이즈 (큰 얼룩이 되지 않게)
       float hn = fract(sin(dot(floor(p), vec2(12.9898, 78.233))) * 43758.5453); // 픽셀마다 다른 잔 알갱이
       float t = mix(textureLod(uNz, p / 64.0, 0.0).r, hn, 0.4);
-      if (uUseTex > 0.5) { float pt = textureLod(uTex, p / uTexScale, 0.0).r; if (uTexInv > 0.5) pt = 1.0 - pt; t = mix(pt, hn, 0.3); }
+      if (uUseTex > 0.5) { float pt = textureLod(uTex, vec2(uTexR.x * p.x - uTexR.y * p.y, uTexR.y * p.x + uTexR.x * p.y) / uTexScale, 0.0).r; if (uTexInv > 0.5) pt = 1.0 - pt; t = mix(pt, hn, 0.3); }
       na = clamp(na * (1.0 + uGran * ((1.0 - t) - 0.5) * 1.6), 0.0, 1.0);
     }
     c = vec4(cc * na, na);
@@ -2287,7 +2289,7 @@ void main(){
     c.rgb = clamp(cc, 0.0, 1.0) * c.a;
   }
   if (uUseTex > 0.5 && uWet < 0.5) {
-    float t = texture(uTex, p / uTexScale).r; if (uTexInv > 0.5) t = 1.0 - t; t = clamp((t - 0.5) * (1.0 + uTexCon * 4.0) + 0.5, 0.0, 1.0);
+    float t = texture(uTex, vec2(uTexR.x * p.x - uTexR.y * p.y, uTexR.y * p.x + uTexR.x * p.y) / uTexScale).r; if (uTexInv > 0.5) t = 1.0 - t; t = clamp((t - 0.5) * (1.0 + uTexCon * 4.0) + 0.5, 0.0, 1.0);
     if (uTexMode > 0.5) { // 깊이: 살살 칠하면 종이 높은 곳에만, 겹치고 세게 칠할수록 골까지 채워짐 (연필·목탄·파스텔)
       float th = uTexDen * (1.0 - t), a0 = c.a, a1 = max(clamp((a0 - th) / max(0.04, 1.0 - th), 0.0, 1.0), a0 * uTexFloor); // 골에도 옅은 가루막(브러시마다)
       c *= a0 > 0.00001 ? a1 / a0 : 0.0;
@@ -2313,7 +2315,7 @@ void main(){
     for (let i = 0; i < n; i++) { const nm = gl.getActiveUniform(p, i).name; u[nm] = gl.getUniformLocation(p, nm); }
     return { p, u };
   };
-  const INST = 16; // aPos2 aSize aAngle aSq2 aAlpha aColor3 aFlip2 aV2 aX2(획 길이·남은 물감)
+  const INST = 17; // aPos2 aSize aAngle aSq2 aAlpha aColor3 aFlip2 aV2 aX2(획 길이·남은 물감) aTD(텍스처 농도 배율)
   function advEnsureGL(canvas, W, H) {
     if (!ADV.cv || !ADV.cv.isConnected || ADV.cv.parentElement !== canvas.parentElement) {
       ADV.cv?.remove();
@@ -2335,7 +2337,7 @@ void main(){
       ADV.ibuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, ADV.ibuf);
       const p = ADV.P.stamp.p, stride = INST * 4;
       const attr = (name, n, off) => { const loc = gl.getAttribLocation(p, name); if (loc < 0) return; gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, n, gl.FLOAT, false, stride, off * 4); gl.vertexAttribDivisor(loc, 1); };
-      attr('aPos', 2, 0); attr('aSize', 1, 2); attr('aAngle', 1, 3); attr('aSq', 2, 4); attr('aAlpha', 1, 6); attr('aColor', 3, 7); attr('aFlip', 2, 10); attr('aV', 2, 12); attr('aX', 2, 14);
+      attr('aPos', 2, 0); attr('aSize', 1, 2); attr('aAngle', 1, 3); attr('aSq', 2, 4); attr('aAlpha', 1, 6); attr('aColor', 3, 7); attr('aFlip', 2, 10); attr('aV', 2, 12); attr('aX', 2, 14); attr('aTD', 1, 16);
       gl.bindVertexArray(null);
       ADV.fb = gl.createFramebuffer();
       const blank = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, blank);
@@ -2522,7 +2524,7 @@ void main(){
     for (let guard = 0; guard < 20000; guard++) {
       const pNow = a.p + (pr - a.p) * (walked / L);
       const size = Math.max(0.5, b.size * effectorValue(b.sizeEff, pNow, s.speed, 1));
-      let step = Math.max(0.3, size * b.interval * effectorValue(b.intervalEff, pNow, s.speed, Math.random()));
+      let step = Math.max(0.3, (b.gapPx > 0 ? b.gapPx : size * b.interval) * effectorValue(b.intervalEff, pNow, s.speed, Math.random()));
       if (rotStep > 1) step = Math.max(0.15, Math.min(step, L / rotStep));
       const need = step - s.acc;
       if (walked + need > L) { s.acc += L - walked; break; }
@@ -2540,7 +2542,12 @@ void main(){
     const taper = io ? inF('size') : b.taperIn > 0 ? Math.min(1, 0.15 + s.dist / b.taperIn) : 1;
     let size = b.size * effectorValue(b.sizeEff, p, s.speed, rnd()) * taper;
     if (b.minPx) size = Math.max(1, size);
-    let flow = b.flow * effectorValue(b.flowEff, p, s.speed, rnd()) * effectorValue(b.opacityEff, p, s.speed, rnd()) * inF('flow') * inF('opacity');
+    const gapK = Math.max(0.02, Math.min(1, b.gapPx > 0 ? b.gapPx / Math.max(1, b.size) : b.interval)); // 한 곳에 겹치는 도장 수 ≈ 1/간격
+    let flow = b.flow * effectorValue(b.flowEff, p, s.speed, rnd()) * inF('flow');
+    if (b.flowByGap) flow = 1 - Math.pow(1 - Math.min(0.999, flow), gapK / 0.1); // 간격에 맞춰 농도 조절 (간격 10% 기준)
+    { // 불투명도(필압 등): 겹친 도장(≈1/간격개)이 쌓인 결과가 '원래 진하기 × 불투명도'가 되도록 도장 하나의 진하기를 정한다 (클립 스튜디오처럼 획의 최대 진하기)
+      const op = effectorValue(b.opacityEff, p, s.speed, rnd()) * inF('opacity');
+      if (op < 1) { const A = 1 - Math.pow(1 - Math.min(0.999999, flow), 1 / gapK), T = op * A; flow = 1 - Math.pow(1 - T, gapK); } }
     // 물감 마름: 획 길이를 따라 붓의 물감이 줄어든다 (갈필·마른 붓). 깊이 결과 같이 쓰면 끝으로 갈수록 종이 결만 남는다
     const dryF = b.dryOut && b.dryOut.len > 0 ? 1 - (1 - (b.dryOut.min || 0)) * sstep(0, b.dryOut.len, s.dist) : 1;
     const br = advBristle(b);
@@ -2556,6 +2563,7 @@ void main(){
     if (b.ribbon) angle = ang + Math.PI / 2; // 리본: 띠의 가로가 획을 가로지르게
     if (br) { angle = ang + Math.PI / 2 + (rnd() - 0.5) * 0.03; sq = [1, Math.max(0.08, Math.min(1, th))]; } // 붓털: 폭이 획을 가로지르게
     if (b.rotMask & 0x80) angle += (rnd() - 0.5) * 2 * Math.PI * b.rotRandom;
+    const texD = b.texDensEff ? effectorValue(b.texDensEff, p, s.speed, rnd()) : 1; // 텍스처 농도의 필압 등
     let col = s.color, mixA = 1;
     if (s.mix) { const r = advMixColor(s, b, x, y, size, p, stepLen); col = r.c; mixA = r.a; }
     if (b.jitter && (b.jitter.h || b.jitter.s || b.jitter.v)) {
@@ -2579,7 +2587,7 @@ void main(){
       let v = [0, 1];
       let sy = sqy * asp[1], sx = sqx * asp[0];
       if (b.ribbon) { const t = ADV.tipTex[ti]; const len = Math.max(0.5, stepLen || sz * 0.1); const rel = t ? (len / sz) * (t.w / t.h) : 0.01; v = [s.v, rel]; s.v = (s.v + rel) % 1; sy = len + 1; }
-      ADV.batch.push({ ti, dist: s.dist, c: b.spray ? [x, y] : null, d: [px, py, sz, a, sx, sy, alpha * mixA, col[0], col[1], col[2], fl[0], fl[1], v[0], v[1], s.dist / Math.max(1, b.size), load] });
+      ADV.batch.push({ ti, dist: s.dist, c: b.spray ? [x, y] : null, d: [px, py, sz, a, sx, sy, alpha * mixA, col[0], col[1], col[2], fl[0], fl[1], v[0], v[1], s.dist / Math.max(1, b.size), load, texD] });
       const ext = sz * 0.75 * Math.max(sx, b.ribbon ? 1 : sy, 1) + (b.ribbon ? sy : 0) + 3;
       const bx = { x: Math.floor(px - ext), y: Math.floor(py - ext), w: Math.ceil(2 * ext) + 1, h: Math.ceil(2 * ext) + 1 };
       s.box = runion(s.box, bx);
@@ -2618,7 +2626,7 @@ void main(){
         const dz = sp ? Math.max(0.5, sp.size * (sp.sync ? b.size / (b.baseSize || b.size) : 1)) : dsz;
         const fx = du.flipH === 2 ? (rnd() < 0.5 ? -1 : 1) : du.flipH === 1 ? -1 : 1, fy = du.flipV === 2 ? (rnd() < 0.5 ? -1 : 1) : du.flipV === 1 ? -1 : 1;
         const asp = ADV.dualTex ? (() => { const mx = Math.max(ADV.dualTex.w, ADV.dualTex.h); return [ADV.dualTex.w / mx, ADV.dualTex.h / mx]; })() : [1, 1];
-        ADV.dbatch.push([x + Math.cos(th2) * rr, y + Math.sin(th2) * rr, dz, a2, asp[0], asp[1] * du.thickness, du.flow, 1, 1, 1, fx, fy, 0, 1, 0, 0]);
+        ADV.dbatch.push([x + Math.cos(th2) * rr, y + Math.sin(th2) * rr, dz, a2, asp[0], asp[1] * du.thickness, du.flow, 1, 1, 1, fx, fy, 0, 1, 0, 0, 1]);
         }
         s.dualNext += dstep;
       }
@@ -2655,13 +2663,13 @@ void main(){
     gl.useProgram(P.p); gl.bindVertexArray(ADV.vao);
     gl.uniform2f(P.u.uDoc, ADV.W, ADV.H); gl.uniform2f(P.u.uOrg, ADV.ox || 0, ADV.oy || 0);
     const round = !ADV.tipTex.length;
-    gl.uniform1f(P.u.uRound, round ? 1 : 0); gl.uniform1f(P.u.uHard, b.hardness); gl.uniform1f(P.u.uAA, b.aa || (b.sutVer && !round) ? 1 : 0);
+    gl.uniform1f(P.u.uRound, round ? 1 : 0); gl.uniform1f(P.u.uHard, b.hardness); gl.uniform1f(P.u.uAA, b.aa == null ? 1 : (b.aa | 0) || (b.sutVer && !round ? 1 : 0));
     gl.uniform1f(P.u.uRibbon, b.ribbon && !round ? 1 : 0);
     const useTex = ADV.texInfo && b.texPerStamp;
     gl.uniform1f(P.u.uUseTex, useTex ? 1 : 0);
     if (ADV.texInfo) {
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, ADV.texInfo.tex);
-      gl.uniform1i(P.u.uTex, 1); gl.uniform1f(P.u.uTexDen, b.texDensity); gl.uniform2f(P.u.uTexScale, ADV.texInfo.w * b.texScale, ADV.texInfo.h * b.texScale); gl.uniform1f(P.u.uTexInv, b.texInvert ? 1 : 0); gl.uniform1f(P.u.uTexCon, b.texContrast || 0);
+      gl.uniform1i(P.u.uTex, 1); gl.uniform1f(P.u.uTexDen, b.texDensity); gl.uniform2f(P.u.uTexScale, ADV.texInfo.w * b.texScale, ADV.texInfo.h * b.texScale); { const ra = -(b.texRotate || 0) * Math.PI / 180; gl.uniform2f(P.u.uTexR, Math.cos(ra), Math.sin(ra)); } gl.uniform1f(P.u.uTexInv, b.texInvert ? 1 : 0); gl.uniform1f(P.u.uTexCon, b.texContrast || 0);
     } else { gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, ADV.blank); gl.uniform1i(P.u.uTex, 1); }
     gl.uniform1i(P.u.uTip, 0);
     const br = advBristle(b);
@@ -2918,7 +2926,7 @@ void main(){
     gl.uniform1f(P.u.uUseTex, useTex ? 1 : 0);
     gl.uniform1f(P.u.uTexMode, useTex && b.texMode === 'height' ? 1 : 0); gl.uniform1f(P.u.uTexFloor, b.texFloor == null ? 0.12 : b.texFloor);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, useTex ? ADV.texInfo.tex : ADV.blank); gl.uniform1i(P.u.uTex, 1);
-    if (useTex) { gl.uniform1f(P.u.uTexDen, b.texDensity); gl.uniform2f(P.u.uTexScale, ADV.texInfo.w * b.texScale, ADV.texInfo.h * b.texScale); gl.uniform1f(P.u.uTexInv, b.texInvert ? 1 : 0); gl.uniform1f(P.u.uTexCon, b.texContrast || 0); }
+    if (useTex) { gl.uniform1f(P.u.uTexDen, b.texDensity); gl.uniform2f(P.u.uTexScale, ADV.texInfo.w * b.texScale, ADV.texInfo.h * b.texScale); { const ra = -(b.texRotate || 0) * Math.PI / 180; gl.uniform2f(P.u.uTexR, Math.cos(ra), Math.sin(ra)); } gl.uniform1f(P.u.uTexInv, b.texInvert ? 1 : 0); gl.uniform1f(P.u.uTexCon, b.texContrast || 0); }
   }
   const advOpacity = () => (ADV.brush ? ADV.brush.opacity : 1) * (S.advOpacity == null ? 1 : S.advOpacity / 100);
   function advFrame() {
@@ -3565,243 +3573,344 @@ void main(){
   // 떠 있는 작은 창이라 열어 둔 채로 그림판에 그어 보며 바꿀 수 있다. 바꾼 값은 바로 그 브러시에 저장된다(이 컴퓨터).
   const BSET = { el: null };
   const EFF_KINDS = [['pressure', '필압', 0.2], ['velocity', '속도', 0.3], ['random', '무작위', 0.5]];
+  // 고급 브러시 설정 창 — 클립 스튜디오 '보조 도구 상세'와 같은 모양
+  // 위: 획 미리보기(밝은·어두운 바탕) / 왼쪽: 분류 목록 / 오른쪽 위: 분류 설명 / 가운데: 항목 / 아래: 항목 도움말 / 맨 아래: 기본값 단추.
+  // 슬라이더는 클립 스튜디오처럼 '채운 막대 + 홈' 모양에 숫자·위아래 단추, 오른쪽 끝에 동적 효과(필압·속도·무작위) 단추.
   function openBrushSettings() {
     const b = ADV.brush;
-    if (!b) { toast('먼저 브러시를 골라 주세요'); return; }
+    if (!b) { toast(L('먼저 브러시를 골라 주세요', 'Pick a brush first')); return; }
+    const keepPos = BSET.el ? { left: BSET.el.style.left, top: BSET.el.style.top } : null;
     BSET.el?.remove();
+    if (!b.orig) { const o = JSON.parse(JSON.stringify(b)); delete o.orig; b.orig = o; advSaveSoon(); } // 처음 열 때의 설정 = 기본값
     const el = document.createElement('div');
-    el.className = 'mw-bset mw-el';
-    el.innerHTML = '<div class="mw-bset-head"><span class="mw-bset-title"></span><button type="button" class="mw-bset-x" title="닫기">✕</button></div><div class="mw-bset-tabs"></div><div class="mw-bset-body"></div>';
+    el.className = 'mw-bset mw-el mw-noi18n';
+    el.innerHTML = '<div class="mw-cs-head"><span class="mw-cs-title"></span><button type="button" class="mw-cs-x">✕</button></div>' +
+      '<div class="mw-cs-pv"><canvas width="1062" height="198"></canvas><span class="mw-cs-chip"></span></div>' +
+      '<div class="mw-cs-main"><div class="mw-cs-cats thin-dark-scrollbar"></div><div class="mw-cs-right"><div class="mw-cs-banner"></div><div class="mw-cs-body thin-dark-scrollbar"></div>' +
+      '<div class="mw-cs-help"><i>i</i><div><b></b><span></span></div></div></div></div>' +
+      '<div class="mw-cs-foot"><button type="button" class="mw-cs-btn mw-cs-reset"></button><button type="button" class="mw-cs-btn mw-cs-savedef"></button></div>';
     document.body.appendChild(el);
     BSET.el = el;
-    el.querySelector('.mw-bset-title').textContent = '브러시 설정 — ' + b.name;
-    el.querySelector('.mw-bset-x').addEventListener('click', () => { el.remove(); BSET.el = null; });
+    if (keepPos && keepPos.left) Object.assign(el.style, { left: keepPos.left, top: keepPos.top, right: 'auto' });
+    const q = (s) => el.querySelector(s);
+    const setTitle = () => { q('.mw-cs-title').textContent = L('고급 브러시 설정', 'Advanced Tool Settings'); q('.mw-cs-chip').textContent = b.name; };
+    setTitle();
+    q('.mw-cs-x').title = L('닫기', 'Close');
+    q('.mw-cs-x').addEventListener('click', () => { el.remove(); BSET.el = null; });
     for (const t of ['keydown', 'keyup']) el.addEventListener(t, (e) => e.stopPropagation()); // 입력 칸의 키가 Magma 단축키로 새지 않게
-    // 제목을 끌어 옮기기
-    const head = el.querySelector('.mw-bset-head');
-    head.addEventListener('pointerdown', (e) => {
+    q('.mw-cs-head').addEventListener('pointerdown', (e) => {
       if (e.target.closest('button')) return;
       const r = el.getBoundingClientRect(), ox = e.clientX - r.left, oy = e.clientY - r.top;
       const mv = (ev) => { el.style.left = Math.max(0, ev.clientX - ox) + 'px'; el.style.top = Math.max(0, ev.clientY - oy) + 'px'; el.style.right = 'auto'; };
       const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); };
       window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up);
     });
-    const save = () => { advSaveSoon(); };
-    const body = el.querySelector('.mw-bset-body'), tabs = el.querySelector('.mw-bset-tabs');
-    // ---- 줄 만들기 도구 ----
-    const rowEl = (label) => { const r = document.createElement('div'); r.className = 'mw-bs-row'; const l = document.createElement('span'); l.className = 'mw-bs-lab'; l.textContent = label; r.appendChild(l); return r; };
-    const slider = (label, get, set, min, max, step = 1, unit = '') => {
-      const r = rowEl(label);
-      const rg = document.createElement('input'); rg.type = 'range'; rg.min = min; rg.max = max; rg.step = step; rg.className = 'mw-bs-range';
-      const nb = document.createElement('input'); nb.type = 'number'; nb.min = min; nb.max = max; nb.step = step; nb.className = 'mw-bs-num';
-      const u = document.createElement('span'); u.className = 'mw-bs-unit'; u.textContent = unit;
-      const show = () => { const v = get(); rg.value = v; nb.value = Math.round(v * 100) / 100; };
-      const put = (v) => { v = Math.min(max, Math.max(min, +v)); if (!Number.isFinite(v)) return; set(v); show(); save(); };
-      rg.addEventListener('input', () => put(rg.value)); nb.addEventListener('change', () => put(nb.value));
-      show(); r.append(rg, nb, u); return r;
+    // 획 미리보기 (실제 그리기 엔진으로, 바꿀 때마다 잠시 뒤 다시)
+    const pv = q('.mw-cs-pv canvas');
+    let pvT = 0;
+    const preview = () => { clearTimeout(pvT); pvT = setTimeout(() => { if (el.isConnected) smpRequest('b', b, pv); }, 250); };
+    const save = () => { advSaveSoon(); preview(); };
+    // 도움말
+    const helpB = q('.mw-cs-help b'), helpS = q('.mw-cs-help span');
+    const helpDef = () => { helpB.textContent = L('항목 도움말', 'About parameter help'); helpS.textContent = L('항목에 마우스를 올리면 설명이 보여요.', 'Move the cursor over an item to see its description.'); };
+    helpDef();
+    const withHelp = (r, title, text) => { if (text) { r.addEventListener('mouseenter', () => { helpB.textContent = title; helpS.textContent = text; }); r.addEventListener('mouseleave', helpDef); } return r; };
+    // ---- 줄 만들기 ----
+    const rowEl = (label, cls = '') => { const r = document.createElement('div'); r.className = 'mw-cs-row ' + cls; if (label != null) { const l = document.createElement('span'); l.className = 'mw-cs-lab'; l.textContent = label; r.appendChild(l); } return r; };
+    // 동적 효과 단추: 아이콘 = 지금 켜진 효과(없음 ⊘ / 필압 / 무작위), 누르면 작은 창에서 필압·속도·무작위와 최솟값
+    const DYN_SVG = {
+      none: '<svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" fill="none" stroke="currentColor"/><path d="M3 13L13 3" stroke="currentColor"/></svg>',
+      pressure: '<svg viewBox="0 0 16 16"><path d="M11.5 1.5l3 3-7 7-3.5.5.5-3.5z" fill="none" stroke="currentColor"/><path d="M1.5 14.5h13" stroke="currentColor"/></svg>',
+      velocity: '<svg viewBox="0 0 16 16"><path d="M2 8h9M8 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>',
+      random: '<svg viewBox="0 0 16 16"><path d="M1.5 10c2-6 3-6 4 0s2 6 4 0 3-6 5 0" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>' };
+    const dynBtn = (holder, key) => {
+      const x = document.createElement('button'); x.type = 'button'; x.className = 'mw-cs-dyn'; x.title = L('동적 효과 (필압·속도·무작위)', 'Dynamics (pen pressure, velocity, random)');
+      const paint = () => { const e = holder[key] || {}; x.innerHTML = DYN_SVG[e.pressure ? 'pressure' : e.velocity ? 'velocity' : e.random ? 'random' : 'none']; x.classList.toggle('on', !!(e.pressure || e.velocity || e.random)); };
+      paint();
+      x.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        el.querySelector('.mw-cs-pop')?.remove();
+        const pop = document.createElement('div'); pop.className = 'mw-cs-pop';
+        const draw = () => {
+          pop.textContent = '';
+          for (const [k, ko, def] of EFF_KINDS) {
+            const e = holder[key] || {}, on = !!e[k];
+            const r = document.createElement('label'); r.className = 'mw-cs-chk';
+            const c = document.createElement('input'); c.type = 'checkbox'; c.checked = on;
+            c.addEventListener('change', () => { const e2 = holder[key] ? { ...holder[key] } : {}; if (e2[k]) delete e2[k]; else e2[k] = k === 'random' ? { min: def } : { min: def, curve: null }; holder[key] = Object.keys(e2).length ? e2 : null; save(); paint(); draw(); });
+            const t = document.createElement('span'); t.textContent = L(ko, { pressure: 'Pen pressure', velocity: 'Velocity', random: 'Random' }[k]);
+            r.append(c, t); pop.appendChild(r);
+            if (on) pop.appendChild(slider(L('최솟값', 'Minimum value'), () => Math.round(holder[key][k].min * 100), (v) => { holder[key][k].min = v / 100; }, 0, 100, 1, { child: true }));
+          }
+        };
+        draw();
+        el.appendChild(pop);
+        const br = x.getBoundingClientRect(), er = el.getBoundingClientRect();
+        Object.assign(pop.style, { left: Math.max(4, br.right - er.left - 210) + 'px', top: (br.bottom - er.top + 2) + 'px' });
+        const off = (e2) => { if (!pop.contains(e2.target) && e2.target !== x) { pop.remove(); window.removeEventListener('pointerdown', off, true); } };
+        setTimeout(() => window.addEventListener('pointerdown', off, true), 0);
+      });
+      return x;
     };
-    const seg = (label, opts, get, set) => {
-      const r = rowEl(label), g = document.createElement('div'); g.className = 'mw-bs-seg';
-      const btns = opts.map(([v, t]) => { const x = document.createElement('button'); x.type = 'button'; x.textContent = t; x.addEventListener('click', () => { set(v); paint(); save(); }); g.appendChild(x); return [v, x]; });
+    // 슬라이더: o = { log: 크기처럼 로그 눈금, dyn: [holder, key], child, disabled, help }
+    function slider(label, get, set, min, max, step = 1, o = {}) {
+      const r = rowEl(label, 'mw-cs-sl' + (o.child ? ' mw-cs-child' : ''));
+      const line = document.createElement('div'); line.className = 'mw-cs-line';
+      const bar = document.createElement('div'); bar.className = 'mw-cs-bar'; const fill = document.createElement('i'); bar.appendChild(fill);
+      const nb = document.createElement('input'); nb.type = 'text'; nb.className = 'mw-cs-num';
+      const sp = document.createElement('span'); sp.className = 'mw-cs-spin'; sp.innerHTML = '<b>⌃</b><b>⌄</b>';
+      const toT = (v) => (o.log ? Math.log(Math.max(min, v) / min) / Math.log(max / min) : (v - min) / (max - min));
+      const fromT = (t) => (o.log ? min * Math.pow(max / min, t) : min + t * (max - min));
+      const qz = (v) => Math.min(max, Math.max(min, Math.round(v / step) * step));
+      const show = () => { const v = get(); fill.style.width = (Math.max(0, Math.min(1, toT(v))) * 100) + '%'; if (document.activeElement !== nb) nb.value = String(Math.round(v * 10) / 10); };
+      const put = (v) => { v = qz(+v); if (!Number.isFinite(v)) return; set(v); show(); save(); };
+      bar.addEventListener('pointerdown', (e) => {
+        e.preventDefault(); bar.setPointerCapture(e.pointerId);
+        const at = (ev) => { const R = bar.getBoundingClientRect(); put(fromT(Math.max(0, Math.min(1, (ev.clientX - R.left) / R.width)))); };
+        at(e);
+        const mv = (ev) => at(ev), up = () => { bar.removeEventListener('pointermove', mv); bar.removeEventListener('pointerup', up); };
+        bar.addEventListener('pointermove', mv); bar.addEventListener('pointerup', up);
+      });
+      nb.addEventListener('change', () => put(nb.value));
+      nb.addEventListener('keydown', (e) => { if (e.key === 'Enter') nb.blur(); });
+      const [upB, dnB] = sp.querySelectorAll('b');
+      upB.addEventListener('click', () => put(get() + step)); dnB.addEventListener('click', () => put(get() - step));
+      line.append(bar, nb, sp);
+      if (o.dyn) line.appendChild(dynBtn(o.dyn[0], o.dyn[1])); else { const ph = document.createElement('span'); ph.className = 'mw-cs-dyn mw-cs-ph'; line.appendChild(ph); }
+      r.appendChild(line); show();
+      if (o.disabled) r.classList.add('mw-cs-dis');
+      return withHelp(r, label, o.help);
+    }
+    const check = (label, get, set, o = {}) => {
+      const r = rowEl(null, 'mw-cs-ck' + (o.child ? ' mw-cs-child' : '')), lb = document.createElement('label'); lb.className = 'mw-cs-chk';
+      const c = document.createElement('input'); c.type = 'checkbox'; c.checked = !!get();
+      c.addEventListener('change', () => { set(c.checked); save(); if (o.rerender) render(); });
+      const t = document.createElement('span'); t.textContent = label; lb.append(c, t); r.appendChild(lb);
+      if (o.disabled) r.classList.add('mw-cs-dis');
+      return withHelp(r, label, o.help);
+    };
+    const drop = (label, opts, get, set, o = {}) => {
+      const r = rowEl(label, 'mw-cs-dd' + (o.child ? ' mw-cs-child' : '')), s = document.createElement('select'); s.className = 'mw-cs-sel';
+      opts.forEach(([v, t], i) => { const op = new Option(t, String(i)); s.add(op); if (v === get()) s.selectedIndex = i; });
+      s.addEventListener('change', () => { set(opts[s.selectedIndex][0]); save(); if (o.rerender) render(); });
+      r.appendChild(s);
+      if (o.disabled) r.classList.add('mw-cs-dis');
+      return withHelp(r, label, o.help);
+    };
+    const seg = (label, opts, get, set, o = {}) => {
+      const r = rowEl(label, 'mw-cs-sg' + (o.child ? ' mw-cs-child' : '')), g = document.createElement('div'); g.className = 'mw-cs-seg';
+      const btns = opts.map(([v, t]) => { const x = document.createElement('button'); x.type = 'button'; x.innerHTML = t; x.addEventListener('click', () => { set(v); paint(); save(); if (o.rerender) render(); }); g.appendChild(x); return [v, x]; });
       const paint = () => btns.forEach(([v, x]) => x.classList.toggle('on', get() === v));
-      paint(); r.appendChild(g); return r;
+      paint(); r.appendChild(g);
+      if (o.disabled) r.classList.add('mw-cs-dis');
+      return withHelp(r, label, o.help);
     };
-    const check = (label, get, set) => {
-      const r = rowEl(label), c = document.createElement('input'); c.type = 'checkbox'; c.checked = !!get();
-      c.addEventListener('change', () => { set(c.checked); save(); }); r.appendChild(c); return r;
-    };
-    // 효과(필압·속도·무작위): 켜면 최솟값(%) 칸이 보인다
-    const effRow = (label, key, holder = b) => {
-      const box = document.createElement('div'); box.className = 'mw-bs-eff';
-      const r = rowEl(label), g = document.createElement('div'); g.className = 'mw-bs-seg';
-      const mins = document.createElement('div'); mins.className = 'mw-bs-effmins';
-      const eff = () => holder[key];
-      const draw = () => {
-        g.innerHTML = ''; mins.innerHTML = '';
-        for (const [k, t, def] of EFF_KINDS) {
-          const x = document.createElement('button'); x.type = 'button'; x.textContent = t;
-          const on = !!(eff() && eff()[k]);
-          x.classList.toggle('on', on);
-          x.addEventListener('click', () => {
-            const e2 = eff() ? { ...eff() } : {};
-            if (e2[k]) delete e2[k]; else e2[k] = k === 'random' ? { min: def } : { min: def, curve: null };
-            holder[key] = Object.keys(e2).length ? e2 : null; save(); draw();
-          });
-          g.appendChild(x);
-          if (on) mins.appendChild(slider(`  ${t} 최소`, () => Math.round(eff()[k].min * 100), (v) => { eff()[k].min = v / 100; }, 0, 100, 1, '%'));
-        }
-      };
-      draw(); r.appendChild(g); box.append(r, mins); return box;
-    };
-    const btn = (text, fn) => { const x = document.createElement('button'); x.type = 'button'; x.className = 'sm btn secondary'; x.textContent = text; x.addEventListener('click', (e) => { e.preventDefault(); fn(); }); return x; };
-    const pct = (k, o = b) => [() => Math.round(o[k] * 100), (v) => { o[k] = v / 100; }];
-    // ---- 항목 ----
-    const pages = {
-      '크기': () => [
-        slider('브러시 크기', () => b.size, (v) => { b.size = v; S.advSize = v; rowsEl?.__mwSync?.(); }, 0.5, 1000, 0.5, 'px'),
-        effRow('크기 효과', 'sizeEff'),
-        slider('필압 곡선', () => Math.round((b.pressGamma || 1) * 100), (v) => { b.pressGamma = v / 100; }, 30, 300, 5),
-        Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: '필압 곡선: 100보다 작으면 살살 눌러도 굵고 진하게, 크면 세게 눌러야 굵어져요(펜에만 적용).' }),
-      ],
-      '잉크': () => [
-        slider('불투명도', ...pct('opacity'), 1, 100, 1, '%'),
-        effRow('불투명도 효과', 'opacityEff'),
-        slider('흐름(밀도)', ...pct('flow'), 1, 100, 1, '%'),
-        effRow('흐름 효과', 'flowEff'),
-        check('안티에일리어스', () => b.aa, (v) => { b.aa = v ? 1 : 0; }),
-        seg('합성 모드', [['normal', '보통'], ['glaze', '물감 겹치기'], ['multiply', '곱하기'], ['erase', '지우기']], () => b.blend || 'normal', (v) => { b.blend = v; }),
-        Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: '물감 겹치기: 투명한 물감을 덧칠한 것처럼 감산 혼합돼요(노랑 위에 파랑 = 초록, 수채). 곱하기: 화면 곱하기라 겹칠수록 어둡고 탁해요(마커). 지우기: 이 브러시 모양 그대로 지우개가 돼요. 같은 레이어 안의 그림과 섞여요.' }),
-      ],
-      '수채 경계': () => {
-        const we = () => b.wedge || (b.wedge = { on: false, radius: 6, alpha: 0.55, value: 0.35 });
-        we();
+    const sep = () => Object.assign(document.createElement('div'), { className: 'mw-cs-sep' });
+    const note = (t) => Object.assign(document.createElement('div'), { className: 'mw-cs-note', textContent: t });
+    const btn = (text, fn) => { const x = document.createElement('button'); x.type = 'button'; x.className = 'mw-cs-btn'; x.textContent = text; x.addEventListener('click', (e) => { e.preventDefault(); fn(); }); return x; };
+    const pct = (k, o2 = b) => [() => Math.round((o2[k] || 0) * 100), (v) => { o2[k] = v / 100; }];
+    const AA_ICONS = ['<svg viewBox="0 0 16 16"><path d="M5 2h6v2h2v2h2v4h-2v2h-2v2H5v-2H3v-2H1V6h2V4h2z" fill="currentColor"/></svg>',
+      '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.6" fill="currentColor"/></svg>',
+      '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6" fill="currentColor" opacity=".35"/><circle cx="8" cy="8" r="4.9" fill="currentColor"/></svg>',
+      '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="7.3" fill="currentColor" opacity=".22"/><circle cx="8" cy="8" r="6" fill="currentColor" opacity=".45"/><circle cx="8" cy="8" r="4.4" fill="currentColor"/></svg>'];
+    const GAP_KEY = () => b.gapPx ? 'fixed' : b.interval >= 0.45 ? 'wide' : b.interval >= 0.18 ? 'normal' : 'narrow';
+    // ---- 분류 (클립 스튜디오 순서) ----
+    const CATS = [
+      { id: 'size', name: L('브러시 크기', 'Brush Size'), desc: L('도구 크기(선 굵기) 설정이에요.', 'Settings for tool size (line width).'), rows: () => [
+        slider(L('브러시 크기', 'Brush Size'), () => b.size, (v) => { b.size = v; S.advSize = v; rowsEl?.__mwSync?.(); }, 0.5, 1000, 0.1, { log: true, dyn: [b, 'sizeEff'], help: L('브러시 크기예요. 오른쪽 동적 효과 단추로 필압 등에 따라 크기가 바뀌게 할 수 있어요.', 'Brush size. Use the Dynamics button on the right to link it to pen pressure and more.') }),
+        slider(L('필압 곡선', 'Pressure curve'), () => Math.round((b.pressGamma || 1) * 100), (v) => { b.pressGamma = v / 100; }, 30, 300, 5, { child: true, help: L('100보다 작으면 살살 눌러도 굵고 진하게, 크면 세게 눌러야 굵어져요(펜에만 적용).', 'Below 100: light pressure already gives thick, dark lines. Above 100: you need to press harder (pen only).') }),
+        check(L('최소 1픽셀', 'At least 1 pixel'), () => b.minPx, (v) => { b.minPx = v; }, { child: true, help: L('필압이 약해도 1픽셀보다 가늘어지지 않아요.', 'Lines never get thinner than 1 pixel.') }),
+      ] },
+      { id: 'ink', name: L('잉크', 'Ink'), desc: L('레이어 위에서 브러시가 어떻게 칠해지는지 설정해요.', 'Settings for how the brush behaves on the layer.'), rows: () => {
+        const mx = b.mix || (b.mix = { mode: 'none', amount: 0.5, density: 0.8, stretch: 0.3, amountEff: null, densEff: null, ref: 'layer' }), mixOn = mx.mode !== 'none';
         return [
-          check('수채 경계 켜기', () => b.wedge.on, (v) => { b.wedge.on = v; }),
-          slider('범위', () => b.wedge.radius, (v) => { b.wedge.radius = v; }, 1, 40, 1, 'px'),
-          slider('투명도 영향', () => Math.round(b.wedge.alpha * 100), (v) => { b.wedge.alpha = v / 100; }, 0, 100, 1, '%'),
-          slider('명도 영향', () => Math.round(b.wedge.value * 100), (v) => { b.wedge.value = v / 100; }, 0, 100, 1, '%'),
-          Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: '물이 마르면서 가장자리에 물감이 고인 것처럼 획 테두리 안쪽을 진하게 해요. 그리는 동안에도 결과와 똑같이 보여요.' }),
+          slider(L('불투명도', 'Opacity'), ...pct('opacity'), 1, 100, 1, { dyn: [b, 'opacityEff'], help: L('획 전체의 최대 진하기예요. 겹쳐 칠해도 이 값보다 진해지지 않아요.', 'Maximum opacity of the whole stroke. Overlapping does not go beyond it.') }),
+          sep(),
+          drop(L('합성 모드', 'Blending mode'), [['normal', L('표준', 'Normal')], ['glaze', L('물감 겹치기', 'Glaze')], ['multiply', L('곱하기', 'Multiply')], ['erase', L('지우기', 'Erase')]], () => b.blend || 'normal', (v) => { b.blend = v; }, { help: L('물감 겹치기: 투명한 물감을 덧칠한 것처럼 감산 혼합(노랑 위 파랑 = 초록). 곱하기: 겹칠수록 어둡게(마커). 지우기: 이 브러시 모양 그대로 지우개.', 'Glaze: subtractive like layered paint (yellow + blue = green). Multiply: darker where it overlaps (marker). Erase: erases with this brush shape.') }),
+          sep(),
+          check(L('색 혼합', 'Color mixing'), () => mixOn, (v) => { mx.mode = v ? (mx.lastMode || 'blend') : 'none'; }, { rerender: true, help: L('그림의 색과 섞으며 칠해요.', 'Mixes the brush color with the colors already on the canvas.') }),
+          drop(L('혼합 방식', 'Mixing type'), [['blend', L('블렌드', 'Blend')], ['paint', L('물감 섞기', 'Running color')]], () => (mixOn ? mx.mode : mx.lastMode || 'blend'), (v) => { mx.lastMode = v; if (mx.mode !== 'none') mx.mode = v; }, { child: true, disabled: !mixOn }),
+          slider(L('물감량', 'Amount of paint'), ...pct('amount', mx), 0, 100, 1, { child: true, disabled: !mixOn, dyn: [mx, 'amountEff'], help: L('100 = 메인 색만, 0 = 밑색만 끌고 다님(손끝).', '100 = only the main color, 0 = drags the underlying color (finger).') }),
+          slider(L('물감 농도', 'Density of paint'), ...pct('density', mx), 0, 100, 1, { child: true, disabled: !mixOn, dyn: [mx, 'densEff'], help: L('낮을수록 묽게 칠해져요.', 'Lower values paint more thinly.') }),
+          slider(L('색 늘이기', 'Color stretch'), ...pct('stretch', mx), 0, 100, 1, { child: true, disabled: !mixOn, help: L('클수록 끌고 온 색이 길게 남아요.', 'Higher values carry the picked-up color further.') }),
+          drop(L('섞을 밑색', 'Refer to'), [['layer', L('현재 레이어', 'Current layer')], ['all', L('보이는 그림', 'All visible')]], () => mx.ref || 'layer', (v) => { mx.ref = v; }, { child: true, disabled: !mixOn }),
         ];
-      },
-      '물감': () => {
-        const br = () => b.bristle || (b.bristle = { on: false, shape: 'round', count: 22, streak: 0.5, var: 0.06 });
-        const im = () => b.impasto || (b.impasto = { depth: 0, shine: 0.4 });
-        const wt = () => b.wet || (b.wet = { on: false, wobble: 0.4, gran: 0.2, soft: 0 });
-        br(); im(); wt();
-        const head = (t) => Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: t });
+      } },
+      { id: 'jit', name: L('색 흔들기', 'Color Jitter'), desc: L('칠하는 색이 조금씩 달라지게 해요.', 'Adjust settings to vary the drawing color.'), rows: () => {
+        const j = b.jitter || (b.jitter = { h: 0, s: 0, v: 0 }), on = !!(j.h || j.s || j.v || j.on);
+        const sj = b.strokeJitter;
         return [
-          check('붓털 켜기', () => b.bristle.on, (v) => { b.bristle.on = v; }),
-          seg('붓 모양', [['round', '둥근 붓'], ['flat', '평붓']], () => b.bristle.shape || 'round', (v) => { b.bristle.shape = v; }),
-          slider('털 수', () => b.bristle.count, (v) => { b.bristle.count = v; }, 4, 64, 1),
-          slider('털 결 세기', () => Math.round(b.bristle.streak * 100), (v) => { b.bristle.streak = v / 100; }, 0, 100, 1, '%'),
-          slider('털마다 색 차이', () => Math.round(b.bristle.var * 100), (v) => { b.bristle.var = v / 100; }, 0, 30, 1, '%'),
-          head('붓털: 털마다 물감을 따로 묻혀 끊김 없는 결이 남아요. 획 탭의 \'물감 마름\'을 같이 쓰면 길게 그을수록 털이 하나씩 말라 갈라져요. 끝 모양·각도 설정 대신 쓰여요.'),
-          slider('두께감', () => Math.round(b.impasto.depth * 100), (v) => { b.impasto.depth = v / 100; }, 0, 100, 1, '%'),
-          slider('광택', () => Math.round((b.impasto.shine || 0) * 100), (v) => { b.impasto.shine = v / 100; }, 0, 100, 1, '%'),
-          head('두께감: 물감이 두껍게 올라온 것처럼 붓 자국 굴곡에 왼쪽 위 빛과 그림자를 넣어요(0 = 끔). 광택이 높을수록 유화처럼 반짝여요.'),
-          check('젖은 물감(수채)', () => b.wet.on, (v) => { b.wet.on = v; }),
-          slider('가장자리 흔들림', () => Math.round(b.wet.wobble * 100), (v) => { b.wet.wobble = v / 100; }, 0, 100, 1, '%'),
-          slider('가장자리 풀림', () => Math.round((b.wet.soft || 0) * 100), (v) => { b.wet.soft = v / 100; }, 0, 100, 1, '%'),
-          slider('안료 알갱이', () => Math.round(b.wet.gran * 100), (v) => { b.wet.gran = v / 100; }, 0, 100, 1, '%'),
-          head('젖은 물감: 물이 닿은 경계가 또렷하고 구불구불해져요. 풀림을 올리면 젖은 종이처럼 번지고, 알갱이는 종이 골에 안료가 가라앉은 오돌토돌함이에요. 수채 경계와 함께 쓰면 좋아요.'),
+          check(L('브러시 끝 색 바꾸기', 'Change brush tip color'), () => on, (v) => { if (v) { j.on = true; if (!(j.h || j.s || j.v)) j.h = 10; } else { j.on = false; j.h = j.s = j.v = 0; } }, { rerender: true, help: L('도장마다 색을 이만큼 흔들어요(반짝이·잎 같은 브러시).', 'Varies the color of every stamp (sparkles, leaves).') }),
+          slider(L('색상', 'Hue'), () => j.h, (v) => { j.h = v; }, 0, 100, 1, { child: true, disabled: !on }),
+          slider(L('채도', 'Saturation'), () => j.s, (v) => { j.s = v; }, 0, 100, 1, { child: true, disabled: !on }),
+          slider(L('명도', 'Luminosity'), () => j.v, (v) => { j.v = v; }, 0, 100, 1, { child: true, disabled: !on }),
+          sep(),
+          check(L('획마다 무작위', 'Randomize per stroke'), () => !!sj, (v) => { b.strokeJitter = v ? (b.strokeJitter || { h: 10, s: 0, v: 0 }) : null; }, { rerender: true, help: L('획을 새로 그을 때마다 색을 한 번 바꿔요.', 'Changes the color once for every new stroke.') }),
+          ...(sj ? [slider(L('색상', 'Hue'), () => sj.h, (v) => { sj.h = v; }, 0, 100, 1, { child: true }), slider(L('채도', 'Saturation'), () => sj.s, (v) => { sj.s = v; }, 0, 100, 1, { child: true }), slider(L('명도', 'Luminosity'), () => sj.v, (v) => { sj.v = v; }, 0, 100, 1, { child: true })] : []),
         ];
-      },
-      '색 혼합': () => {
-        const mx = () => b.mix || (b.mix = { mode: 'none', amount: 0.5, density: 0.8, stretch: 0.3, amountEff: null, densEff: null, ref: 'layer' });
-        mx();
+      } },
+      { id: 'aa', name: L('안티에일리어싱', 'Anti-aliasing'), desc: L('선과 도형의 가장자리를 매끄럽게 하는 정도예요.', 'Settings for anti-aliasing effect making outline of line and figure smooth.'), rows: () => [
+        seg(L('안티에일리어싱', 'Anti-aliasing'), [0, 1, 2, 3].map((v) => [v, AA_ICONS[v]]), () => (b.aa == null ? 1 : Math.max(0, Math.min(3, b.aa | 0))), (v) => { b.aa = v; }, { help: L('없음·약하게·보통·강하게. 강할수록 가장자리가 부드럽게 번져요.', 'None, weak, medium, strong. Stronger blurs the edge more.') }),
+      ] },
+      { id: 'shape', name: L('브러시 모양', 'Brush shape'), desc: L('브러시 끝 모양과 텍스처 그림을 바꿔요.', 'Change the brush tip shape and texture images.'), rows: () => [
+        note(ADV.tipTex.length ? L(`끝 모양 그림 ${ADV.tipTex.length}개를 쓰고 있어요`, `Using ${ADV.tipTex.length} tip image(s)`) : L('원형 끝 모양을 쓰고 있어요', 'Using a round tip')),
+        Object.assign(document.createElement('div'), { className: 'mw-cs-acts' }).appendChild(btn(L('끝 모양·텍스처 바꾸기…', 'Change tip / texture…'), () => openAdvPngDialog(b, () => advListRender?.()))).parentElement,
+      ] },
+      { id: 'tip', sub: true, name: L('브러시 끝', 'Brush tip'), desc: L('브러시 끝 설정이에요. 펜 기울기·방향에 따라 끝 모양이 어떻게 바뀔지 정해요.', 'Settings for brush tip. Set how brush tip shapes change with pen tilt and direction.'), rows: () => {
+        const round = !ADV.tipTex.length;
         return [
-          seg('색 혼합', [['none', '없음'], ['blend', '블렌드'], ['paint', '물감 섞기']], () => b.mix.mode, (v) => { b.mix.mode = v; }),
-          slider('물감량', () => Math.round(b.mix.amount * 100), (v) => { b.mix.amount = v / 100; }, 0, 100, 1, '%'),
-          effRow('물감량 효과', 'amountEff', b.mix),
-          slider('물감 농도', () => Math.round(b.mix.density * 100), (v) => { b.mix.density = v / 100; }, 0, 100, 1, '%'),
-          effRow('물감 농도 효과', 'densEff', b.mix),
-          slider('색 늘이기', () => Math.round(b.mix.stretch * 100), (v) => { b.mix.stretch = v / 100; }, 0, 100, 1, '%'),
-          seg('섞을 밑색', [['layer', '현재 레이어'], ['all', '보이는 그림']], () => b.mix.ref || 'layer', (v) => { b.mix.ref = v; }),
-          Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: '물감량 100 = 메인 색만 · 0 = 밑색만 끌고 다님(손끝). 물감 농도가 낮을수록 묽게, 색 늘이기가 클수록 끌고 온 색이 길게 남아요.' }),
+          seg(L('끝 모양', 'Tip shape'), [[true, L('● 원형', '● Circle')], [false, L('▦ 소재', '▦ Material')]], () => round, () => { openAdvPngDialog(b, () => { advListRender?.(); render(); }); }, { help: L('소재를 고르면 그림으로 된 끝 모양을 써요.', 'Material uses an image as the brush tip.') }),
+          slider(L('경도', 'Hardness'), ...pct('hardness'), 0, 100, 1, { disabled: !round, help: L('원형 끝 모양의 가장자리 단단함이에요.', 'Edge hardness of the round tip.') }),
+          slider(L('두께', 'Thickness'), ...pct('thickness'), 1, 100, 1, { dyn: [b, 'thickEff'] }),
+          seg(L('방향', 'Direction'), [[false, L('가로', 'Horizontal')], [true, L('세로', 'Vertical')]], () => !!b.vertical, (v) => { b.vertical = v; }, { child: true }),
+          sep(),
+          slider(L('각도', 'Angle'), () => b.rotation || 0, (v) => { b.rotation = v; }, -180, 180, 1),
+          check(L('각도: 필압', 'Angle: pen pressure'), () => b.rotMask & 0x10, (v) => { b.rotMask = v ? b.rotMask | 0x10 : b.rotMask & ~0x10; }, { child: true }),
+          check(L('각도: 진행 방향', 'Angle: line direction'), () => b.rotMask & 0x40, (v) => { b.rotMask = v ? b.rotMask | 0x40 : b.rotMask & ~0x40; }, { child: true }),
+          check(L('각도: 무작위', 'Angle: random'), () => b.rotMask & 0x80, (v) => { b.rotMask = v ? b.rotMask | 0x80 : b.rotMask & ~0x80; }, { child: true, rerender: true }),
+          slider(L('무작위 정도', 'Random amount'), ...pct('rotRandom'), 0, 100, 1, { child: true, disabled: !(b.rotMask & 0x80) }),
+          drop(L('좌우 반전', 'Flip horizontal'), [[0, L('없음', 'None')], [1, L('반전', 'Flip')], [2, L('무작위', 'Random')]], () => b.flipH || 0, (v) => { b.flipH = v; }),
+          drop(L('상하 반전', 'Flip vertical'), [[0, L('없음', 'None')], [1, L('반전', 'Flip')], [2, L('무작위', 'Random')]], () => b.flipV || 0, (v) => { b.flipV = v; }),
+          sep(),
+          slider(L('브러시 농도', 'Brush density'), ...pct('flow'), 1, 100, 1, { dyn: [b, 'flowEff'], help: L('도장 하나의 진하기예요. 겹쳐 칠하면 더 진해져요.', 'Density of each stamp. Overlapping builds it up.') }),
+          check(L('간격에 맞춰 농도 조절', 'Adjust brush density by gap'), () => b.flowByGap, (v) => { b.flowByGap = v; }, { child: true, help: L('간격을 넓혀도 획의 진하기가 비슷하게 유지돼요.', 'Keeps the stroke density similar when the gap changes.') }),
         ];
-      },
-      '끝 모양': () => [
-        slider('경도(원형일 때)', ...pct('hardness'), 0, 100, 1, '%'),
-        slider('두께', ...pct('thickness'), 1, 100, 1, '%'),
-        seg('두께 방향', [[false, '가로'], [true, '세로']], () => !!b.vertical, (v) => { b.vertical = v; }),
-        effRow('두께 효과', 'thickEff'),
-        slider('각도', () => b.rotation, (v) => { b.rotation = v; }, -180, 180, 1, '°'),
-        check('각도: 필압', () => b.rotMask & 0x10, (v) => { b.rotMask = v ? b.rotMask | 0x10 : b.rotMask & ~0x10; }),
-        check('각도: 진행 방향', () => b.rotMask & 0x40, (v) => { b.rotMask = v ? b.rotMask | 0x40 : b.rotMask & ~0x40; }),
-        check('각도: 무작위', () => b.rotMask & 0x80, (v) => { b.rotMask = v ? b.rotMask | 0x80 : b.rotMask & ~0x80; }),
-        slider('  무작위 정도', ...pct('rotRandom'), 0, 100, 1, '%'),
-        seg('좌우 반전', [[0, '없음'], [1, '반전'], [2, '무작위']], () => b.flipH || 0, (v) => { b.flipH = v; }),
-        seg('상하 반전', [[0, '없음'], [1, '반전'], [2, '무작위']], () => b.flipV || 0, (v) => { b.flipV = v; }),
-        seg('여러 모양 순서', [[0, '차례'], [1, '왕복'], [2, '무작위']], () => b.tipOrder || 0, (v) => { b.tipOrder = v; }),
-      ],
-      '획': () => [
-        slider('간격', () => Math.round(b.interval * 100), (v) => { b.interval = v / 100; }, 1, 300, 1, '%'),
-        effRow('간격 효과', 'intervalEff'),
-        slider('손떨림 보정', () => b.smoothing || 0, (v) => { b.smoothing = v; }, 0, 100, 1),
-        slider('입(시작 가늘게)', () => b.taperIn || 0, (v) => { b.taperIn = v; }, 0, 500, 1, 'px'),
-        slider('출(끝 가늘게)', () => b.taperOut || 0, (v) => { b.taperOut = v; }, 0, 500, 1, 'px'),
-        check('리본(끝 모양을 띠처럼 늘이기)', () => b.ribbon, (v) => { b.ribbon = v; }),
-        slider('흩어짐', () => Math.round((b.scatter || 0) * 100), (v) => { b.scatter = v / 100; }, 0, 200, 1, '%'),
-        slider('물감 마름(길이)', () => (b.dryOut && b.dryOut.len) || 0, (v) => { b.dryOut = Object.assign(b.dryOut || { min: 0 }, { len: v }); }, 0, 3000, 10, 'px'),
-        slider('  마른 뒤 남는 양', () => Math.round(((b.dryOut && b.dryOut.min) || 0) * 100), (v) => { b.dryOut = Object.assign(b.dryOut || { len: 0 }, { min: v / 100 }); }, 0, 100, 1, '%'),
-        Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: '물감 마름: 그 길이만큼 그으면 붓의 물감이 줄어 획이 갈라져요(갈필). 0이면 꺼짐.' }),
-      ],
-      '스프레이': () => {
-        const sp = () => b.spray;
-        const ensure = () => b.spray || (b.spray = { size: 3, sync: false, density: 10, bias: 0, sizeEff: null, densEff: null });
-        const rows = [check('스프레이 켜기', () => !!b.spray, (v) => { if (v) ensure(); else b.spray = null; render('스프레이'); })];
-        if (sp()) rows.push(
-          slider('입자 크기', () => sp().size, (v) => { sp().size = v; }, 0.5, 200, 0.5, 'px'),
-          check('입자 크기를 브러시 크기에 맞춤', () => sp().sync, (v) => { sp().sync = v; }),
-          effRow('입자 크기 효과', 'sizeEff', sp()),
-          slider('입자 수', () => sp().density, (v) => { sp().density = v; }, 1, 200, 1),
-          effRow('입자 수 효과', 'densEff', sp()),
-          slider('가운데로 모임', () => Math.round(sp().bias * 100), (v) => { sp().bias = v / 100; }, -100, 100, 1, '%'),
-        );
-        return rows;
-      },
-      '텍스처': () => [
-        Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: b.texture && b.texture.key ? '텍스처를 쓰고 있어요' : '텍스처 없음 — 아래 단추로 고르세요' }),
-        slider('농도', ...pct('texDensity'), 0, 100, 1, '%'),
-        slider('배율', () => Math.round((b.texScale || 1) * 100), (v) => { b.texScale = v / 100; }, 10, 500, 1, '%'),
-        slider('농도 강조', () => Math.round((b.texContrast || 0) * 100), (v) => { b.texContrast = v / 100; }, 0, 100, 1, '%'),
-        seg('결 방식', [['mul', '무늬 덮기'], ['height', '깊이']], () => b.texMode || 'mul', (v) => { b.texMode = v; }),
-        slider('골에 남는 가루(깊이)', () => Math.round((b.texFloor == null ? 0.12 : b.texFloor) * 100), (v) => { b.texFloor = v / 100; }, 0, 50, 1, '%'),
-        Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: '깊이: 종이 결을 높낮이로 써요. 살살 칠하면 높은 곳에만 묻고, 세게·여러 번 칠할수록 골까지 채워져요(연필·목탄·파스텔). 농도 = 골 깊이.' }),
-        check('반전', () => b.texInvert, (v) => { b.texInvert = v; }),
-        check('도장마다 적용(끄면 획 전체에, 깊이 방식은 늘 획 전체)', () => b.texPerStamp, (v) => { b.texPerStamp = v; }),
-      ],
-      '2중 브러시': () => {
-        if (!b.dual) return [Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: '이 브러시에는 2중 브러시가 없어요. 클립 스튜디오 브러시(.sut)에 2중 브러시가 있으면 여기서 바꿀 수 있어요.' })];
+      } },
+      { id: 'spray', sub: true, name: L('스프레이 효과', 'Spraying effect'), desc: L('브러시 끝을 흩뿌려요. [스프레이 효과]를 켜면 아래 설정을 쓸 수 있어요.', 'Settings for spraying the brush tips. Turn on [Spraying effect] to use these settings.'), rows: () => {
+        const on = !!b.spray, sp = b.spray || { size: 3, sync: false, density: 10, bias: 0, sizeEff: null, densEff: null };
+        return [
+          check(L('스프레이 효과', 'Spraying effect'), () => on, (v) => { b.spray = v ? (b.spray || { size: 3, sync: false, density: 10, bias: 0, sizeEff: null, densEff: null }) : null; }, { rerender: true }),
+          slider(L('입자 크기', 'Particle size'), () => sp.size, (v) => { sp.size = v; }, 0.5, 200, 0.5, { disabled: !on, dyn: [sp, 'sizeEff'] }),
+          check(L('브러시 크기에 맞춤', 'Brush Size'), () => sp.sync, (v) => { sp.sync = v; }, { child: true, disabled: !on }),
+          slider(L('입자 밀도', 'Particle density'), () => sp.density, (v) => { sp.density = v; }, 1, 200, 1, { disabled: !on, dyn: [sp, 'densEff'] }),
+          slider(L('흩뿌림 편향', 'Spray deviation'), () => Math.round(sp.bias * 100), (v) => { sp.bias = v / 100; }, -100, 100, 1, { disabled: !on, help: L('+면 가운데로 모이고, -면 가장자리로 퍼져요.', 'Positive gathers particles in the center, negative spreads them out.') }),
+        ];
+      } },
+      { id: 'stroke', sub: true, name: L('획', 'Stroke'), desc: L('브러시 끝 사이 간격 같은 획 설정이에요.', 'Settings for the brushstroke, such as the interval between each brush tip.'), rows: () => {
+        const gk = GAP_KEY();
+        return [
+          seg(L('간격', 'Gap'), [['fixed', L('• 고정', '• Fixed')], ['wide', L('•• 넓게', '•• Wide')], ['normal', L('›•‹ 보통', '›•‹ Normal')], ['narrow', L('••• 좁게', '••• Narrow')]], GAP_KEY, (v) => {
+            if (v === 'fixed') b.gapPx = Math.max(1, Math.round(b.size * b.interval)); else { b.gapPx = 0; b.interval = { wide: 0.5, normal: 0.25, narrow: 0.1 }[v]; }
+          }, { rerender: true, help: L('고정: 굵기와 상관없이 같은 픽셀 간격. 넓게·보통·좁게: 굵기에 비례한 간격.', 'Fixed: the same pixel gap at any size. Wide/Normal/Narrow: gap proportional to the brush size.') }),
+          gk === 'fixed'
+            ? slider(L('간격(픽셀)', 'Gap (pixels)'), () => b.gapPx, (v) => { b.gapPx = v; }, 1, 500, 1, { child: true, dyn: [b, 'intervalEff'] })
+            : slider(L('간격', 'Gap'), () => Math.round(b.interval * 100), (v) => { b.interval = v / 100; }, 1, 300, 1, { child: true, dyn: [b, 'intervalEff'] }),
+          check(L('리본', 'Ribbon'), () => b.ribbon, (v) => { b.ribbon = v; }, { help: L('끝 모양 그림을 띠처럼 늘여 이어 그려요.', 'Stretches the tip image along the stroke like a ribbon.') }),
+          drop(L('반복 방법', 'Repeat method'), [[0, L('반복', 'Repeat')], [1, L('왕복', 'Reverse repeat')], [2, L('한 번', 'Once')], [3, L('무작위', 'Random')], [4, L('획마다 차례로', 'Per stroke')], [5, L('획마다 무작위', 'Random per stroke')]], () => b.tipOrder || 0, (v) => { b.tipOrder = v; }, { help: L('끝 모양 그림이 여러 개일 때 쓰는 순서예요.', 'Order of the tip images when there are several.') }),
+          check(L('브러시 끝을 비교(어둡게)로 합성', 'Blend brush tips with Darken'), () => b.tipMax, (v) => { b.tipMax = v; }, { help: L('겹친 도장끼리 더 진한 쪽만 남아 겹쳐도 진해지지 않아요.', 'Overlapping stamps keep only the darker one, so they do not build up.') }),
+          sep(),
+          slider(L('흩어짐', 'Scatter'), () => Math.round((b.scatter || 0) * 100), (v) => { b.scatter = v / 100; }, 0, 200, 1),
+          slider(L('물감 마름(길이)', 'Paint runs dry (length)'), () => (b.dryOut && b.dryOut.len) || 0, (v) => { b.dryOut = Object.assign(b.dryOut || { min: 0 }, { len: v }); }, 0, 3000, 10, { help: L('그 길이만큼 그으면 붓의 물감이 줄어 획이 갈라져요(갈필). 0이면 꺼짐. (확장 기능)', 'After this length the brush runs out of paint and the stroke breaks up. 0 = off. (extension feature)') }),
+          slider(L('마른 뒤 남는 양', 'Remaining paint'), () => Math.round(((b.dryOut && b.dryOut.min) || 0) * 100), (v) => { b.dryOut = Object.assign(b.dryOut || { len: 0 }, { min: v / 100 }); }, 0, 100, 1, { child: true }),
+        ];
+      } },
+      { id: 'tex', sub: true, name: L('텍스처', 'Texture'), desc: L('그림의 명암을 선에 텍스처로 입혀요.', 'You can apply image contrast to lines as a texture.'), rows: () => {
+        const has = !!(b.texture && b.texture.key);
+        return [
+          note(has ? L('텍스처를 쓰고 있어요', 'A texture is set') : L('텍스처 없음 — [브러시 모양]에서 고르세요', 'No texture — choose one under [Brush shape]')),
+          slider(L('텍스처 농도', 'Texture density'), ...pct('texDensity'), 0, 100, 1, { disabled: !has, dyn: [b, 'texDensEff'] }),
+          check(L('텍스처 반전', 'Invert texture'), () => b.texInvert, (v) => { b.texInvert = v; }, { child: true, disabled: !has }),
+          slider(L('농도 강조', 'Emphasize density'), () => Math.round((b.texContrast || 0) * 100), (v) => { b.texContrast = v / 100; }, 0, 100, 1, { child: true, disabled: !has }),
+          slider(L('배율', 'Scale ratio'), () => Math.round((b.texScale || 1) * 100), (v) => { b.texScale = v / 100; }, 10, 500, 1, { child: true, disabled: !has }),
+          slider(L('회전 각도', 'Rotation angle'), () => b.texRotate || 0, (v) => { b.texRotate = v; }, -180, 180, 1, { child: true, disabled: !has }),
+          sep(),
+          drop(L('텍스처 모드', 'Texture mode'), [['mul', L('곱하기(무늬 덮기)', 'Multiply')], ['height', L('깊이(종이 결)', 'Height (paper grain)')]], () => b.texMode || 'mul', (v) => { b.texMode = v; }, { rerender: true, disabled: !has, help: L('깊이: 종이 결을 높낮이로 써서 살살 칠하면 높은 곳에만 묻어요(연필·목탄·파스텔).', 'Height: treats the texture as paper grain, so light strokes only touch the peaks (pencil, charcoal, pastel).') }),
+          slider(L('골에 남는 가루', 'Powder left in valleys'), () => Math.round((b.texFloor == null ? 0.12 : b.texFloor) * 100), (v) => { b.texFloor = v / 100; }, 0, 50, 1, { child: true, disabled: !has || b.texMode !== 'height' }),
+          check(L('도장마다 적용', 'Apply by each plot'), () => b.texPerStamp, (v) => { b.texPerStamp = v; }, { child: true, disabled: !has, help: L('끄면 획 전체에 한 번 입혀요.', 'When off, the texture is applied to the whole stroke once.') }),
+        ];
+      } },
+      { id: 'dual', name: L('2-브러시 모양', '2 - Brush shape'), desc: L('두 브러시를 합쳐 2중 브러시를 만들어요.', 'Settings for combining two brushes for a dual brush.'), rows: () => {
         const d = b.dual;
+        if (!d) return [note(L('이 브러시에는 2중 브러시가 없어요. 클립 스튜디오 브러시(.sut)에 2중 브러시가 있으면 여기서 바꿀 수 있어요.', 'This brush has no dual brush. If a Clip Studio brush (.sut) has one, you can change it here.'))];
+        const on = !b.dualOff;
         return [
-          check('2중 브러시 쓰기', () => !b.dualOff, (v) => { b.dualOff = !v; }),
-          slider('크기', () => d.size, (v) => { d.size = v; }, 1, 1000, 1, 'px'),
-          slider('간격', () => Math.round(d.interval * 100), (v) => { d.interval = v / 100; }, 1, 300, 1, '%'),
-          slider('흐름', () => Math.round(d.flow * 100), (v) => { d.flow = v / 100; }, 1, 100, 1, '%'),
-          check('흩뿌리기', () => d.spray, (v) => { d.spray = v; }),
-          Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: '두 번째 끝 모양으로 찍은 무늬 안쪽만 남겨서 거친 질감을 만들어요.' }),
+          check(L('2중 브러시', 'Dual brush'), () => on, (v) => { b.dualOff = !v; }, { rerender: true }),
+          slider(L('2-브러시 크기', '2-Brush Size'), () => d.size, (v) => { d.size = v; }, 1, 1000, 1, { log: true, disabled: !on }),
+          slider(L('2-간격', '2-Gap'), () => Math.round(d.interval * 100), (v) => { d.interval = v / 100; }, 1, 300, 1, { disabled: !on }),
+          slider(L('2-브러시 농도', '2-Brush density'), () => Math.round(d.flow * 100), (v) => { d.flow = v / 100; }, 1, 100, 1, { disabled: !on }),
+          check(L('2-스프레이 효과', '2-Spraying effect'), () => d.spray, (v) => { d.spray = v; }, { disabled: !on }),
         ];
-      },
-      '색 흔들기': () => {
-        const j = () => b.jitter || (b.jitter = { h: 0, s: 0, v: 0 });
-        j();
+      } },
+      { id: 'wedge', name: L('수채 경계', 'Watercolor edge'), desc: L('[수채 경계]를 켜면 획 가장자리가 진해져요. 텍스처와 함께 쓰면 수채화처럼 보여요.', 'Turn on [Watercolor edge] to add an edge to your brush strokes. Combine this with textures for a watercolor effect.'), rows: () => {
+        const w = b.wedge || (b.wedge = { on: false, radius: 6, alpha: 0.55, value: 0.35 }), on = !!w.on;
         return [
-          slider('색상', () => b.jitter.h, (v) => { b.jitter.h = v; }, 0, 100, 1, '%'),
-          slider('채도', () => b.jitter.s, (v) => { b.jitter.s = v; }, 0, 100, 1, '%'),
-          slider('명도', () => b.jitter.v, (v) => { b.jitter.v = v; }, 0, 100, 1, '%'),
-          Object.assign(document.createElement('div'), { className: 'mw-bs-help', textContent: '도장마다 색을 이만큼 흔들어요(반짝이·잎 같은 브러시에 좋아요).' }),
+          check(L('수채 경계', 'Watercolor edge'), () => on, (v) => { w.on = v; }, { rerender: true }),
+          slider(L('범위', 'Range'), () => w.radius, (v) => { w.radius = v; }, 1, 40, 1, { child: true, disabled: !on }),
+          slider(L('불투명도', 'Opacity'), () => Math.round(w.alpha * 100), (v) => { w.alpha = v / 100; }, 0, 100, 1, { disabled: !on }),
+          slider(L('명도', 'Darkness'), () => Math.round(w.value * 100), (v) => { w.value = v / 100; }, 0, 100, 1, { disabled: !on }),
         ];
-      },
-      '이름·관리': () => {
-        const r = rowEl('이름'), inp = document.createElement('input'); inp.type = 'text'; inp.value = b.name; inp.className = 'mw-bs-text';
-        inp.addEventListener('change', () => { b.name = inp.value.trim() || b.name; el.querySelector('.mw-bset-title').textContent = '브러시 설정 — ' + b.name; save(); advListRender?.(); });
+      } },
+      { id: 'paint', name: L('물감 (확장)', 'Paint (extension)'), desc: L('클립 스튜디오에 없는 확장만의 물감 표현이에요: 붓털, 두께감, 젖은 물감.', 'Extension-only paint effects not in Clip Studio: bristles, impasto, wet paint.'), rows: () => {
+        const br = b.bristle || (b.bristle = { on: false, shape: 'round', count: 22, streak: 0.5, var: 0.06 });
+        const im = b.impasto || (b.impasto = { depth: 0, shine: 0.4 });
+        const wt = b.wet || (b.wet = { on: false, wobble: 0.4, gran: 0.2, soft: 0 });
+        return [
+          check(L('붓털', 'Bristles'), () => br.on, (v) => { br.on = v; }, { rerender: true, help: L('털마다 물감을 따로 묻혀 끊김 없는 결이 남아요. [획]의 물감 마름과 같이 쓰면 털이 하나씩 말라 갈라져요.', 'Each bristle carries its own paint for continuous streaks. With [Stroke] paint running dry, bristles split one by one.') }),
+          seg(L('붓 모양', 'Brush type'), [['round', L('둥근 붓', 'Round')], ['flat', L('평붓', 'Flat')]], () => br.shape || 'round', (v) => { br.shape = v; }, { child: true, disabled: !br.on }),
+          slider(L('털 수', 'Bristle count'), () => br.count, (v) => { br.count = v; }, 4, 64, 1, { child: true, disabled: !br.on }),
+          slider(L('털 결 세기', 'Streak strength'), ...pct('streak', br), 0, 100, 1, { child: true, disabled: !br.on }),
+          slider(L('털마다 색 차이', 'Color variation'), ...pct('var', br), 0, 30, 1, { child: true, disabled: !br.on }),
+          sep(),
+          slider(L('두께감', 'Impasto'), ...pct('depth', im), 0, 100, 1, { help: L('물감이 두껍게 올라온 것처럼 빛과 그림자를 넣어요(0 = 끔).', 'Adds light and shadow as if the paint were thick (0 = off).') }),
+          slider(L('광택', 'Shine'), ...pct('shine', im), 0, 100, 1, { child: true, disabled: !im.depth }),
+          sep(),
+          check(L('젖은 물감', 'Wet paint'), () => wt.on, (v) => { wt.on = v; }, { rerender: true, help: L('물이 닿은 경계가 또렷하고 구불구불해져요.', 'Wet edges become crisp and wavy.') }),
+          slider(L('가장자리 흔들림', 'Edge wobble'), ...pct('wobble', wt), 0, 100, 1, { child: true, disabled: !wt.on }),
+          slider(L('가장자리 풀림', 'Edge softness'), ...pct('soft', wt), 0, 100, 1, { child: true, disabled: !wt.on }),
+          slider(L('안료 알갱이', 'Granulation'), ...pct('gran', wt), 0, 100, 1, { child: true, disabled: !wt.on }),
+        ];
+      } },
+      { id: 'corr', name: L('보정', 'Correction'), desc: L('펜 입력을 보정하는 설정이에요.', 'Settings for correcting pen input'), rows: () => [
+        slider(L('손떨림 보정', 'Stabilization'), () => b.smoothing || 0, (v) => { b.smoothing = v; }, 0, 100, 1, { help: L('클수록 선이 매끄러워지지만 펜을 조금 늦게 따라와요.', 'Higher values give smoother lines but follow the pen a little later.') }),
+      ] },
+      { id: 'inout', name: L('시작과 끝', 'Starting and ending'), desc: L('획의 시작과 끝을 가늘게 하는 설정이에요.', 'Settings for starting and ending effects to brushstrokes.'), rows: () => [
+        slider(L('시작', 'Starting'), () => b.taperIn || 0, (v) => { b.taperIn = v; }, 0, 500, 1, { help: L('획을 시작해서 이 길이(픽셀)만큼 점점 굵어져요. 0이면 꺼짐.', 'The stroke grows to full size over this length (pixels). 0 = off.') }),
+        slider(L('끝', 'Ending'), () => b.taperOut || 0, (v) => { b.taperOut = v; }, 0, 500, 1, { help: L('획 끝 이 길이(픽셀)만큼 점점 가늘어져요. 0이면 꺼짐.', 'The stroke thins out over this last length (pixels). 0 = off.') }),
+      ] },
+      { id: 'manage', name: L('이름·관리', 'Name & manage'), desc: L('브러시 이름·분류와 복제예요.', 'Brush name, category and duplicate.'), rows: () => {
+        const r = rowEl(L('이름', 'Name'), 'mw-cs-dd'), inp = document.createElement('input'); inp.type = 'text'; inp.value = b.name; inp.className = 'mw-cs-sel';
+        inp.addEventListener('change', () => { b.name = inp.value.trim() || b.name; setTitle(); save(); advListRender?.(); });
         r.appendChild(inp);
-        const rc = rowEl('분류'), sel = document.createElement('select'); sel.className = 'mw-bs-text';
+        const rc = rowEl(L('분류', 'Category'), 'mw-cs-dd'), sel = document.createElement('select'); sel.className = 'mw-cs-sel';
         for (const c of [...ADV_CATS, CAT_IMPORTED, CAT_MINE]) sel.add(new Option(c, c));
         sel.value = advCatOf(b);
         sel.addEventListener('change', () => { b.cat = sel.value; save(); advListRender?.(); });
         rc.appendChild(sel);
-        const acts = document.createElement('div'); acts.className = 'mw-bs-acts';
-        acts.append(
-          btn('끝 모양·텍스처 바꾸기…', () => openAdvPngDialog(b, () => advListRender?.())),
-          btn('이 브러시 복제', async () => {
-            const c = JSON.parse(JSON.stringify(b)); c.id = 'b_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); c.added = Date.now(); c.name = b.name + ' 사본';
-            await advSaveBrush(c); await advSelect(c.id); advListRender?.(); openBrushSettings();
-          }),
-        );
+        const acts = document.createElement('div'); acts.className = 'mw-cs-acts';
+        acts.append(btn(L('이 브러시 복제', 'Duplicate this brush'), async () => {
+          const c = JSON.parse(JSON.stringify(b)); c.id = 'b_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); c.added = Date.now(); c.name = b.name + L(' 사본', ' copy');
+          await advSaveBrush(c); await advSelect(c.id); advListRender?.(); openBrushSettings();
+        }));
         return [r, rc, acts];
-      },
-    };
-    let cur = BSET.page && pages[BSET.page] ? BSET.page : '크기';
-    function render(name) {
-      cur = name || cur; BSET.page = cur;
-      tabs.innerHTML = '';
-      for (const k of Object.keys(pages)) { const t = document.createElement('button'); t.type = 'button'; t.textContent = k; t.classList.toggle('on', k === cur); t.addEventListener('click', () => render(k)); tabs.appendChild(t); }
-      body.innerHTML = '';
-      for (const r of pages[cur]()) body.appendChild(r);
+      } },
+    ];
+    const cats = q('.mw-cs-cats'), body = q('.mw-cs-body'), banner = q('.mw-cs-banner');
+    let cur = BSET.page && CATS.some((c) => c.id === BSET.page) ? BSET.page : 'size';
+    function render(id) {
+      cur = id || cur; BSET.page = cur;
+      const sc = body.scrollTop;
+      cats.textContent = '';
+      for (const c of CATS) { const t = document.createElement('div'); t.className = 'mw-cs-cat' + (c.sub ? ' sub' : '') + (c.id === cur ? ' on' : ''); t.textContent = c.name; t.addEventListener('click', () => render(c.id)); cats.appendChild(t); }
+      const C = CATS.find((c) => c.id === cur);
+      banner.textContent = C.desc;
+      el.querySelector('.mw-cs-pop')?.remove();
+      body.textContent = '';
+      for (const r of C.rows()) body.appendChild(r);
+      if (!id) body.scrollTop = sc;
+      helpDef();
     }
+    q('.mw-cs-reset').textContent = L('⟲ 모든 설정을 기본값으로', '⟲ Reset all settings to default');
+    q('.mw-cs-savedef').textContent = L('지금 설정을 기본값으로 저장', 'Save all settings as default');
+    q('.mw-cs-reset').addEventListener('click', () => {
+      if (!b.orig) return;
+      const keep = { id: b.id, name: b.name, cat: b.cat, added: b.added, orig: b.orig };
+      for (const k of Object.keys(b)) delete b[k];
+      Object.assign(b, JSON.parse(JSON.stringify(keep.orig)), keep);
+      save(); render(); toast(L('기본값으로 되돌렸어요', 'Reset to default'));
+    });
+    q('.mw-cs-savedef').addEventListener('click', () => { const o = JSON.parse(JSON.stringify(b)); delete o.orig; b.orig = o; advSaveSoon(); toast(L('지금 설정을 기본값으로 저장했어요', 'Saved the current settings as default')); });
     render();
+    preview();
   }
 
   // ---------- 고급 브러시 ⑤ 프리셋 (클립 스튜디오 기본 브러시처럼 바로 쓰는 묶음) ----------
@@ -11264,6 +11373,58 @@ void main(){
     .mw-bs-help { color: #9a9ca5; margin: 6px 0; line-height: 1.4; }
     .mw-bs-text { flex: 1; background: #1e1f23; color: #eee; border: 1px solid #45464d; border-radius: 4px; padding: 2px 6px; }
     .mw-bs-acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+    .mw-bset { position: fixed; z-index: 2147482000; top: 60px; right: 280px; width: 540px; height: min(680px, calc(100vh - 80px)); display: flex; flex-direction: column;
+      background: #383838; color: #dadada; border: 1px solid #2a2a2a; box-shadow: 0 8px 28px rgba(0,0,0,.55); font: 12px/1.3 system-ui, sans-serif; padding: 0 4px 4px; box-sizing: border-box; }
+    .mw-cs-head { position: relative; height: 18px; flex: 0 0 18px; display: flex; align-items: center; justify-content: center; cursor: move; user-select: none; font-size: 11px; color: #dadada; }
+    .mw-cs-x { position: absolute; right: 2px; top: 0; height: 18px; width: 20px; background: none; border: 0; color: #bdbdbd; cursor: pointer; font-size: 11px; }
+    .mw-cs-x:hover { color: #fff; background: #c0392b; }
+    .mw-cs-pv { position: relative; flex: 0 0 99px; background: linear-gradient(90deg, #b4b4b4 0 50%, #4e4e4e 50% 100%); border: 1px solid #313131; }
+    .mw-cs-pv canvas { width: 100%; height: 100%; display: block; }
+    .mw-cs-chip { position: absolute; left: 4px; top: 3px; padding: 1px 6px; background: rgba(40,40,40,.85); color: #dadada; font-size: 11px; border-radius: 2px; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mw-cs-main { flex: 1; min-height: 0; display: flex; gap: 2px; margin-top: 2px; }
+    .mw-cs-cats { flex: 0 0 135px; background: #3f3f3f; border: 1px solid #313131; overflow-y: auto; padding: 2px 0; }
+    .mw-cs-cat { height: 18px; line-height: 18px; padding: 0 6px 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; color: #dadada; }
+    .mw-cs-cat.sub { padding-left: 13px; }
+    .mw-cs-cat:hover { background: #4a4a4a; }
+    .mw-cs-cat.on { background: #606a80; }
+    .mw-cs-right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .mw-cs-banner { flex: 0 0 auto; min-height: 36px; background: #4e4e4e; border: 1px solid #313131; padding: 6px 8px; box-sizing: border-box; color: #dadada; }
+    .mw-cs-body { position: relative; flex: 1; min-height: 0; overflow-y: auto; background: #3f3f3f; border: 1px solid #313131; padding: 4px 8px 8px 10px; }
+    .mw-cs-help { flex: 0 0 86px; display: flex; gap: 8px; background: #4e4e4e; border: 1px solid #313131; padding: 8px; box-sizing: border-box; overflow: hidden; }
+    .mw-cs-help i { flex: 0 0 26px; height: 26px; border-radius: 5px; background: #dadada; color: #3f3f3f; font: italic 700 17px/26px Georgia, serif; text-align: center; }
+    .mw-cs-help b { display: block; margin-bottom: 2px; }
+    .mw-cs-foot { flex: 0 0 auto; display: flex; justify-content: space-between; gap: 6px; margin: 4px 0 0 139px; }
+    .mw-cs-btn { background: #676767; border: 1px solid #7e7e7e; color: #dadada; padding: 2px 10px; font: inherit; cursor: pointer; border-radius: 2px; }
+    .mw-cs-btn:hover { background: #747474; }
+    .mw-cs-row { position: relative; padding: 3px 0 3px 0; }
+    .mw-cs-row.mw-cs-child { padding-left: 16px; }
+    .mw-cs-row.mw-cs-child::before { content: ''; position: absolute; left: 5px; top: -3px; bottom: 50%; width: 6px; border-left: 1px solid #222; border-bottom: 1px solid #222; }
+    .mw-cs-lab { display: block; color: #dadada; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mw-cs-dd, .mw-cs-sg { display: flex; align-items: center; gap: 8px; }
+    .mw-cs-dd .mw-cs-lab, .mw-cs-sg .mw-cs-lab { flex: 0 0 auto; max-width: 45%; }
+    .mw-cs-line { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
+    .mw-cs-bar { position: relative; flex: 1; height: 10px; cursor: pointer; border-bottom: 1px solid #636363; box-sizing: border-box; }
+    .mw-cs-bar i { position: absolute; left: 0; bottom: -1px; height: 8px; background: #585858; border-top: 1px solid #6f6f6f; border-bottom: 1px solid #7b7b7b; box-sizing: border-box; }
+    .mw-cs-num { width: 46px; background: transparent; border: 0; color: #dadada; text-align: right; font: inherit; padding: 0; }
+    .mw-cs-num:focus { background: #2e2e2e; outline: 1px solid #606a80; }
+    .mw-cs-spin { display: flex; flex-direction: column; width: 10px; line-height: 7px; font-size: 9px; color: #b2b2b2; cursor: pointer; user-select: none; }
+    .mw-cs-spin b { font-weight: 400; height: 8px; overflow: hidden; } .mw-cs-spin b:hover { color: #fff; }
+    .mw-cs-dyn { flex: 0 0 18px; height: 20px; padding: 0; display: flex; align-items: center; justify-content: center; background: #585858; border: 1px solid #6f6f6f; color: #b2b2b2; border-radius: 2px; cursor: pointer; }
+    .mw-cs-dyn svg { width: 13px; height: 13px; } .mw-cs-dyn.on { color: #fff; background: #606a80; }
+    .mw-cs-dyn.mw-cs-ph { visibility: hidden; }
+    .mw-cs-chk { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+    .mw-cs-chk input { width: 13px; height: 13px; margin: 0; accent-color: #606a80; }
+    .mw-cs-sel { flex: 1; min-width: 0; height: 20px; background: #585858; border: 1px solid #6f6f6f; color: #dadada; font: inherit; border-radius: 2px; padding: 0 4px; }
+    .mw-cs-seg { flex: 1; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 1px; }
+    .mw-cs-seg button { min-height: 22px; padding: 0 8px; background: #585858; border: 1px solid #6f6f6f; color: #dadada; font: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 3px; }
+    .mw-cs-seg button svg { width: 15px; height: 15px; }
+    .mw-cs-seg button.on { background: #798db9; color: #fff; }
+    .mw-cs-dis { opacity: .45; pointer-events: none; }
+    .mw-cs-sep { height: 1px; background: #727272; margin: 5px 0 4px; opacity: .6; }
+    .mw-cs-note { color: #bdbdbd; margin: 4px 0 6px; }
+    .mw-cs-acts { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+    .mw-cs-pop { position: absolute; z-index: 5; width: 210px; background: #3f3f3f; border: 1px solid #222; box-shadow: 0 4px 14px rgba(0,0,0,.5); padding: 6px 8px; }
+    .mw-cs-pop .mw-cs-chk { margin: 3px 0; }
     .mw-preset { width: 520px; } .mw-presetgrid { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); max-height: 56vh; overflow: auto; }
     .layer.mw-msel { background: rgba(47,128,237,.22) !important; box-shadow: inset 3px 0 0 #2f80ed; }
     .mw-mswrap { position: fixed; z-index: 2147480300; pointer-events: none; overflow: hidden; }
@@ -11736,6 +11897,11 @@ void main(){
       const fix = (n) => { if (!n || typeof n !== 'object') return; if (n.k === 'g') { if (n.m && n.t && n.t.includes('tools')) n.m = 0; } else if (Array.isArray(n.c)) n.c.forEach(fix); };
       for (const l of Object.values(DK.cfg.L)) { try { fix(l.root); (l.fl || []).forEach((f) => fix(f.g)); if (Array.isArray(l.h)) l.h = l.h.filter((t) => t !== 'tools'); } catch { /* 무시 */ } }
     }
+    if (!DK.cfg.lph) { // 레이어 속성 창은 기본으로 숨김 (v0.42가 레이어 창 위에 넣어 둔 것도 한 번 걷는다. 다시 열기: 브러시 칸 끝 단추·Window 메뉴)
+      DK.cfg.lph = 1;
+      const strip = (n) => { if (!n || typeof n !== 'object') return; if (n.k === 'g' && Array.isArray(n.t)) { n.t = n.t.filter((t) => t !== 'lprops'); if (n.a === 'lprops') n.a = n.t[0]; } else if (Array.isArray(n.c)) n.c.forEach(strip); };
+      for (const T of [DK.cfg.L, DK.cfg.D]) for (const l of Object.values(T)) { try { strip(l.root); l.root = dkNorm(l.root) || { k: 'c' }; l.fl = (l.fl || []).filter((f) => { strip(f.g); return f.g.t.length; }); l.h = [...new Set([...(l.h || []), 'lprops'])]; } catch { /* 무시 */ } }
+    }
     if (DK.cfg.v !== 2 && DK.cfg.v !== 3) { DK.cfg.L = {}; DK.cfg.D = {}; DK.cfg.v = 2; } // v2: 브러시+브러시 목록 탭 기본 배치
     if (DK.cfg.v === 2) { // v3: '브러시 목록이 보이는지'는 모드에서 뺀다 → 예전 '|bl' 배치(브러시 도구로 쓰던 배치)를 그대로 이어받기
       for (const T of [DK.cfg.L, DK.cfg.D]) for (const k of Object.keys(T)) if (k.includes('|bl')) { T[k.replace('|bl', '')] = T[k]; delete T[k]; }
@@ -11879,7 +12045,7 @@ void main(){
   function dkEnsureAll() {
     const have = new Set([...dkAllGroups().flatMap((g) => g.t), ...(DK.lay.h || [])]);
     let k = 0;
-    if (!have.has('lprops') && dkHasContent('lprops') && dkInsertAbove('lprops', 'layers', 150)) have.add('lprops');
+    if (!have.has('lprops')) { DK.lay.h = DK.lay.h || []; DK.lay.h.push('lprops'); have.add('lprops'); } // 레이어 속성 창은 처음엔 숨김 (열면 레이어 창 위에)
     for (const p of DOCK_PANELS) if (!have.has(p.id) && dkHasContent(p.id)) { DK.lay.fl.push({ g: { k: 'g', id: dkUid(), t: [p.id], a: p.id }, x: 120 + 30 * k, y: 80 + 30 * k, w: 260, h: 260 }); k++; }
   }
   // ---- 그리기 ----
@@ -12524,6 +12690,9 @@ void main(){
   // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
   // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
   const NEWS = [
+    { v: '0.43.0',
+      ko: ['고급 브러시 설정 창을 클립 스튜디오 ‘보조 도구 상세’처럼 바꿨어요: 위쪽 획 미리보기, 왼쪽 분류(브러시 크기·잉크·색 흔들기·안티에일리어싱·브러시 끝·스프레이·획·텍스처·수채 경계·보정·시작과 끝 등), 설명 띠, 항목 도움말, 기본값 되돌리기·저장', '슬라이더 오른쪽의 동적 효과 단추로 필압·속도·무작위와 최솟값을 정해요', '그리기도 클립 스튜디오에 가깝게: 안티에일리어싱 4단계, 필압 불투명도가 겹쳐도 지나치게 진해지지 않음, 텍스처 회전·텍스처 농도 필압, 고정 간격·간격에 맞춰 농도 조절', '레이어 속성 창은 처음엔 숨겨 두었어요 (브러시 칸 끝 레이어 단추나 Window 메뉴로 열기)'],
+      en: ['The advanced brush settings window now looks like Clip Studio’s Sub Tool Detail: stroke preview on top, categories on the left (Brush Size, Ink, Color Jitter, Anti-aliasing, Brush tip, Spraying, Stroke, Texture, Watercolor edge, Correction, Starting and ending…), a description banner, item help, and reset/save default', 'Use the Dynamics button right of each slider for pen pressure, velocity, random and the minimum value', 'Strokes are closer to Clip Studio: 4 anti-aliasing levels, pressure opacity no longer builds up too dark, texture rotation and texture-density pressure, fixed gap and density adjusted by gap', 'The Layer Properties window is now hidden by default (open it with the layer button at the end of the brush slots or the Window menu)'] },
     { v: '0.42.0',
       ko: ['레이어 속성이 클립 스튜디오처럼 따로 된 창이 됐어요 (처음엔 레이어 창 바로 위). ‘효과’ 칸의 단추로 경계 효과를 켜면 그 설정이 아래에 나와요', '브러시 칸 끝의 레이어 단추는 이제 그 창을 열고 닫아요', '창 이름표 글자를 눈에 덜 띄는 회색으로 바꿨어요', '브러시 목록이 비어 보이던 문제: Magma 설정의 ‘Brush list’가 꺼져 있으면 브러시 목록 탭을 열 때 저절로 켜요'],
       en: ['Layer Properties is now its own window like Clip Studio (first placed right above Layers). Turn on the border effect with the button under “Effect” and its settings appear below', 'The layer button at the end of the brush slots now opens and closes that window', 'Window title text is now a dimmer gray', 'Empty brush list fixed: if Magma’s “Brush list” layout option is off, it is turned on when you open the Brush list tab'] },
