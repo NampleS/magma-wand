@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (function mwBoot() {
   'use strict';
-  const VERSION = '0.45.0';
+  const VERSION = '0.45.1';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -11296,9 +11296,9 @@ void main(){
     const el = document.createElement('div'); el.className = 'mw-nav mw-el';
     const cv = document.createElement('canvas'); el.appendChild(cv);
     NAV.el = el; NAV.cv = cv;
-    cv.addEventListener('pointerdown', (e) => { if (e.button !== 0) return; e.preventDefault(); cv.setPointerCapture(e.pointerId); NAV.drag = { x: e.clientX, y: e.clientY }; navGo(); });
-    cv.addEventListener('pointermove', (e) => { if (NAV.drag) { NAV.drag.x = e.clientX; NAV.drag.y = e.clientY; navGo(); } });
-    const end = () => { NAV.drag = null; };
+    cv.addEventListener('pointerdown', (e) => { if (e.button !== 0) return; e.preventDefault(); try { cv.setPointerCapture(e.pointerId); } catch { /* 무시 */ } NAV.drag = { x: e.clientX, y: e.clientY }; navGo(); });
+    cv.addEventListener('pointermove', (e) => { if (NAV.drag) { NAV.drag.x = e.clientX; NAV.drag.y = e.clientY; if (!NAV.goRaf) NAV.goRaf = requestAnimationFrame(() => { NAV.goRaf = 0; navGo(); }); } });
+    const end = () => { NAV.drag = null; cancelAnimationFrame(NAV.goRaf); NAV.goRaf = 0; };
     cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
     navLoop();
     return el;
@@ -11316,6 +11316,13 @@ void main(){
       else if (hSpan && q.bottom >= B - 2 && q.top < B) B = Math.min(B, q.top);
     }
     return { R, L, T, Rr: Math.max(L + 1, Rr), B: Math.max(T + 1, B) };
+  }
+  // 캔버스 바깥색 = Magma 설정의 배경색(그림판이 이 색으로 지운다, 실측 #161616). 없으면 그림판 상자 색
+  function navBg(E) {
+    const v = E && E.model && E.model.settings && E.model.settings.background;
+    if (typeof v === 'string' && /^#[0-9a-f]{3,8}$/i.test(v)) return v;
+    const b = document.querySelector('editor-box'); const c = b && getComputedStyle(b).backgroundColor;
+    return c && c !== 'rgba(0, 0, 0, 0)' ? c : '#161616';
   }
   function navFit(W, H) {
     const cv = NAV.cv, w = cv.width, h = cv.height, k = Math.min(w / W, h / H) * 0.94;
@@ -11348,11 +11355,11 @@ void main(){
         .catch(() => { NAV.imgSig = want; }).finally(() => { NAV.busy = false; });
     }
     const m = E.computedView.inverseTransform, V = navVisible(c), rc = V.R;
-    const sig = bw + 'x' + bh + '|' + m.join(',') + '|' + [V.L, V.T, V.Rr, V.B].map(Math.round).join(',') + '|' + NAV.imgSig;
+    const sig = navBg(E) + '|' + bw + 'x' + bh + '|' + m.join(',') + '|' + [V.L, V.T, V.Rr, V.B].map(Math.round).join(',') + '|' + NAV.imgSig;
     if (sig === NAV.sig) return;
     NAV.sig = sig;
     const g = cv.getContext('2d'), F = NAV.fit = navFit(W, H);
-    g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = '#7b7b7b'; g.fillRect(0, 0, bw, bh);
+    g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = navBg(E); g.fillRect(0, 0, bw, bh);
     if (NAV.img) { g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'medium'; g.drawImage(NAV.img, F.ox, F.oy, W * F.k, H * F.k); }
     // 보이는 곳 (화면 → 보드 안 좌표 → 네비게이터)
     const pt = (x, y) => { const X = x - rc.left, Y = y - rc.top, bx = m[0] * X + m[2] * Y + m[4], by = m[1] * X + m[3] * Y + m[5]; return [F.ox + bx * F.k, F.oy + by * F.k]; };
@@ -11366,7 +11373,10 @@ void main(){
     if (!E || !c || !F || !NAV.drag || NAV.going) return;
     const r = NAV.cv.getBoundingClientRect(), dpr = NAV.cv.width / (r.width || 1);
     const bx = ((NAV.drag.x - r.left) * dpr - F.ox) / F.k, by = ((NAV.drag.y - r.top) * dpr - F.oy) / F.k; // 보드 안 좌표
-    const V = navVisible(c), rc = V.R, t = E.computedView.transform;
+    const V = navVisible(c), rc = V.R, t = [...E.computedView.transform];
+    // 앞서 보낸 이동이 아직 화면에 다 반영되지 않았으면 '갈 자리'를 기준으로 (안 그러면 같은 거리를 또 보내 왔다 갔다 요동침)
+    const X = NAV.exp, now = performance.now();
+    if (X && now - X.at < 500 && (Math.abs(t[4] - X.x) > 0.5 || Math.abs(t[5] - X.y) > 0.5)) { t[4] = X.x; t[5] = X.y; } else NAV.exp = null;
     const sx = rc.left + t[0] * bx + t[2] * by + t[4], sy = rc.top + t[1] * bx + t[3] * by + t[5]; // 그 점의 지금 화면 위치
     let dx = (V.L + V.Rr) / 2 - sx, dy = (V.T + V.B) / 2 - sy; // 옮길 거리(화면 px)
     if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
@@ -11378,6 +11388,7 @@ void main(){
         c.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, clientX: (V.L + V.Rr) / 2, clientY: (V.T + V.B) / 2, deltaX: -mx / 2.5 || 0.0004, deltaY: -my / 2.5 || 0.0004, deltaMode: 0 }));
         dx -= mx; dy -= my;
       }
+      NAV.exp = { x: t[4] + ((V.L + V.Rr) / 2 - sx) - dx, y: t[5] + ((V.T + V.B) / 2 - sy) - dy, at: performance.now() }; // 이만큼 옮겨질 것
     } finally { NAV.going = false; }
   }
   cleanups.push(() => { cancelAnimationFrame(NAV.raf); NAV.img?.close?.(); NAV.el?.remove(); NAV.el = null; });
@@ -11696,7 +11707,7 @@ void main(){
     .mw-tg-mi { padding: 4px 12px; cursor: pointer; } .mw-tg-mi:hover { background: #606a80; } .mw-tg-mi.dis { opacity: .4; cursor: default; }
     .mw-tg-ask { padding: 4px; } .mw-tg-ask input { width: 200px; }
     html.mw-tg-dragging, html.mw-tg-dragging * { cursor: grabbing !important; }
-    .mw-nav { position: absolute; inset: 0; background: #7b7b7b; overflow: hidden; }
+    .mw-nav { position: absolute; inset: 0; background: #161616; overflow: hidden; }
     .mw-nav canvas { width: 100%; height: 100%; display: block; cursor: pointer; touch-action: none; }
     .mw-lp-cap { display: flex; align-items: center; gap: 6px; margin: 4px 0 5px; font-size: 11px; color: #a3a5ad; }
     .mw-lp-cap::after { content: ''; flex: 1; height: 1px; background: rgba(255,255,255,.14); }
@@ -13065,6 +13076,9 @@ void main(){
   // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
   // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
   const NEWS = [
+    { v: '0.45.1',
+      ko: ['네비게이터에서 끌 때 화면이 마구 흔들리던 문제를 고쳤어요', '네비게이터의 캔버스 바깥 색을 그림판 바깥과 같은 어두운 회색으로 맞췄어요'],
+      en: ['Fixed the view shaking wildly while dragging in the Navigator', 'The Navigator background outside the canvas now matches the dark gray around the canvas'] },
     { v: '0.45.0',
       ko: ['고급 브러시가 획을 뗀 뒤 멈추던 문제를 고쳤어요: 왼쪽·위로 넓힌 보드에서 획마다 보드 전체 크기 그림을 붙이던 것을 작은 그림으로 (보드에 들어가기까지 약 0.03초)', '고급 브러시 목록이 ‘브러시 목록’ 창으로 옮겨졌어요 (클립 스튜디오 보조 도구 그룹처럼): 위쪽 그룹 단추(우클릭 = 추가·이름 바꾸기·지우기), 획 미리보기 목록, 아래 설정·새 브러시·가져오기·복제·지우기', 'Ctrl·Shift로 여러 브러시를 고르고 설정을 한 번에 바꾸거나 지울 수 있어요. 끌어서 순서를 바꾸고, 그룹 단추로 끌면 그 그룹으로 옮겨요', '고급 브러시·블러 등을 쓰는 동안 Space를 누르면 손바닥 커서로 바뀌어요'],
       en: ['Fixed the pause after lifting the pen with the advanced brush: on boards extended left/top it pasted a board-sized image for every stroke, now a small one (about 0.03 s to land)', 'The advanced brush list moved into the Brush list window (like Clip Studio’s sub tool group): group buttons on top (right-click = add, rename, remove), stroke-preview list, and settings/new/import/duplicate/delete at the bottom', 'Select several brushes with Ctrl/Shift to change their settings together or delete them. Drag to reorder, or drop on a group button to move them there', 'Holding Space while using the advanced brush, blur and similar tools now shows the hand cursor'] },
