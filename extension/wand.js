@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (function mwBoot() {
   'use strict';
-  const VERSION = '0.45.3';
+  const VERSION = '0.45.4';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -3021,17 +3021,49 @@ void main(){
       if (!ADV.eqPend) { ADV.eqPend = true; ADV.commitQ = ADV.commitQ.then(advEraseFlush); }
       return;
     }
-    ADV.commitQ = ADV.commitQ.then(async () => {
+    const vis0 = blend === 'glaze' && s.ctx && s.ctx.kmVis ? advVisBelow(s.ctx, boxM) : null; // 보이는 그림(현재 레이어 아래) — 그은 때의 것
+    (ADV.pq || (ADV.pq = [])).push({ px, box: boxM, blend, vis: vis0, clearNow, done });
+    if (!ADV.pqPend) { ADV.pqPend = true; ADV.commitQ = ADV.commitQ.then(advPasteFlush); }
+  }
+  // 기다리는 획들을 붙인다: 보통 합성 획이 이어지면 한 장으로 합쳐 한 번에 (곱하기·물감 겹치기·투명 픽셀 잠금은 한 획씩)
+  async function advPasteFlush() {
+    ADV.pqPend = false;
+    const items = (ADV.pq || []).splice(0);
+    const E = getEditor(), L = E && msActive(E);
+    for (let i = 0; i < items.length;) {
+      const it = items[i];
       try {
-        const E = getEditor(), L = E && msActive(E);
-        const vis = blend === 'glaze' && s.ctx && s.ctx.kmVis ? advVisBelow(s.ctx, boxM) : null; // 보이는 그림(현재 레이어 아래)
-        if (E && L && L.opacityLocked) { await advLockedCommit(E, L, px, boxM, blend, clearNow, vis); return; } // 투명 픽셀 잠금
-        await advPastePx(E, L, blend !== 'normal' && E && L ? advMultiplyPx(E, L, px, boxM, blend === 'glaze', vis) : px, boxM, clearNow);
+        if (E && L && L.opacityLocked) { await advLockedCommit(E, L, it.px, it.box, it.blend, it.clearNow, it.vis); i++; continue; } // 투명 픽셀 잠금
+        if (it.blend !== 'normal') { await advPastePx(E, L, E && L ? advMultiplyPx(E, L, it.px, it.box, it.blend === 'glaze', it.vis) : it.px, it.box, it.clearNow); i++; continue; }
+        let j = i; while (j < items.length && items[j].blend === 'normal') j++;
+        const grp = items.slice(i, j);
+        if (grp.length === 1) await advPastePx(E, L, it.px, it.box, it.clearNow);
+        else { const m = advMergePx(grp); await advPastePx(E, L, m.px, m.box, () => { for (const q of grp) q.clearNow(); }); }
+        i = j;
       } catch (e) {
         console.warn('[MagmaWand] 획 붙이기 실패', e);
-        toast('획을 보드에 넣지 못했어요: ' + (e && e.message || e));
-      } finally { done(); }
-    });
+        toast(L('획을 보드에 넣지 못했어요: ', 'Could not add the stroke to the board: ') + (e && e.message || e)); i++;
+      }
+    }
+    for (const q of items) q.done();
+  }
+  // 획 그림 여러 장(곱하지 않은 RGBA)을 그은 차례대로 겹쳐 한 장으로 (원본 위 덧칠과 같은 결과)
+  function advMergePx(list) {
+    const U = list.reduce((u, q) => runion(u, q.box), null), out = new Float32Array(U.w * U.h * 4);
+    for (const q of list) {
+      const b = q.box, p = q.px;
+      for (let y = 0; y < b.h; y++) {
+        let si = y * b.w * 4, di = ((b.y - U.y + y) * U.w + (b.x - U.x)) * 4;
+        for (let x = 0; x < b.w; x++, si += 4, di += 4) {
+          const as = p[si + 3] / 255; if (!as) continue;
+          const ad = out[di + 3], k = ad * (1 - as), a = as + k;
+          out[di] = (p[si] * as + out[di] * k) / a; out[di + 1] = (p[si + 1] * as + out[di + 1] * k) / a; out[di + 2] = (p[si + 2] * as + out[di + 2] * k) / a; out[di + 3] = a;
+        }
+      }
+    }
+    const px = new Uint8Array(out.length);
+    for (let i = 0; i < out.length; i += 4) { px[i] = out[i] + 0.5; px[i + 1] = out[i + 1] + 0.5; px[i + 2] = out[i + 2] + 0.5; px[i + 3] = out[i + 3] * 255 + 0.5; }
+    return { px, box: U };
   }
 
   // 확정 대기 중인 획들(보드에 아직 안 들어간 것): 차례대로 겹친 그림을 C에 올려 함께 보여 주고, 하나 들어갈 때마다 나머지로 다시 만든다.
@@ -6634,7 +6666,7 @@ void main(){
   // ---------- 레이어 그림 바꿔 넣기 (투명색 지우기·블러가 함께 씀) ----------
   // 읽기 전용: 레이어 + 그 위에 아직 '떠 있는' 붙여넣기(Magma가 다음 동작 때 레이어에 넣음, 실측)를 겹쳐 rect 범위를 읽는다
   // Magma가 앞 붙여넣기를 끝내고 잠금을 풀 때까지 (잠긴 동안 붙이면 Magma가 조용히 버림)
-  async function pasteReady(E) { try { if (E && Array.isArray(E.lockStack)) await waitFor(() => !E.lockStack.length && !E.drawingInProgress, 4000); } catch { /* 무시 */ } }
+  async function pasteReady(E) { try { if (E && Array.isArray(E.lockStack)) await waitFor(() => !E.lockStack.length && !E.drawingInProgress, 20000); } catch { /* 무시 */ } } // Magma가 앞 그림을 처리하는 동안(편집기 잠금)은 보내지 않는다
   function floatingOn(E, L) {
     const s = E.model.user.surface;
     return s && s.toolId === 4 && s.layer === L && s.texture && s.rect && s.rect.w > 0 && !s.transforming &&
@@ -6687,6 +6719,7 @@ void main(){
     for (let y = 0; y < eh; y++) { const o = ((ey - ir.y + y) * ir.w + (ex - ir.x)) * 4; sub.set(after.subarray(o, o + ew * 4), y * ew * 4); }
     let keep = false; for (let i = 3; i < sub.length; i += 4) if (sub[i]) { keep = true; break; }
     const pre = keep ? await (async () => { const b = { x: ex, y: ey, w: ew, h: eh }, plan = pastePlan(E, b); return { plan, blob: await boardPng(plan.w, plan.h, { x: ex - plan.x, y: ey - plan.y, w: ew, h: eh }, sub) }; })() : null;
+    await pasteReady(E); // 편집기가 잠겨 있으면 풀릴 때까지 (잠긴 채 올가미를 그으면 무시된다)
     const gref0 = guRef();
     const cover = showCover(E, er); // 비우는 동안 그 자리를 '바뀌기 전 화면'으로 덮어 둔다
     S.busy = true;
@@ -13107,6 +13140,9 @@ void main(){
   // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
   // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
   const NEWS = [
+    { v: '0.45.4',
+      ko: ['고급 브러시로 넓은 획을 빠르게 여러 번 그으면 버벅이다가 "Editor is locked"가 뜨고 획이 사라지던 문제를 고쳤어요: 붙이는 중에 그은 획은 한 장으로 모아 한 번에 붙이고, 편집기 잠금이 풀린 뒤에 보내요'],
+      en: ['Fixed lag and "Editor is locked" (strokes lost) when drawing many wide advanced-brush strokes quickly: strokes drawn while one is being added are merged and added together, and nothing is sent while the editor is locked'] },
     { v: '0.45.3',
       ko: ['고급 브러시 투명색(지우개)으로 지울 때 1~2프레임 보이던 사각형 테두리를 없앴어요', '투명색 지우기가 훨씬 가벼워졌어요: 지울 때마다 보드 전체를 읽던 것을 그 둘레만 (약 20배 빠름), 빠르게 연달아 지우면 한 번에 모아 처리', '업데이트 소식에서 새 기능처럼 눈여겨볼 소식은 색으로 강조해요'],
       en: ['Removed the rectangle outline that flashed for 1–2 frames when erasing with the advanced brush in transparent color', 'Transparent-color erasing is much lighter: it reads only the area around the stroke instead of the whole board (about 20× faster), and quick successive erases are processed together', 'Notable news such as new features is now highlighted in color'] },
