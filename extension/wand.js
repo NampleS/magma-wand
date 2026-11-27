@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (function mwBoot() {
   'use strict';
-  const VERSION = '0.53.0';
+  const VERSION = '0.53.1';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -2594,7 +2594,8 @@ void main(){
     s.hsv = hsv(...s.color);
     if (b.mix && b.mix.mode !== 'none' && !s.erase) s.mix = advMixStart(b);
     EFF_CSP = b.sutVer >= 2;
-    s.rep = !!(s.mix && b.sutVer >= 2 && !b.mix.km); // 클립 스튜디오 색 혼합 = 바꿔 칠하기 (투명을 끌어오면 그림이 옅어짐)
+    // 색을 끌어오는 브러시(섞기·문지르기·흐리기)는 모두 바꿔 칠하기: 끌어온 물감의 진하기로 그 자리를 바꾼다 (덧칠하면 반투명 그림이 문지를수록 진해졌음)
+    s.rep = !!(s.mix && ((b.sutVer >= 2 && !b.mix.km) || !(b.blend === 'multiply' || b.blend === 'glaze')));
     // 클립 스튜디오 불투명도 효과(필압 등) = 그 자리의 '최대 진하기' 상한: 도장을 겹쳐도 그 값을 넘지 않는다 (상한 버퍼 ADV.M에 최댓값으로 기록 → 표시·확정 때 자름)
     s.cap = !!(!s.rep && ADV_CAP && b.sutVer >= 2 && (b.flow == null || b.flow >= 0.95) && (b.opacityEff || (b.inOut && b.inOut.opacity !== undefined))); // 농도 95% 이상에서만 확인됨 (농도 30·60%는 CSP 방식 미확정 → 예전 방식)
     s.ctx = advCtxStart(s, b);
@@ -13483,6 +13484,9 @@ void main(){
   // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
   // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
   const NEWS = [
+    { v: '0.53.1',
+      ko: ['★ 섞기·문지르기 브러시(손끝, 거친 문지르기, 붓털 문지르기, 유화 블렌더 등)로 반투명한 그림을 문지르면 덧칠돼 점점 진해지던 문제를 고쳤어요. 이제 끌어온 색의 진하기로 그 자리를 바꿔 칠해요'],
+      en: ['★ Fixed blending and smudge brushes (Finger, Rough smudge, Bristle smudge, Oil blender, etc.) painting over semi-transparent areas and making them darker. They now replace the spot with the picked-up color at its own opacity'] },
     { v: '0.53.0',
       ko: ['★ 클립 스튜디오 브러시를 설정 하나씩만 다른 시험 브러시 44종으로 CSP와 하나하나 비교해 고쳤어요',
         '★ 속도 효과: CSP의 [속도 조정] 설정을 읽어요 (붓펜·사인펜이 빠르게 그을 때 CSP처럼 가늘어짐)',
