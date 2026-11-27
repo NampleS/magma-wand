@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (function mwBoot() {
   'use strict';
-  const VERSION = '0.53.3';
+  const VERSION = '0.53.4';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -7531,7 +7531,7 @@ void main(){
   //  - 고급 브러시: 같은 획 버퍼에 거울 도장을 함께 찍어 붙여넣기 한 번으로 들어간다.
   //  - 선대칭 켜기: 거울(N/2개 축) · 끄기: 가운데 점을 중심으로 N등분 회전.
   const SYM_KEY = 'magmaWand.sym';
-  const SYM_NATIVE = new Set(['faPencil', 'faPaintBrush', 'faEraser', 'blendIcon', 'lassoBrushIcon']);
+  const SYM_NATIVE = new Set(['faPencil', 'faPaintBrush', 'faEraser', 'blendIcon', 'liquifyIcon', 'lassoBrushIcon']); // 리퀴파이: 거울로 옮긴 획이면 미는 방향도 거울로 바뀐다
   const SYM = { map: null, cv: null, sig: '', raf: 0, drag: null, rec: null, replaying: false, lastEnd: null, hover: '', ver: 0, jobs: [], pump: false, hold: null, buf: null, down: null, upAt: 0, ev0: 0, grp: null };
   const SYM_ID = { k: 'r', a: 0, L: [1, 0, 0, 1], cx: 0, cy: 0 }; // 그대로(자기 자신)
   const symBoardId = () => { const m = location.pathname.match(/\/d\/([^/?#]+)/); return m ? m[1] : ''; };
@@ -7813,7 +7813,7 @@ void main(){
     const n = E && Number.isFinite(E.primaryColor) ? E.primaryColor >>> 8 : 0;
     const shift = !!(e.shiftKey && symOn() && tool !== 'lassoBrushIcon' && SYM.lastEnd && SYM.lastEnd.tool === tool);
     const ext = tabletExt();
-    SYM.rec = { pid: e.pointerId, ptype: e.pointerType, ext, pen: !!ext || e.pointerType === 'pen', tool, pts: [symRecPt(V, e, ext)], color: tool === 'faEraser' ? '#ffffff' : '#' + n.toString(16).padStart(6, '0'), blockAll: shift, from: shift ? SYM.lastEnd : null, ref0: guRef(), late: !!(SYM.hold && SYM.buf) };
+    SYM.rec = { pid: e.pointerId, ptype: e.pointerType, ext, pen: !!ext || e.pointerType === 'pen', tool, pts: [symRecPt(V, e, ext)], color: tool === 'faEraser' ? '#ffffff' : tool === 'liquifyIcon' ? '#9aa0a6' : '#' + n.toString(16).padStart(6, '0'), blockAll: shift, from: shift ? SYM.lastEnd : null, ref0: guRef(), late: !!(SYM.hold && SYM.buf) };
     // Shift+클릭 직선: Magma는 '마지막 획 끝'에서 잇는데, 그 끝이 복사본 끝일 수 있다 → 이 획은 Magma에 넘기지 않고
     // 원본·복사본 모두 내 기록의 끝점에서 이어 그린다(원본을 맨 나중에 그어 Magma의 '마지막 끝'도 원본과 같게)
     if (shift) { if (SYM.buf) SYM.buf.drop = true; e.stopImmediatePropagation(); if (e.cancelable) e.preventDefault(); }
@@ -8242,7 +8242,7 @@ void main(){
   const QS_HOLD = 1000; // 펜을 멈추고 기다리는 시간 (ms)
   const QS = { adv: null, shift: false, hold: { x: 0, y: 0, timer: 0 } };
   const qsOn = () => S.qsOn !== false;
-  const qsFor = (tool) => qsOn() && tool !== 'lassoBrushIcon'; // 올가미류는 멈춰도 도형으로 바꾸지 않음 (사용자 결정)
+  const qsFor = (tool) => qsOn() && tool !== 'lassoBrushIcon' && tool !== 'liquifyIcon'; // 올가미류는 멈춰도 도형으로 바꾸지 않음 (사용자 결정), 리퀴파이도 (미는 획이라 도형이 의미 없음)
   const qd = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
   function qsSegDist(p, a, b) {
     const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy;
@@ -13527,6 +13527,9 @@ void main(){
   // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
   // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
   const NEWS = [
+    { v: '0.53.4',
+      ko: ['★ 대칭 자에서 리퀴파이(픽셀 유동화)도 대칭으로 작동해요 (건너편은 거울 방향으로 밀림, Ctrl+Z 한 번에 함께 되돌림)'],
+      en: ['★ Liquify now works with the symmetry ruler (the other side is pushed in the mirrored direction, and one Ctrl+Z undoes both)'] },
     { v: '0.53.3',
       ko: ['토글 시퀀스 패널을 열면 양쪽 컬럼 등 모든 도구 창보다 위에, 화면 폭 전체로 보여요 (여닫는 단추가 있는 도구 막대는 가리지 않아요)'],
       en: ['The toggle sequence panel now opens above all tool windows, including both columns, across the full width (without covering the toolbar with its toggle button)'] },
