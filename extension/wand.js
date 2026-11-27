@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (function mwBoot() {
   'use strict';
-  const VERSION = '0.53.2';
+  const VERSION = '0.53.3';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -9290,6 +9290,23 @@ void main(){
       : `레이어 ${results.length + 1}개를 함께 ${ss.kind === 'move' ? '옮겼어요' : '변형했어요'} (되돌리기는 레이어마다 ${ss.sel ? '3칸: 선택 해제·선택·변형' : '한 칸'})`);
   }
   // MS.ref = 지난번(동작 직전) 맨 위 되돌리기 기록 — 묶음 되돌리기의 시작점
+  // 시퀀스 패널이 열려 있으면 여닫는 단추(도구 막대 안)를 덮지 않게 좌우 여백을 맞춘다 (화면만 읽음, Magma에 보내는 것 없음)
+  const SEQ = { l: -1, r: -1 };
+  setInterval(() => {
+    try {
+      const root = document.documentElement; if (!root.classList.contains('mx-dock-on')) return;
+      const pane = document.querySelector('.editor-inner-bottom-1'), btn = document.querySelector('[command="toggle-sequence"]');
+      if (!pane || !pane.querySelector('editor-sequence')) return;
+      let l = 0, r = 0;
+      const pr = pane.getBoundingClientRect();
+      if (btn && pr.height > 0) {
+        const box = (btn.closest('.mx-frame') || btn).getBoundingClientRect();
+        if (box.width && box.bottom > pr.top) { if (box.left + box.width / 2 < innerWidth / 2) l = Math.max(0, Math.round(box.right)); else r = Math.max(0, Math.round(innerWidth - box.left)); }
+      }
+      if (l !== SEQ.l) { SEQ.l = l; root.style.setProperty('--mx-seql', l + 'px'); }
+      if (r !== SEQ.r) { SEQ.r = r; root.style.setProperty('--mx-seqr', r + 'px'); }
+    } catch { /* 무시 */ }
+  }, 250);
   const msTimer = setInterval(() => { try { msTick(); if (!MS.busy && !MS.sess) MS.ref = guRef(); } catch (err) { console.warn('[MagmaWand] 함께 고르기', err); } }, 60);
   cleanups.push(() => { QM.wrap?.remove(); FG.row?.remove(); BSET.el?.remove(); CLIP.line?.remove();
   });
@@ -12262,6 +12279,9 @@ void main(){
     .mw-txt-prev { background: conic-gradient(#ddd 25%, #fff 0 50%, #ddd 0 75%, #fff 0) 0 0 / 16px 16px; border-radius: 4px; padding: 6px; margin: 6px 0; max-height: 200px; overflow: auto; }
     /* 사용자 지정 UI (도킹 패널) */
     html.mx-dock-on .editor-right, html.mx-dock-on .editor-left { visibility: hidden !important; pointer-events: none !important; }
+    /* 시퀀스(토글 시퀀스) 패널: 모든 도구 창 위에, 여닫는 단추가 있는 도구 막대만 피해 화면 폭 전체로 */
+    .editor-inner-bottom-1:has(editor-sequence) { z-index: 50 !important; }
+    html.mx-dock-on .editor-inner-bottom-1:has(editor-sequence) { left: var(--mx-seql, 0px) !important; right: var(--mx-seqr, 0px) !important; }
     html.mx-dock-on:not(.mx-uihidden) .editor { inset: var(--mx-t, 43px) var(--mx-r, 261px) var(--mx-b, 0px) var(--mx-l, 40px) !important; }
     html.mx-uihidden .mx-dock { display: none !important; }
     html.mx-dock-on editor-color button[tooltip="Layout options"] /* lang-ok: 다른 언어는 mx-cog로 */, html.mx-dock-on editor-color button.mx-cog, html.mx-dock-on [command="toggle-hide-column"] { display: none !important; }
@@ -13507,6 +13527,9 @@ void main(){
   // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
   // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
   const NEWS = [
+    { v: '0.53.3',
+      ko: ['토글 시퀀스 패널을 열면 양쪽 컬럼 등 모든 도구 창보다 위에, 화면 폭 전체로 보여요 (여닫는 단추가 있는 도구 막대는 가리지 않아요)'],
+      en: ['The toggle sequence panel now opens above all tool windows, including both columns, across the full width (without covering the toolbar with its toggle button)'] },
     { v: '0.53.2',
       ko: ['섞기·문지르기·블러처럼 밑그림을 옅게 바꾼 획을 되돌리거나 다시 할 때, 그 자리가 사각형으로 깜빡이며 잠깐 멈칫하던 것을 없앴어요 (결과를 바로 보여 줌)'],
       en: ['Undoing or redoing strokes that lighten what is underneath (blending, smudging, blur) no longer flashes a rectangle with a short delay (the result shows right away)'] },
