@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (function mwBoot() {
   'use strict';
-  const VERSION = '0.53.1';
+  const VERSION = '0.53.2';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -7091,17 +7091,22 @@ void main(){
       await swapWhenLanded(probe.check, () => { cover.remove(); onLanded?.(); });
       await waitFor(() => guRef() !== t1, 3000); // 붙여넣기가 기록에 들어간 뒤 (묶음 되돌리기용)
     } else { await swapWhenLanded(() => true, () => { cover.remove(); onLanded?.(); }); }
-    if (what !== '되돌리지' && what !== '다시 하지') guAdd(gref0, what === '지우지' ? '투명색 지우기' : what === '흐리게 하지' ? '블러' : what === '칠하지' ? '잠긴 레이어 획' : what);
+    if (what !== '되돌리지' && what !== '다시 하지') guAdd(gref0, what === '지우지' ? '투명색 지우기' : what === '흐리게 하지' ? '블러' : what === '칠하지' ? '획' : what, cover.pic);
     return true;
   }
   // 그 자리를 '지금 보이는 화면'으로 덮는 그림 (Magma 그림판 바로 위, 마법봉 미리보기 아래)
-  function showCover(E, box0) {
-    const canvas = getCanvas();
+  // pic = { box, snap }: 미리 찍어 둔 화면으로 덮기 (묶음 되돌리기: 되돌린 뒤의 모습을 먼저 보여 줌)
+  function coverPic(E, box0) {
     // 지울 사각형보다 2px 넓게: 덮개를 화면에 확대해 그리면 가장자리가 반쯤 비쳐, 지운 사각형의 테두리가 1~2프레임 줄로 보였다(사용자 보고)
     const box = box0 && dclip(rgrow(box0, 2), E);
     let snap = null;
     try { snap = box && E.renderer.getDrawingSnapshotAsBinary(E.drawing, { bounds: { x: box.x, y: box.y, w: box.w, h: box.h } }); } catch { } // 그 둘레만 (모델 좌표, 읽기 전용)
-    if (!canvas || !snap || !box || snap.length !== box.w * box.h * 4) return { remove() { } };
+    return snap && box && snap.length === box.w * box.h * 4 ? { box, snap: new Uint8ClampedArray(snap) } : null;
+  }
+  function showCover(E, box0, pic0) {
+    const canvas = getCanvas();
+    const pic = pic0 || coverPic(E, box0), box = pic && pic.box, snap = pic && pic.snap;
+    if (!canvas || !snap || !box) return { remove() { }, pic: null };
     const c = document.createElement('canvas');
     c.width = box.w; c.height = box.h; c.className = 'mw-cover'; // mw-el을 붙이면 나타나는 효과(0.22초 미끄러짐·투명→불투명)가 걸려 덮개가 엉뚱한 자리에 반투명하게 뜬다(실측)
     const im = new ImageData(box.w, box.h);
@@ -7120,7 +7125,7 @@ void main(){
     canvas.after(wrap);
     let raf = 0; const loop = () => { if (!c.isConnected) return; try { place(); Object.assign(wrap.style, { left: canvas.offsetLeft + 'px', top: canvas.offsetTop + 'px', width: canvas.offsetWidth + 'px', height: canvas.offsetHeight + 'px' }); } catch { /* 무시 */ } raf = requestAnimationFrame(loop); };
     raf = requestAnimationFrame(loop);
-    return { remove() { cancelAnimationFrame(raf); wrap.remove(); } };
+    return { remove() { cancelAnimationFrame(raf); wrap.remove(); }, pic };
   }
   // Magma 화면 확대 방식: 'Sharp zoom'이 켜져 있고 3배(돌려 놓았으면 6배) 이상이면 픽셀을 또렷하게, 아니면 부드럽게 (Magma 소스와 같은 규칙).
   // 덮개·미리보기가 이와 다르면 바뀌는 순간 사각형이 흐려졌다 또렷해지는 깜빡임으로 보인다(실측: 4배 확대)
@@ -10372,7 +10377,8 @@ void main(){
   const guTop = (a) => (a && a.length ? a[a.length - 1] : null);
   function guRef() { const h = guHist(); return h ? guTop(h.undos) : null; }
   // ref0 = 동작 직전 맨 위 기록. 지금까지 쌓인 칸 수가 2칸 이상이면 묶음으로 기억
-  function guAdd(ref0, what) {
+  const GU_PIC_MAX = 6e6; // 덮개 그림은 600만 픽셀(약 24MB)까지만 보관
+  function guAdd(ref0, what, pic) {
     const h = guHist();
     if (!h) return;
     const a = h.undos, top = guTop(a);
@@ -10380,8 +10386,9 @@ void main(){
     const i = ref0 ? a.lastIndexOf(ref0) : -1;
     const n = i >= 0 ? a.length - 1 - i : a.length;
     if (n < 2) return;
-    GU.list.push({ ref0, top, n, what, lost: i < 0 && !!ref0 });
+    GU.list.push({ ref0, top, n, what, lost: i < 0 && !!ref0, pic: pic && pic.box.w * pic.box.h <= GU_PIC_MAX ? pic : null });
     if (GU.list.length > 20) GU.list.shift();
+    for (let k = 0; k < GU.list.length - 3; k++) GU.list[k].pic = null; // 메모리: 최근 3개만
     GU.redo = [];
   }
   async function guPress(cmd, n, h) {
@@ -10400,14 +10407,30 @@ void main(){
     }
     return done;
   }
+  // 덮개: 되돌린 뒤 모습(pic)을 바로 보여 주고, 그 사이 Magma가 칸을 하나씩 되돌리며 생기는 빈 사각형(깜빡임)·지연을 가린다
+  async function guCovered(pic, run) {
+    const E = getEditor();
+    const cv = E && pic ? showCover(E, null, pic) : null;
+    try { return await run(); } finally {
+      if (cv) {
+        // 실제 그림이 덮개와 같아질 때까지 (최대 1.5초) 기다렸다 걷는다 — 몇 픽셀만 견줘 본다
+        const { box, snap } = pic, n = box.w * box.h, ks = [];
+        for (let j = 0; j < 24; j++) ks.push(Math.floor(((j + 0.5) / 24) * n));
+        const same = () => { try { const now = E.renderer.getDrawingSnapshotAsBinary(E.drawing, { bounds: box }); return ks.every((k) => Math.abs(now[k * 4 + 3] - snap[k * 4 + 3]) <= 3 && Math.abs(now[k * 4] - snap[k * 4]) <= 4); } catch { return true; } };
+        await waitFor(same, 1500); await nextFrame(); await nextFrame();
+        cv.remove();
+      }
+    }
+  }
   async function guUndo(g) {
     const h = guHist();
     GU.busy = true;
     msGuard(true, '');
     let done = 0;
-    try { done = await guPress('undo', g.n, h); } finally { msGuard(false); GU.busy = false; }
+    const E = getEditor(), after = g.pic && E ? coverPic(E, rgrow(g.pic.box, -2)) : null; // 다시 하기 때 쓸 지금 모습
+    try { done = await guCovered(g.pic, () => guPress('undo', g.n, h)); } finally { msGuard(false); GU.busy = false; }
     GU.list.pop();
-    if (done) GU.redo.push({ n: done, redoTop: guTop(h.redos), what: g.what, ref0: g.ref0 });
+    if (done) GU.redo.push({ n: done, redoTop: guTop(h.redos), what: g.what, ref0: g.ref0, pic: done === g.n ? after : null, back: g.pic });
     (done === g.n && !g.lost ? note : toast)(done === g.n ? `${g.what} 되돌렸어요 (Magma 되돌리기 ${done}칸을 한 번에)` + (g.lost ? ' · 더 앞의 칸은 15칸 한도로 지워져 있었어요' : '')
       : `${g.what} — ${g.n}칸 중 ${done}칸만 되돌렸어요`);
   }
@@ -10416,11 +10439,11 @@ void main(){
     GU.busy = true;
     msGuard(true, '');
     let done = 0;
-    try { done = await guPress('redo', r.n, h); } finally { msGuard(false); GU.busy = false; }
+    try { done = await guCovered(r.pic, () => guPress('redo', r.n, h)); } finally { msGuard(false); GU.busy = false; }
     GU.redo.pop();
     if (done === r.n && r.ref0 !== undefined) {
       const a = h.undos;
-      if (!r.ref0 || a.lastIndexOf(r.ref0) === a.length - 1 - done) GU.list.push({ ref0: r.ref0, top: guTop(a), n: done, what: r.what, lost: false });
+      if (!r.ref0 || a.lastIndexOf(r.ref0) === a.length - 1 - done) GU.list.push({ ref0: r.ref0, top: guTop(a), n: done, what: r.what, lost: false, pic: r.back || null });
     }
     (done === r.n ? note : toast)(done === r.n ? `${r.what} 다시 했어요 (${done}칸을 한 번에)` : `${r.what} — ${r.n}칸 중 ${done}칸만 다시 했어요`);
   }
@@ -13484,6 +13507,9 @@ void main(){
   // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
   // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
   const NEWS = [
+    { v: '0.53.2',
+      ko: ['섞기·문지르기·블러처럼 밑그림을 옅게 바꾼 획을 되돌리거나 다시 할 때, 그 자리가 사각형으로 깜빡이며 잠깐 멈칫하던 것을 없앴어요 (결과를 바로 보여 줌)'],
+      en: ['Undoing or redoing strokes that lighten what is underneath (blending, smudging, blur) no longer flashes a rectangle with a short delay (the result shows right away)'] },
     { v: '0.53.1',
       ko: ['★ 섞기·문지르기 브러시(손끝, 거친 문지르기, 붓털 문지르기, 유화 블렌더 등)로 반투명한 그림을 문지르면 덧칠돼 점점 진해지던 문제를 고쳤어요. 이제 끌어온 색의 진하기로 그 자리를 바꿔 칠해요'],
       en: ['★ Fixed blending and smudge brushes (Finger, Rough smudge, Bristle smudge, Oil blender, etc.) painting over semi-transparent areas and making them darker. They now replace the spot with the picked-up color at its own opacity'] },
