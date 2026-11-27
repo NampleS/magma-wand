@@ -6,7 +6,7 @@
 // 새 버전이 같은 페이지에 다시 들어오면 옛 버전을 걷어내고 그 자리를 대신한다(새로고침 없이 업데이트).
 (function mwBoot() {
   'use strict';
-  const VERSION = '0.50.0';
+  const VERSION = '0.51.0';
   const isNewer = (a, b) => {
     const pa = String(a).split('.').map(Number), pb = String(b || '0').split('.').map(Number);
     for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
@@ -2382,9 +2382,10 @@ void main(){
     return { p, u };
   };
   let ADV_EDGEK0 = 2.0, ADV_EDGEK1 = 3; // 클립 스튜디오 수채 경계: 1단계(0.05)에서 테가 안쪽보다 약 1.4배
-  const advInterval = (b) => (b.sutVer >= 2 && b.autoGap === 3 ? Math.min(b.interval, 0.025) : b.interval); // 클립 스튜디오 '좁게' 간격
-  const ADV_VEL = { vmax: 5, tau: 10 }; // 클립 스튜디오 속도 효과 기준
-  const ADV_STAB = { tau: 2, ptau: 2 }; // 클립 스튜디오 손떨림 보정 1당 시간 상수(ms)
+  const advInterval = (b) => (b.sutVer >= 2 && b.autoGap === 3 ? Math.min(b.interval, ADV.tipTex && ADV.tipTex.length ? 0.025 : ADV_NARROW) : b.interval); // 그림 끝 모양은 더 촘촘히 (BUTTER: 6.25%면 가장자리 톱니) // 클립 스튜디오 '좁게' 간격
+  const ADV_VEL = { k: 2, tau: 10 };
+  let ADV_NARROW = 0.0625; // 클립 스튜디오 '좁게' 간격 (사인펜 실측: 가운데 약 16번 겹침) // 클립 스튜디오 속도 효과 기준
+  const ADV_STAB = { tau: 2, ptau: 2, pow: 1 }; // 클립 스튜디오 손떨림 보정 1당 시간 상수(ms)
   let ADV_MINDAB = 1.6, ADV_MINK = 0.37; // 가는 선: 최소 도장 크기(px)와 진하기 보정
   const INST = 18; // aPos2 aSize aAngle aSq2 aAlpha aColor3 aFlip2 aV2 aX2(획 길이·남은 물감) aTD(텍스처 농도 배율) aMA(바꿔 칠하기의 물감 진하기)
   function advEnsureGL(canvas, W, H) {
@@ -2597,9 +2598,10 @@ void main(){
     let pp = pr;
     if (s.last && b.smoothing > 0 && !s.straight) {
       if (b.sutVer >= 2) { // 클립 스튜디오 손떨림 보정: 시간 기준으로 위치·필압을 함께 늦게 따라간다 (입력 빈도와 무관, CSP 획과 재어 맞춤)
-        const kk = 1 - Math.exp(-Math.max(0.5, t - s.last.t) / (ADV_STAB.tau * b.smoothing));
+        const stT = ADV_STAB.tau * 6 * Math.pow(b.smoothing / 6, ADV_STAB.pow); // 보정값 6 기준(G펜 실측), 큰 값은 덜 늘어남
+        const kk = 1 - Math.exp(-Math.max(0.5, t - s.last.t) / stT);
         x = s.last.x + (x - s.last.x) * kk; y = s.last.y + (y - s.last.y) * kk;
-        const kp = 1 - Math.exp(-Math.max(0.5, t - s.last.t) / Math.max(0.5, ADV_STAB.ptau * b.smoothing));
+        const kp = 1 - Math.exp(-Math.max(0.5, t - s.last.t) / Math.max(0.5, ADV_STAB.ptau * 6 * Math.pow(b.smoothing / 6, ADV_STAB.pow)));
         pp = s.last.p + (pr - s.last.p) * kp;
       } else { const k = Math.min(0.85, b.smoothing * 0.05); x = s.last.x + (x - s.last.x) * (1 - k); y = s.last.y + (y - s.last.y) * (1 - k); }
     }
@@ -2611,7 +2613,7 @@ void main(){
     const dt = Math.max(1, t - a.t);
     // 속도(화면 픽셀/ms): 획 첫 구간은 바로 실제 속도로(0에서 시작하면 시작점이 뭉툭하게 커짐), 이후 60ms 시간 상수로 부드럽게
     // 클립 스튜디오 브러시: 속도 효과의 '가장 빠름'이 화면 약 ADV_VEL.vmax px/ms (CSP에서 속도를 바꿔 가며 재어 맞춤; 확장 자체 브러시는 20)
-    const inst = (L / dt) * (s.zoom || 1) * (b.sutVer >= 2 ? 20 / ADV_VEL.vmax : 1);
+    const vRaw = (L / dt) * (s.zoom || 1), inst = b.sutVer >= 2 ? 20 * (1 - Math.exp(-vRaw / ADV_VEL.k)) : vRaw; // CSP: 효과 = 1−e^(−속도/k) (밀리펜 5개 속도에서 실측, k≈3.5px/ms)
     if (!s.spInit) { s.speed = inst; s.spInit = true; } else if (!s.freezeSpeed) s.speed += (inst - s.speed) * (1 - Math.exp(-dt / (b.sutVer >= 2 ? ADV_VEL.tau : 60)));
     // 진행 방향은 브러시 크기의 0.6배 거리에 걸쳐 천천히 따라간다 (급커브에서 끝 모양이 홱 돌지 않게)
     const raw = Math.atan2(dy, dx);
@@ -12034,7 +12036,7 @@ void main(){
     .mw-tg-g svg { flex: 0 0 13px; width: 13px; height: 13px; } .mw-tg-g span { overflow: hidden; text-overflow: ellipsis; }
     .mw-tg-g:hover { background: #3f3f3f; } .mw-tg-g.on { background: #1f5ac7; border-color: #3e7cee; color: #fff; } .mw-tg-g.drop { outline: 2px solid #ffd24d; outline-offset: -2px; }
     .mw-tg-list { flex: 1; min-height: 0; overflow-y: auto; padding: 2px; }
-    .mw-tg-row { position: relative; height: 34px; margin: 0 0 1px; background: transparent; cursor: pointer; overflow: hidden; user-select: none; }
+    .mw-tg-row { position: relative; height: 27px; margin: 0 0 1px; background: transparent; cursor: pointer; overflow: hidden; user-select: none; }
     .mw-tg-row canvas { position: absolute; left: 0; top: 0; width: 62%; height: 100%; object-fit: cover; object-position: left center; opacity: .92; pointer-events: none; }
     .mw-tg-row span { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); text-align: right; color: #f4f4f4; text-shadow: 0 0 3px #000, 0 0 2px #000; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
     .mw-tg-row:hover { background: rgba(255,255,255,.05); }
@@ -13421,6 +13423,13 @@ void main(){
   // ---------- 업데이트 소식 (보드 오른쪽 아래 작은 창, ×를 눌러야 닫힘) ----------
   // 배포할 때마다 맨 위에 한 덩어리 추가(한국어·영어 같은 줄 수 — 배포 도구가 검사). 아직 안 본 버전들을 한 창에 묶어 한 번만 보여 준다.
   const NEWS = [
+    { v: '0.51.0',
+      ko: ['★ 클립 스튜디오 브러시가 빠르게 그을수록 가늘어지는 정도를 더 정확히: CSP의 실제 속도 계산 방식(처음엔 빨리, 갈수록 완만하게)으로 바꾸고, 사인펜처럼 속도에 따라 농도도 줄이는 브러시가 CSP처럼 가늘어져요',
+        '클립 스튜디오 [좁게] 간격을 원형 끝은 크기의 6.25%, 그림 끝 모양은 2.5%로 (CSP에서 재어 맞춤)',
+        '브러시 목록의 브러시 칸 높이를 80%로 줄였어요 (클립 스튜디오 비율)'],
+      en: ['★ How much Clip Studio brushes thin out when drawn fast is now more accurate: speed now follows the actual CSP curve (fast at first, then leveling off), and brushes that also lower density with speed, like the sign pen, thin out like CSP',
+        'Clip Studio [Narrow] spacing is now 6.25% of the size for round tips and 2.5% for image tips (measured in CSP)',
+        'Brush list cells are now 80% as tall (Clip Studio proportions)'] },
     { v: '0.50.0',
       ko: ['★ 클립 스튜디오 브러시의 속도 효과를 CSP와 같게: 빠르게 그을수록 가늘어지는 정도를 CSP에서 속도를 바꿔 가며 그은 획과 비교해 맞췄어요 (밀리펜 기준 거의 같음)',
         '빠르게 긋다 펜을 떼면 끝부분이 툭 가늘어지던 문제를 고쳤어요 (마지막 속도 그대로 끝까지)',
